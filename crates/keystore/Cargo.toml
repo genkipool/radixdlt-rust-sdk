@@ -1,0 +1,23 @@
+[package]
+name = "radixdlt-keystore"
+description = "Encrypted Ed25519 keystore for Radix (scrypt + AES-256-GCM), compatible with the Radix key.json format."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["radix", "radixdlt", "keystore", "ed25519", "scrypt"]
+categories = ["cryptography::cryptocurrencies"]
+readme = "README.md"
+
+[dependencies]
+radixdlt-i18n = { workspace = true }
+radixdlt-address = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand_core = { workspace = true }
+scrypt = { workspace = true }
+aes-gcm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }

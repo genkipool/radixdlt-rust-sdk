@@ -1,0 +1,19 @@
+[package]
+name = "radixdlt-rola"
+description = "Native ROLA (Radix Off-Ledger Authentication) verification in Rust — a drop-in for @radixdlt/rola."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["radix", "radixdlt", "rola", "authentication", "ed25519"]
+categories = ["cryptography::cryptocurrencies", "authentication"]
+readme = "README.md"
+
+[dependencies]
+radixdlt-i18n = { workspace = true }
+radixdlt-address = { workspace = true }
+ed25519-dalek = { workspace = true }
+blake2 = { workspace = true }
+hex = { workspace = true }

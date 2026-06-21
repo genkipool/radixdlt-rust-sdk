@@ -1,0 +1,32 @@
+# Isolated workspace: iroh pulls a large QUIC (quinn) dependency tree. Keeping this
+# crate out of the main SDK workspace avoids any resolution interaction with the
+# webrtc tree of `radixdlt-connect`. Shares `radixdlt-i18n` by path. The developer's
+# choice is at the crate level: `radixdlt-connect` (WebRTC, talks to the mobile
+# wallet) OR `radixdlt-connect-iroh` (QUIC, for pure-Rust SDK-to-SDK peers).
+[workspace]
+
+[package]
+name = "radixdlt-connect-iroh"
+description = "Iroh (QUIC) peer-to-peer transport for the RadixDLT Rust SDK: an alternative to WebRTC for pure-Rust SDK-to-SDK connections."
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/genkipool/radixdlt-rust-sdk"
+authors = ["Luis Alberto Reoyo Bolaños <68571366+genkipool@users.noreply.github.com>"]
+rust-version = "1.85"
+keywords = ["radix", "radixdlt", "iroh", "quic", "p2p"]
+categories = ["cryptography::cryptocurrencies", "network-programming"]
+readme = "README.md"
+
+[dependencies]
+radixdlt-i18n = { path = "../i18n", version = "0.1.0" }
+radixdlt-connect-types = { path = "../connect-types", version = "0.1.0" }
+radixdlt-address = { path = "../address", version = "0.1.0" }
+radixdlt-rola = { path = "../rola", version = "0.1.0" }
+radixdlt-keystore = { path = "../keystore", version = "0.1.0" }
+radixdlt-gateway-tx = { path = "../gateway-tx", version = "0.1.0" }
+iroh = "1"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+ed25519-dalek = "2"
+hex = "0.4"

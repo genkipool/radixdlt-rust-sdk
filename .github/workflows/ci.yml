@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # Main workspace: i18n, address, rola, keystore, gateway-tx, sdk.
+  main-workspace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-features --all-targets
+      - name: Test
+        run: cargo test --workspace --all-features
+
+  # radixdlt-connect is an isolated workspace (WebRTC dependency tree).
+  connect:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/connect
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/connect
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets
+      - run: cargo test
+
+  # radixdlt-connect-iroh is an isolated workspace (QUIC/iroh dependency tree).
+  connect-iroh:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/connect-iroh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/connect-iroh
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets
+      - run: cargo test

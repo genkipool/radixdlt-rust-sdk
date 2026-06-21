@@ -1,0 +1,17 @@
+[package]
+name = "radixdlt-connect-types"
+description = "Transport-agnostic Radix Connect wallet-interaction message schema (requests, responses and parsers), shared by the WebRTC and Iroh transports."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["radix", "radixdlt", "radix-connect", "wallet", "schema"]
+categories = ["cryptography::cryptocurrencies", "encoding"]
+readme = "README.md"
+
+[dependencies]
+radixdlt-i18n = { workspace = true }
+serde_json = { workspace = true }
+uuid = { version = "1", features = ["v4"] }

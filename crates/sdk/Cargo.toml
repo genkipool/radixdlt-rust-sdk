@@ -1,0 +1,43 @@
+[package]
+name = "radixdlt-sdk"
+description = "Umbrella crate for the RadixDLT Rust SDK: ROLA verification, address derivation, encrypted keystore and Gateway transactions, behind feature flags."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["radix", "radixdlt", "sdk", "ledger", "rola"]
+categories = ["cryptography::cryptocurrencies", "api-bindings"]
+readme = "README.md"
+
+[dependencies]
+radixdlt-i18n = { workspace = true }
+radixdlt-address = { workspace = true, optional = true }
+radixdlt-rola = { workspace = true, optional = true }
+radixdlt-keystore = { workspace = true, optional = true }
+radixdlt-gateway-tx = { workspace = true, optional = true }
+radixdlt-connect-types = { workspace = true, optional = true }
+
+[features]
+default = ["rola"]
+# Account-address derivation.
+address = ["dep:radixdlt-address"]
+# ROLA off-ledger authentication (implies address).
+rola = ["dep:radixdlt-rola", "address"]
+# Encrypted Ed25519 keystore (implies address).
+keystore = ["dep:radixdlt-keystore", "address"]
+# Gateway client + local transaction signing (radix-engine dependency tree).
+gateway = ["dep:radixdlt-gateway-tx"]
+# Transport-agnostic Radix Connect wallet-interaction schema (no heavy deps).
+connect-types = ["dep:radixdlt-connect-types"]
+# Everything that shares the radix-common/engine tree.
+full = ["rola", "keystore", "gateway", "connect-types"]
+
+# NOTE: the transports `radixdlt-connect` (WebRTC) and `radixdlt-connect-iroh` (QUIC)
+# are intentionally NOT re-exported here. Their dependency trees cannot be resolved
+# together with the `radix-engine` tree pulled by the `gateway` feature. Add the
+# transport crate you need directly; both share the `connect-types` schema.
+
+[package.metadata.docs.rs]
+all-features = true

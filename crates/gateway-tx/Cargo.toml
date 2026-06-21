@@ -1,0 +1,22 @@
+[package]
+name = "radixdlt-gateway-tx"
+description = "Radix Gateway client plus local transaction building, signing, notarization and submission, in native Rust."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["radix", "radixdlt", "gateway", "transaction", "ledger"]
+categories = ["cryptography::cryptocurrencies", "api-bindings"]
+readme = "README.md"
+
+[dependencies]
+radixdlt-i18n = { workspace = true }
+radix-common = { workspace = true }
+radix-transactions = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+rand_core = { workspace = true }
+hex = { workspace = true }

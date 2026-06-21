@@ -1,0 +1,17 @@
+[package]
+name = "radixdlt-address"
+description = "Native Ed25519 virtual-account address derivation for the Radix ledger (no Node/RET-via-JS)."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["radix", "radixdlt", "address", "ed25519", "account"]
+categories = ["cryptography::cryptocurrencies"]
+readme = "README.md"
+
+[dependencies]
+radixdlt-i18n = { workspace = true }
+radix-common = { workspace = true }
+hex = { workspace = true }
