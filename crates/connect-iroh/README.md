@@ -54,6 +54,28 @@ The `Wallet` answers three interactions over iroh, matching the WebRTC flow:
 - **pre-authorization** — the wallet signs a subintent without submitting, returns
   the signed partial transaction (`request_pre_authorization`).
 
+### Persistent identity and internet peers (relay + discovery)
+
+`bind()` uses an ephemeral identity and direct connections only (same host / LAN).
+For peers that must be reachable across restarts or over the internet:
+
+```rust
+use radixdlt_connect_iroh::{endpoint_id_from_seed, IrohConnector, Relay};
+
+// Hub: fixed 32-byte seed → stable EndpointId, n0 relays + discovery enabled.
+let hub = IrohConnector::bind_with(Some(seed), Relay::Enabled).await?;
+let ticket = hub.id_ticket();             // stable across restarts (id only, no addrs)
+
+// Peer: also bind with Relay::Enabled, then dial by ticket or by raw EndpointId.
+let peer = IrohConnector::bind_with(None, Relay::Enabled).await?;
+let mut ch = peer.connect_to_ticket(&ticket).await?;
+// …or, if the id was learned via mDNS/discovery:
+// let mut ch = peer.connect_to_endpoint_id(&hub_id).await?;
+```
+
+`endpoint_id_from_seed(&seed)` derives the same `EndpointId` string offline (no
+endpoint bound), useful to print or distribute a hub locator ahead of time.
+
 See `examples/login.rs` (`cargo run --example login`) for the full flow, and
 `tests/` for the low-level, login, and transaction/pre-auth tests. Error messages are
 localized to the system language.

@@ -282,17 +282,15 @@ impl Gateway {
 
     /// Submits a notarized transaction (does not wait for the commit).
     pub async fn submit(&self, tx: &NotarizedTx) -> Result<(), GatewayError> {
-        let v = self
-            .post(
-                "transaction/submit",
-                serde_json::json!({ "notarized_transaction_hex": tx.notarized_hex }),
-            )
-            .await
-            .map_err(|e| match e {
-                GatewayError::BadResponse(b) => GatewayError::SubmitRejected(b),
-                other => other,
-            })?;
-        let _ = v;
+        self.post(
+            "transaction/submit",
+            serde_json::json!({ "notarized_transaction_hex": tx.notarized_hex }),
+        )
+        .await
+        .map_err(|e| match e {
+            GatewayError::BadResponse(b) => GatewayError::SubmitRejected(b),
+            other => other,
+        })?;
         Ok(())
     }
 

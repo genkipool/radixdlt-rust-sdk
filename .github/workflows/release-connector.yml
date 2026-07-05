@@ -1,0 +1,77 @@
+name: Release connector-mcp
+
+# Builds the `radix-connector-mcp` binary for Linux, macOS and Windows and
+# attaches them to a GitHub Release. AI agents install by downloading these
+# assets (see scripts/install-connector.sh / .ps1) — nothing is published to
+# crates.io or npm.
+#
+# Trigger: push a tag like `connector-v0.1.0`, or run the workflow manually.
+
+on:
+  push:
+    tags:
+      - 'connector-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/connector-mcp
+
+      # Cross-linker for the aarch64 Linux target.
+      - name: Install aarch64 cross linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Build
+        working-directory: crates/connector-mcp
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # Package the binary as radix-connector-mcp-<target>(.exe) for the installers.
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cp "crates/connector-mcp/target/${{ matrix.target }}/release/radix-connector-mcp" \
+             "radix-connector-mcp-${{ matrix.target }}"
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          copy "crates\connector-mcp\target\${{ matrix.target }}\release\radix-connector-mcp.exe" "radix-connector-mcp-${{ matrix.target }}.exe"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            radix-connector-mcp-${{ matrix.target }}
+            radix-connector-mcp-${{ matrix.target }}.exe
+          fail_on_unmatched_files: false

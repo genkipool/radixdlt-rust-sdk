@@ -1,8 +1,9 @@
-//! radixdlt-i18n — System-locale detection and bilingual (Spanish/English) text.
+//! radixdlt-i18n — System-locale detection and multilingual text for the SDK.
 //!
 //! This is the internationalization foundation of the RadixDLT Rust SDK. Every SDK
 //! crate emits its user-facing text (errors, CLI output) in the system language:
-//! Spanish when the locale starts with `es`, English otherwise.
+//! Spanish when the locale starts with `es`, English otherwise. English is always
+//! the fallback, so adding a language to this crate never breaks existing callers.
 //!
 //! # Detection
 //!
@@ -20,18 +21,33 @@
 //! use radixdlt_i18n::{Lang, tr};
 //!
 //! let lang = Lang::detect();
+//! // Two-argument form (English + Spanish):
 //! let msg = tr!(lang,
 //!     format!("invalid public key"),
 //!     format!("clave pública inválida"));
+//! // Labelled form — same meaning, ready for more languages:
+//! let msg = tr!(lang, format!("invalid public key"),
+//!     Es: format!("clave pública inválida"));
 //! println!("{msg}");
 //! ```
+//!
+//! # Adding a language
+//!
+//! 1. Add a variant to [`Lang`] (it is `#[non_exhaustive]`, so this is not a
+//!    breaking change) and teach [`Lang::from_locale_str`] to detect it.
+//! 2. Add `Xx: "…"` arms to the `tr!` call sites you want translated. Untouched
+//!    call sites keep compiling and fall back to English.
 
 use std::sync::OnceLock;
 
 /// Language supported by the SDK.
+///
+/// Marked `#[non_exhaustive]`: new languages may be added in minor releases, so
+/// match with a `_ => …` fallback (the [`tr!`] macro already does).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum Lang {
-    /// English (default).
+    /// English (default and universal fallback).
     #[default]
     En,
     /// Spanish.
@@ -79,15 +95,28 @@ pub fn lang() -> Lang {
     Lang::detect()
 }
 
-/// Picks the text variant by language: `tr!(lang, <english>, <spanish>)`.
+/// Picks the text variant by language, falling back to English.
 ///
-/// Both arms must be the same type (usually `String`).
+/// Two forms (all arms must be the same type, usually `String`):
+///
+/// * `tr!(lang, <english>, <spanish>)` — the common bilingual shorthand.
+/// * `tr!(lang, <english>, Es: <spanish>, Fr: <french>, …)` — labelled arms, one
+///   per [`Lang`] variant; any language without an arm gets the English text.
+///
+/// Because unmatched languages fall back to English, adding a variant to `Lang`
+/// never breaks existing call sites.
 #[macro_export]
 macro_rules! tr {
+    ($lang:expr, $en:expr $(, $variant:ident : $txt:expr)+ $(,)?) => {
+        match $lang {
+            $($crate::Lang::$variant => $txt,)+
+            _ => $en,
+        }
+    };
     ($lang:expr, $en:expr, $es:expr $(,)?) => {
         match $lang {
             $crate::Lang::Es => $es,
-            $crate::Lang::En => $en,
+            _ => $en,
         }
     };
 }
@@ -118,6 +147,19 @@ mod tests {
         );
         assert_eq!(
             tr!(Lang::En, "hello".to_string(), "hola".to_string()),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn tr_labelled_form_falls_back_to_english() {
+        assert_eq!(
+            tr!(Lang::Es, "hello".to_string(), Es: "hola".to_string()),
+            "hola"
+        );
+        // A language with no labelled arm gets the English text.
+        assert_eq!(
+            tr!(Lang::En, "hello".to_string(), Es: "hola".to_string()),
             "hello"
         );
     }

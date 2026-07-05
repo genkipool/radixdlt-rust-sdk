@@ -1,0 +1,44 @@
+# Isolated workspace: this binary depends on `radixdlt-connect`, whose `webrtc`
+# dependency tree cannot be resolved together with the main SDK workspace (same
+# reason `radixdlt-connect` itself is isolated). It shares the connect crates by
+# path and publishes/installs independently from GitHub.
+[workspace]
+
+[package]
+name = "radixdlt-connector-mcp"
+description = "Local MCP (Model Context Protocol) server that lets AI agents pair a Radix Wallet and get transactions signed over Radix Connect (WebRTC). The signing runs on the user's machine; the wallet on their phone approves."
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/genkipool/radixdlt-rust-sdk"
+authors = ["Luis Alberto Reoyo Bolaños <68571366+genkipool@users.noreply.github.com>"]
+rust-version = "1.82"
+keywords = ["radix", "radixdlt", "mcp", "wallet", "radix-connect"]
+categories = ["cryptography::cryptocurrencies", "command-line-utilities"]
+readme = "README.md"
+
+# The installed command is `radix-connector-mcp` (this is what MCP clients launch).
+[[bin]]
+name = "radix-connector-mcp"
+path = "src/main.rs"
+
+[dependencies]
+radixdlt-connect = { path = "../connect", version = "0.1.0" }
+radixdlt-connect-types = { path = "../connect-types", version = "0.1.0" }
+radixdlt-rola = { path = "../rola", version = "0.1.0" }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "io-std", "io-util", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+dirs = "5"
+qrcode = { version = "0.14", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

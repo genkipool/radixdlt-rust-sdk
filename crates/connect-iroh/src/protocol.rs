@@ -2,7 +2,7 @@
 //! wallet-interaction schema** ([`radixdlt_connect_types`]) — the exact same JSON
 //! the WebRTC transport uses. Both ends are pure Rust (SDK-to-SDK): the "wallet"
 //! side is a [`Wallet`] that holds a key and answers interactions; the "dApp" side
-//! sends requests over an [`IrohChannel`](crate::IrohChannel) and parses responses.
+//! sends requests over an [`IrohChannel`] and parses responses.
 //!
 //! Supported interactions: account proof (ROLA), transaction (sign + submit) and
 //! pre-authorization (sign a subintent).

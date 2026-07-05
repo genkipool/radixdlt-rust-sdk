@@ -14,11 +14,12 @@
 //!
 //! ## Features
 //!
-//! * `address` — virtual-account address derivation ([`address`]).
-//! * `rola` *(default)* — ROLA off-ledger authentication ([`rola`]); implies `address`.
-//! * `keystore` — encrypted Ed25519 keystore ([`keystore`]); implies `address`.
-//! * `gateway` — Gateway client + local transaction signing ([`gateway`]).
-//! * `full` — `rola` + `keystore` + `gateway`.
+//! * `address` — virtual-account address derivation (module `address`).
+//! * `rola` *(default)* — ROLA off-ledger authentication (module `rola`); implies `address`.
+//! * `keystore` — encrypted Ed25519 keystore (module `keystore`); implies `address`.
+//! * `gateway` — Gateway client + local transaction signing (module `gateway`).
+//! * `connect-types` — transport-agnostic wallet-interaction schema (module `connect_types`).
+//! * `full` — `rola` + `keystore` + `gateway` + `connect-types`.
 //!
 //! The [`i18n`] module (system-language detection) is always available.
 //!

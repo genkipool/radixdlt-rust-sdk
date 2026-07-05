@@ -16,14 +16,32 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, TransportAddr};
+use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, TransportAddr};
 use radixdlt_i18n::{tr, Lang};
 use serde_json::Value;
 
 pub mod protocol;
 
+/// Derives the `EndpointId` (as a string) from a 32-byte seed, without binding an
+/// endpoint or touching the network. Useful to generate a hub locator (bootstrap
+/// token) ahead of time; the same seed passed to [`IrohConnector::bind_with`]
+/// yields the same id.
+pub fn endpoint_id_from_seed(seed: &[u8; 32]) -> String {
+    SecretKey::from_bytes(seed).public().to_string()
+}
+
 /// ALPN identifier for this transport.
 pub const ALPN: &[u8] = b"radixdlt-connect-iroh/0";
+
+/// Relay/discovery mode for [`IrohConnector::bind_with`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relay {
+    /// Direct connections only (same host / LAN): no relay, no discovery.
+    Disabled,
+    /// n0 public relays + discovery: peers behind NAT can reach this endpoint
+    /// over the internet by `EndpointId` alone.
+    Enabled,
+}
 
 /// Errors from the iroh transport. `Display` is localized to the system language.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,14 +117,39 @@ pub struct IrohConnector {
 }
 
 impl IrohConnector {
-    /// Binds a local endpoint with the relay disabled (direct connections only).
+    /// Binds a local endpoint with the relay disabled (direct connections only) and an
+    /// ephemeral identity. Equivalent to `bind_with(None, Relay::Disabled)`.
     pub async fn bind() -> Result<Self, IrohError> {
-        let endpoint = Endpoint::builder(presets::Minimal)
-            .alpns(vec![ALPN.to_vec()])
-            .relay_mode(RelayMode::Disabled)
-            .bind()
-            .await
-            .map_err(|e| IrohError::Bind(e.to_string()))?;
+        Self::bind_with(None, Relay::Disabled).await
+    }
+
+    /// Binds with an optional FIXED identity and an explicit relay mode.
+    ///
+    /// - `secret` (32-byte seed): a persistent identity → a stable `EndpointId` (and a
+    ///   stable [`id_ticket`](Self::id_ticket)) across restarts. `None` = ephemeral.
+    ///   Use the same 32 bytes as a Radix account key to unify channel and ledger identity.
+    /// - [`Relay::Enabled`]: n0 relays + discovery so peers can connect over the
+    ///   internet (behind NAT) by `EndpointId` alone. [`Relay::Disabled`] = direct/LAN only.
+    pub async fn bind_with(secret: Option<[u8; 32]>, relay: Relay) -> Result<Self, IrohError> {
+        let bind_res = match relay {
+            Relay::Enabled => {
+                let mut b = Endpoint::builder(presets::N0).alpns(vec![ALPN.to_vec()]);
+                if let Some(seed) = secret {
+                    b = b.secret_key(SecretKey::from_bytes(&seed));
+                }
+                b.bind().await
+            }
+            Relay::Disabled => {
+                let mut b = Endpoint::builder(presets::Minimal)
+                    .alpns(vec![ALPN.to_vec()])
+                    .relay_mode(RelayMode::Disabled);
+                if let Some(seed) = secret {
+                    b = b.secret_key(SecretKey::from_bytes(&seed));
+                }
+                b.bind().await
+            }
+        };
+        let endpoint = bind_res.map_err(|e| IrohError::Bind(e.to_string()))?;
         Ok(IrohConnector { endpoint })
     }
 
@@ -150,12 +193,36 @@ impl IrohConnector {
         hex::encode(serde_json::to_vec(&addr).unwrap_or_default())
     }
 
+    /// A ticket carrying ONLY the `EndpointId` (no transport addrs). With a persistent
+    /// identity it is **stable across restarts**; the peer reaches it via discovery
+    /// (requires `bind_with(_, Relay::Enabled)` on both ends). Use this for internet hubs.
+    pub fn id_ticket(&self) -> String {
+        let addr = EndpointAddr::from_parts(self.endpoint.id(), Vec::<TransportAddr>::new());
+        hex::encode(serde_json::to_vec(&addr).unwrap_or_default())
+    }
+
     /// Connects to a peer using a ticket produced by [`ticket`](Self::ticket).
     pub async fn connect_to_ticket(&self, ticket: &str) -> Result<IrohChannel, IrohError> {
         let bytes =
             hex::decode(ticket).map_err(|e| IrohError::Connect(format!("invalid ticket: {e}")))?;
         let addr: EndpointAddr = serde_json::from_slice(&bytes)
             .map_err(|e| IrohError::Connect(format!("invalid ticket: {e}")))?;
+        self.connect(addr).await
+    }
+
+    /// This endpoint's `EndpointId` as a string (for advertising via mDNS/discovery).
+    pub fn endpoint_id_string(&self) -> String {
+        self.endpoint.id().to_string()
+    }
+
+    /// Connects using ONLY the peer's `EndpointId` (string), letting discovery resolve
+    /// the rest. Used by LAN/mDNS auto-discovery: the node learns the hub's id (e.g. from
+    /// an mDNS record) without a pasted ticket, then dials it.
+    pub async fn connect_to_endpoint_id(&self, eid: &str) -> Result<IrohChannel, IrohError> {
+        let id: EndpointId = eid
+            .parse()
+            .map_err(|e| IrohError::Connect(format!("invalid endpoint id: {e:?}")))?;
+        let addr = EndpointAddr::from_parts(id, Vec::<TransportAddr>::new());
         self.connect(addr).await
     }
 
@@ -171,11 +238,7 @@ impl IrohConnector {
             .open_bi()
             .await
             .map_err(|e| IrohError::Stream(e.to_string()))?;
-        Ok(IrohChannel {
-            _conn: conn,
-            send,
-            recv,
-        })
+        Ok(IrohChannel { conn, send, recv })
     }
 
     /// Accepts an incoming connection and opens a message channel. The peer sends
@@ -193,17 +256,13 @@ impl IrohConnector {
             .accept_bi()
             .await
             .map_err(|e| IrohError::Stream(e.to_string()))?;
-        Ok(IrohChannel {
-            _conn: conn,
-            send,
-            recv,
-        })
+        Ok(IrohChannel { conn, send, recv })
     }
 }
 
 /// A bidirectional JSON message channel over a QUIC stream.
 pub struct IrohChannel {
-    _conn: Connection,
+    conn: Connection,
     send: SendStream,
     recv: RecvStream,
 }
@@ -247,13 +306,13 @@ impl IrohChannel {
 
     /// Gracefully closes the connection (lets the peer know we are done).
     pub fn close(&self) {
-        self._conn.close(0u32.into(), b"done");
+        self.conn.close(0u32.into(), b"done");
     }
 
     /// Waits until the peer closes the connection. Use this after sending a final
     /// message and calling [`finish`](Self::finish) so the data is delivered before
     /// the connection is dropped.
     pub async fn wait_closed(&self) {
-        let _ = self._conn.closed().await;
+        let _ = self.conn.closed().await;
     }
 }

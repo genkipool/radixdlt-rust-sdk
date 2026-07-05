@@ -61,3 +61,21 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets
       - run: cargo test
+
+  # radixdlt-connector-mcp is an isolated workspace (depends on the connect/WebRTC tree).
+  connector-mcp:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/connector-mcp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/connector-mcp
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets
+      - run: cargo test

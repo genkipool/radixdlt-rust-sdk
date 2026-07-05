@@ -23,7 +23,7 @@ mod error;
 mod signaling;
 pub mod state;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -55,6 +55,41 @@ pub async fn await_link_client(
                 .and_then(|s| s.as_str())
                 .map(|s| s.to_string());
             return Ok((pk.to_string(), sig));
+        }
+    }
+}
+
+/// Sends a wallet interaction and waits for the response whose `interactionId`
+/// matches it, discarding everything else until `overall_timeout` elapses.
+///
+/// The wallet's dAppRequestQueue can hold stale requests from earlier attempts;
+/// their responses arrive first and would otherwise be mistaken for ours (e.g. a
+/// "response without oneTimeAccounts" on an account-proof request). Requiring an
+/// EXACT id match keeps us waiting for the user's actual approval. Only if our
+/// request somehow had no id (should never happen) is the first message accepted.
+async fn send_and_await_response(
+    channel: &mut Channel,
+    interaction: &Value,
+    overall_timeout: Duration,
+) -> Result<Value, ConnectError> {
+    let want_id = interaction
+        .get("interactionId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    channel
+        .send_message(interaction, Duration::from_secs(15))
+        .await?;
+    let deadline = Instant::now() + overall_timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let resp = channel.recv_message(remaining).await?;
+        let got = resp
+            .get("interactionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if want_id.is_empty() || got == want_id {
+            return Ok(resp);
         }
     }
 }
@@ -118,10 +153,7 @@ impl Connector {
     ) -> Result<Value, ConnectError> {
         let mut channel = self.establish(password, overall_timeout).await?;
         let interaction = account_proof_request(challenge_hex, ctx, request_persona);
-        channel
-            .send_message(&interaction, Duration::from_secs(15))
-            .await?;
-        channel.recv_message(overall_timeout).await
+        send_and_await_response(&mut channel, &interaction, overall_timeout).await
     }
 
     /// Sends a TRANSACTION MANIFEST to the wallet for the owner to sign and submit.
@@ -136,10 +168,7 @@ impl Connector {
     ) -> Result<String, ConnectError> {
         let mut channel = self.establish(password, overall_timeout).await?;
         let interaction = transaction_request(manifest, message, ctx);
-        channel
-            .send_message(&interaction, Duration::from_secs(15))
-            .await?;
-        let response = channel.recv_message(overall_timeout).await?;
+        let response = send_and_await_response(&mut channel, &interaction, overall_timeout).await?;
         Ok(extract_transaction_intent_hash(&response)?)
     }
 
@@ -158,10 +187,7 @@ impl Connector {
         let mut channel = self.establish(password, overall_timeout).await?;
         let interaction =
             pre_authorization_request(subintent_manifest, message, expire_after_seconds, ctx);
-        channel
-            .send_message(&interaction, Duration::from_secs(15))
-            .await?;
-        let response = channel.recv_message(overall_timeout).await?;
+        let response = send_and_await_response(&mut channel, &interaction, overall_timeout).await?;
         Ok(extract_signed_partial_transaction(&response)?)
     }
 
