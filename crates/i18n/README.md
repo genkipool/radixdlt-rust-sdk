@@ -4,7 +4,7 @@ System-locale detection and bilingual (English/Spanish) message helpers for the
 **RadixDLT Rust SDK**. Every SDK crate localizes its user-facing error text to the
 system language using this crate.
 
-*ES — Detección del idioma del sistema y textos bilingües (inglés/español) para el SDK de RadixDLT en Rust.*
+***English** · [Español](README.es.md)*
 
 ```toml
 [dependencies]

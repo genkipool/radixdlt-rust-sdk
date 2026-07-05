@@ -4,7 +4,7 @@ Native **ROLA** (Radix Off-Ledger Authentication) verification in Rust — a dro
 replacement for `@radixdlt/rola`. Verifies that a wallet proof signs the expected
 challenge and that the public key derives to the claimed account.
 
-*ES — Verificación ROLA nativa en Rust (sustituto de `@radixdlt/rola`) para "login con Radix".*
+***English** · [Español](README.es.md)*
 
 ```toml
 [dependencies]

@@ -4,7 +4,7 @@ Radix **Gateway** client plus local transaction building, signing, notarization 
 submission — in native Rust. Read ledger state (epoch, balances, status, affected
 entities) and build/sign/submit transactions with a local key.
 
-*ES — Cliente del Gateway de Radix + construcción/firma/notarización/envío local de transacciones.*
+***English** · [Español](README.es.md)*
 
 ```toml
 [dependencies]

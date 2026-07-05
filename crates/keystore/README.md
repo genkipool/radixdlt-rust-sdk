@@ -4,7 +4,7 @@ Encrypted Ed25519 **keystore** for the Radix ledger (scrypt KDF + AES-256-GCM),
 compatible with the Radix `key.json` format. A pure library: it never prompts, never
 prints and never exits the process.
 
-*ES — Keystore Ed25519 cifrado (scrypt + AES-256-GCM), compatible con el formato `key.json` de Radix.*
+***English** · [Español](README.es.md)*
 
 ```toml
 [dependencies]

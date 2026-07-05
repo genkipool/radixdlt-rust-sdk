@@ -5,7 +5,7 @@ interactions — a drop-in for `@radixdlt/radix-connect-webrtc` + `@roamhq/wrtc`
 with the Radix **mobile wallet**, open a WebRTC channel and exchange wallet
 interactions (ROLA account proofs, transactions, pre-authorizations).
 
-*ES — El protocolo Radix Connect en Rust (señalización + WebRTC) para hablar con la Radix Wallet del móvil.*
+***English** · [Español](README.es.md)*
 
 ```toml
 [dependencies]

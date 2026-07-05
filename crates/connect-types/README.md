@@ -7,7 +7,7 @@ pre-authorizations. Shared by the WebRTC transport
 transport ([`radixdlt-connect-iroh`](https://crates.io/crates/radixdlt-connect-iroh))
 so both speak exactly the same JSON.
 
-*ES — Esquema de mensajes de Radix Connect independiente del transporte (peticiones, respuestas y parseadores).*
+***English** · [Español](README.es.md)*
 
 ```toml
 [dependencies]

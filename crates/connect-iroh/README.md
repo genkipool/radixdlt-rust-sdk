@@ -3,7 +3,7 @@
 An [iroh](https://iroh.computer) (QUIC) peer-to-peer transport for the RadixDLT Rust
 SDK — an alternative to WebRTC for **pure-Rust SDK-to-SDK** connections.
 
-*ES — Transporte P2P sobre iroh (QUIC), alternativa a WebRTC para peers puro-Rust.*
+***English** · [Español](README.es.md)*
 
 > This does **not** talk to the Radix mobile wallet (which only speaks Radix Connect
 > over WebRTC; use [`radixdlt-connect`](https://crates.io/crates/radixdlt-connect)

@@ -5,9 +5,7 @@ Code/Desktop, Antigravity, Cursor, …) pair a Radix Wallet and get transactions
 **signed on the user's own machine** — the wallet on the phone approves, and the
 private key never leaves it.
 
-*ES — Servidor MCP local que permite a los agentes de IA emparejar una Radix
-Wallet y firmar transacciones en la máquina del usuario; el móvil aprueba y la
-clave privada nunca sale del teléfono.*
+***English** · [Español](README.es.md)*
 
 ## Why a local binary (and not the web MCP)
 

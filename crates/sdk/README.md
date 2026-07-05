@@ -3,7 +3,7 @@
 Umbrella crate for the **RadixDLT Rust SDK**. Re-exports the individual crates behind
 feature flags so you can depend on one crate and opt into exactly what you need.
 
-*ES — Crate paraguas del SDK de RadixDLT en Rust: ROLA, direcciones, keystore y transacciones del Gateway, con features.*
+***English** · [Español](README.es.md)*
 
 ```toml
 # Verify ROLA proofs (default):

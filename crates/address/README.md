@@ -3,7 +3,7 @@
 Native derivation of a Radix **virtual-account address** from an Ed25519 public key,
 using `radix-common` — no Node, no RET-via-JS.
 
-*ES — Derivación nativa de la dirección de cuenta virtual de Radix a partir de una clave pública Ed25519.*
+***English** · [Español](README.es.md)*
 
 ```toml
 [dependencies]
