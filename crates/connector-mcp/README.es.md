@@ -67,7 +67,9 @@ Si el binario no está en tu `PATH`, usa su ruta absoluta como `command`.
 | `pair_wallet` | Devuelve un QR (arte de terminal + PNG + payload crudo) para enlazar una wallet. Una vez por dispositivo. |
 | `pair_status` | Espera el escaneo/aprobación y guarda el enlace. |
 | `list_wallets` / `remove_wallet` | Gestiona los dispositivos emparejados. |
-| `send_transaction` | Envía un manifiesto para firmar **y enviar**; devuelve el intent hash. |
+| `request_accounts` | Pide a la wallet que **comparta su(s) dirección(es) de cuenta** — sin firma/prueba. Útil para saber qué cuenta fondear o desde cuál transferir. |
+| `send_transaction` | Envía un manifiesto para firmar **y enviar**; devuelve el intent hash. Admite `blobs` (hex en línea) y `blob_files` (rutas locales). |
+| `deploy_package` | Publica un paquete Scrypto: lee el `.wasm` de una ruta local, **hace dry-run en el Gateway primero** (aborta si fallaría), lo adjunta como blob, firma y envía. |
 | `request_pre_authorization` | Firma un subintent (pre-autorización V2) sin enviarlo. |
 | `request_account_proof` | "Iniciar sesión con Radix" (ROLA); verifica la prueba localmente. |
 | `transaction_status` | Lee el estado de commit de una transacción desde el Gateway. |

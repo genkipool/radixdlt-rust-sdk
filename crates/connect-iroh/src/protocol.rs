@@ -77,7 +77,7 @@ pub async fn request_transaction(
     ctx: &DappContext,
 ) -> Result<String, IrohError> {
     channel
-        .send_message(&transaction_request(manifest, "", ctx))
+        .send_message(&transaction_request(manifest, "", &[], ctx))
         .await?;
     let response = channel.recv_message().await?;
     Ok(extract_transaction_intent_hash(&response)?)

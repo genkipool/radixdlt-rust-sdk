@@ -13,7 +13,10 @@ use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use radixdlt_connect::state::{Link, LinkState};
-use radixdlt_connect::{extract_persona_name, extract_proofs, Connector, DappContext};
+use radixdlt_connect::crypto::blake2b_256;
+use radixdlt_connect::{
+    extract_accounts, extract_persona_name, extract_proofs, Connector, DappContext,
+};
 use radixdlt_rola::{verify_account_proof, AccountProof};
 
 use crate::gateway;
@@ -180,10 +183,32 @@ pub fn list_json() -> Vec<Value> {
                     "message": { "type": "string", "description": "Optional transaction message shown to the user in the wallet." },
                     "dapp_definition": { "type": "string", "description": "dApp definition address shown to the wallet (optional; falls back to the RADIX_DAPP_DEFINITION_MAINNET/STOKENET env var; if none, the request shows as unverified)." },
                     "origin": { "type": "string", "description": "Origin URL shown to the wallet (default: RADIX_DAPP_ORIGIN env var, else https://radix-community.genkipool.com)." },
+                    "blobs": { "type": "array", "items": { "type": "string" }, "description": "Hex-encoded blobs referenced by the manifest via Blob(\"<hash>\") (optional)." },
+                    "blob_files": { "type": "array", "items": { "type": "string" }, "description": "Paths to binary files read locally and attached as blobs — use for large payloads like package WASM (optional)." },
                     "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the first paired wallet)." },
                     "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." }
                 },
                 "required": ["manifest", "network"]
+            }),
+        ),
+        tool(
+            "deploy_package",
+            "Deploy a Scrypto package",
+            "Publishes a Scrypto package to the network. Reads the compiled .wasm from a LOCAL file path (it never travels through the agent), attaches it as a blob, and signs+submits via the paired wallet. Get `package_definition` by decoding the .rpd with the radix-community HTTP MCP server's build_deploy_package_manifest tool first.",
+            false,
+            json!({
+                "type": "object",
+                "properties": {
+                    "wasm_path": { "type": "string", "description": "Local filesystem path to the compiled package .wasm." },
+                    "package_definition": { "type": "string", "description": "Package definition in manifest (SBOR) syntax — the decoded .rpd, from build_deploy_package_manifest." },
+                    "network": { "type": "string", "enum": ["mainnet", "stokenet"], "description": NETWORK_PROP },
+                    "owner_role": { "type": "string", "description": "OwnerRole in manifest syntax (default \"None\" — no owner). Supply a richer value for badge-controlled packages." },
+                    "dapp_definition": { "type": "string", "description": "dApp definition address (optional; falls back to the RADIX_DAPP_DEFINITION_MAINNET/STOKENET env var)." },
+                    "origin": { "type": "string", "description": "Origin URL (default: RADIX_DAPP_ORIGIN env var, else https://radix-community.genkipool.com)." },
+                    "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the first paired wallet)." },
+                    "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." }
+                },
+                "required": ["wasm_path", "package_definition", "network"]
             }),
         ),
         tool(
@@ -204,6 +229,23 @@ pub fn list_json() -> Vec<Value> {
                     "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." }
                 },
                 "required": ["subintent_manifest", "expire_after_seconds", "network"]
+            }),
+        ),
+        tool(
+            "request_accounts",
+            "Get the user's account address(es)",
+            "Asks the wallet to SHARE its account address(es) WITHOUT a signature (lightweight, no ROLA proof). Use it to learn which account to fund, transfer from, or set as fee payer before building a manifest. The user approves the share on their phone.",
+            false,
+            json!({
+                "type": "object",
+                "properties": {
+                    "network": { "type": "string", "enum": ["mainnet", "stokenet"], "description": NETWORK_PROP },
+                    "dapp_definition": { "type": "string", "description": "dApp definition address shown to the wallet (optional; falls back to the RADIX_DAPP_DEFINITION_MAINNET/STOKENET env var)." },
+                    "origin": { "type": "string", "description": "Origin URL shown to the wallet (default: RADIX_DAPP_ORIGIN env var, else https://radix-community.genkipool.com)." },
+                    "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the first paired wallet)." },
+                    "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." }
+                },
+                "required": ["network"]
             }),
         ),
         tool(
@@ -265,7 +307,9 @@ pub async fn call(app: &Rc<App>, name: &str, args: Value) -> Value {
         "pair_status" => pair_status(app, &args).await,
         "list_wallets" => list_wallets(app),
         "remove_wallet" => remove_wallet(app, &args),
+        "request_accounts" => request_accounts(app, &args).await,
         "send_transaction" => send_transaction(app, &args).await,
+        "deploy_package" => deploy_package(app, &args).await,
         "request_pre_authorization" => request_pre_authorization(app, &args).await,
         "request_account_proof" => request_account_proof(app, &args).await,
         "transaction_status" => transaction_status(&args).await,
@@ -458,16 +502,59 @@ fn remove_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
     ToolResult::text(format!("Removed the paired wallet {pk}."))
 }
 
-async fn send_transaction(app: &Rc<App>, args: &Value) -> ToolResult {
-    let manifest = match req_str(args, "manifest") {
-        Ok(v) => v,
-        Err(e) => return ToolResult::error(e),
-    };
+async fn request_accounts(app: &Rc<App>, args: &Value) -> ToolResult {
     let network = match req_network(args) {
         Ok(n) => n,
         Err(e) => return ToolResult::error(e),
     };
-    let message = opt_str(args, "message").unwrap_or_default();
+    let ctx = match dapp_context(args, network) {
+        Ok(ctx) => ctx,
+        Err(e) => return ToolResult::error(e),
+    };
+    let password = match load_password(app, args) {
+        Ok(p) => p,
+        Err(e) => return ToolResult::error(e),
+    };
+    let timeout = signing_timeout(args);
+
+    let connector = Connector::new();
+    let response = match connector.request_accounts(&password, &ctx, timeout).await {
+        Ok(v) => v,
+        Err(e) => return ToolResult::error(format!("account request failed: {e}")),
+    };
+    let accounts = match extract_accounts(&response) {
+        Ok(a) => a,
+        Err(e) => return ToolResult::error(format!("wallet returned no accounts: {e}")),
+    };
+    if accounts.is_empty() {
+        return ToolResult::error("the wallet shared no accounts.".to_string());
+    }
+
+    let mut out = format!(
+        "ACCOUNTS SHARED ✓ (network: {net})\n",
+        net = network.label()
+    );
+    for (i, (address, label)) in accounts.iter().enumerate() {
+        out.push_str(&format!(
+            "{n}. {address}  [{label}]\n",
+            n = i + 1,
+            label = label.as_deref().unwrap_or("no label"),
+        ));
+    }
+    ToolResult::text(out)
+}
+
+/// Signs + submits a manifest (with optional blobs) via the paired wallet.
+/// Shared by `send_transaction` and `deploy_package`. Reads dApp context,
+/// password and timeout from `args`.
+async fn submit_transaction(
+    app: &Rc<App>,
+    args: &Value,
+    network: Network,
+    manifest: &str,
+    message: &str,
+    blobs: &[String],
+) -> ToolResult {
     let ctx = match dapp_context(args, network) {
         Ok(ctx) => ctx,
         Err(e) => return ToolResult::error(e),
@@ -480,7 +567,7 @@ async fn send_transaction(app: &Rc<App>, args: &Value) -> ToolResult {
 
     let connector = Connector::new();
     match connector
-        .request_transaction(&password, &manifest, &message, &ctx, timeout)
+        .request_transaction(&password, manifest, message, blobs, &ctx, timeout)
         .await
     {
         Ok(txid) => ToolResult::text(format!(
@@ -493,6 +580,106 @@ async fn send_transaction(app: &Rc<App>, args: &Value) -> ToolResult {
         )),
         Err(e) => ToolResult::error(format!("transaction not signed: {e}")),
     }
+}
+
+async fn send_transaction(app: &Rc<App>, args: &Value) -> ToolResult {
+    let manifest = match req_str(args, "manifest") {
+        Ok(v) => v,
+        Err(e) => return ToolResult::error(e),
+    };
+    let network = match req_network(args) {
+        Ok(n) => n,
+        Err(e) => return ToolResult::error(e),
+    };
+    let message = opt_str(args, "message").unwrap_or_default();
+    let blobs = match resolve_blobs(args) {
+        Ok(b) => b,
+        Err(e) => return ToolResult::error(e),
+    };
+    submit_transaction(app, args, network, &manifest, &message, &blobs).await
+}
+
+async fn deploy_package(app: &Rc<App>, args: &Value) -> ToolResult {
+    let wasm_path = match req_str(args, "wasm_path") {
+        Ok(v) => v,
+        Err(e) => return ToolResult::error(e),
+    };
+    let package_definition = match req_str(args, "package_definition") {
+        Ok(v) => v,
+        Err(e) => return ToolResult::error(e),
+    };
+    let network = match req_network(args) {
+        Ok(n) => n,
+        Err(e) => return ToolResult::error(e),
+    };
+    // OwnerRole in manifest syntax; default "None" (no owner). The HTTP MCP can
+    // supply a richer value (e.g. a badge rule) for advanced setups.
+    let owner_role = opt_str(args, "owner_role").unwrap_or_else(|| "None".to_string());
+
+    let wasm = match std::fs::read(&wasm_path) {
+        Ok(bytes) => bytes,
+        Err(e) => return ToolResult::error(format!("could not read wasm file '{wasm_path}': {e}")),
+    };
+    if wasm.is_empty() {
+        return ToolResult::error(format!("wasm file '{wasm_path}' is empty"));
+    }
+    let wasm_hex = hex::encode(&wasm);
+    let blob_hash = hex::encode(blake2b_256(&wasm));
+
+    let manifest = format!(
+        "PUBLISH_PACKAGE_ADVANCED\n    \
+         {owner_role}\n    \
+         {package_definition}\n    \
+         Blob(\"{blob_hash}\")\n    \
+         Map<String, Tuple>()\n    \
+         None\n;\n"
+    );
+
+    // Dry-run on the Gateway (with the WASM blob) before asking the user to
+    // approve — a package deploy is costly, so never sign one that would fail.
+    // Only a definitive simulated failure blocks; a preview infra error does not.
+    if let Ok(outcome) = gateway::preview(network, &manifest, std::slice::from_ref(&wasm_hex)).await {
+        if !outcome.success {
+            return ToolResult::error(format!(
+                "Deploy preview FAILED — not signing (a deploy costs the fee even when it fails):\n{}",
+                outcome.message.unwrap_or_else(|| "the simulation did not succeed".to_string()),
+            ));
+        }
+    }
+
+    submit_transaction(app, args, network, &manifest, "", &[wasm_hex]).await
+}
+
+/// Collects transaction blobs from `blobs` (inline hex strings) and `blob_files`
+/// (paths to binary files the connector reads and hex-encodes locally — for
+/// large payloads such as package WASM that must never travel through the agent).
+fn resolve_blobs(args: &Value) -> Result<Vec<String>, String> {
+    let mut blobs = Vec::new();
+    if let Some(arr) = args.get("blobs").and_then(Value::as_array) {
+        for entry in arr {
+            let hex_str = entry
+                .as_str()
+                .ok_or("each entry in 'blobs' must be a hex string")?;
+            if hex_str.is_empty() {
+                continue;
+            }
+            if hex_str.len() % 2 != 0 || !hex_str.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("each entry in 'blobs' must be hex-encoded".to_string());
+            }
+            blobs.push(hex_str.to_string());
+        }
+    }
+    if let Some(arr) = args.get("blob_files").and_then(Value::as_array) {
+        for entry in arr {
+            let path = entry
+                .as_str()
+                .ok_or("each entry in 'blob_files' must be a file path")?;
+            let bytes =
+                std::fs::read(path).map_err(|e| format!("could not read blob file '{path}': {e}"))?;
+            blobs.push(hex::encode(bytes));
+        }
+    }
+    Ok(blobs)
 }
 
 async fn request_pre_authorization(app: &Rc<App>, args: &Value) -> ToolResult {
@@ -776,6 +963,37 @@ mod tests {
         let args = json!({ "dapp_definition": "account_rdx_arg", "origin": "https://arg.example" });
         assert_eq!(resolve_dapp_definition(&args, Network::Mainnet), "account_rdx_arg");
         assert_eq!(resolve_origin(&args), "https://arg.example");
+    }
+
+    #[test]
+    fn blake2b_256_matches_standard_vector() {
+        // The package-deploy blob hash must equal the standard BLAKE2b-256 the
+        // wallet/gateway recompute, and the TS side (blakejs). "abc" is a fixed
+        // cross-checked vector (b2sum -l 256).
+        assert_eq!(
+            hex::encode(blake2b_256(b"abc")),
+            "bddd813c634239723171ef3fee98579b94964e3bb1cb3e427262c8c068d52319"
+        );
+    }
+
+    #[test]
+    fn resolve_blobs_reads_inline_hex_and_files() {
+        // Inline hex is validated and passed through; odd-length/non-hex is rejected.
+        let inline = json!({ "blobs": ["deadbeef", ""] });
+        assert_eq!(resolve_blobs(&inline).unwrap(), vec!["deadbeef".to_string()]);
+        assert!(resolve_blobs(&json!({ "blobs": ["xyz"] })).is_err());
+        assert!(resolve_blobs(&json!({ "blobs": ["abc"] })).is_err());
+
+        // blob_files are read from disk and hex-encoded.
+        let mut path = std::env::temp_dir();
+        path.push(format!("connector_mcp_blob_{}.bin", std::process::id()));
+        std::fs::write(&path, [0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
+        let files = json!({ "blob_files": [path.to_str().unwrap()] });
+        assert_eq!(resolve_blobs(&files).unwrap(), vec!["deadbeef".to_string()]);
+        std::fs::remove_file(&path).ok();
+
+        // No blob keys → empty.
+        assert!(resolve_blobs(&json!({})).unwrap().is_empty());
     }
 
     #[test]

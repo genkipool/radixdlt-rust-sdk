@@ -30,7 +30,7 @@ use serde_json::{json, Value};
 pub use connector::{radix_default_ice_servers, Channel, IceServer};
 pub use error::ConnectError;
 pub use radixdlt_connect_types::{
-    account_proof_request, extract_persona_name, extract_proofs,
+    account_proof_request, account_request, extract_accounts, extract_persona_name, extract_proofs,
     extract_signed_partial_transaction, extract_transaction_intent_hash, pre_authorization_request,
     transaction_request, DappContext, WalletInteractionError,
 };
@@ -156,6 +156,20 @@ impl Connector {
         send_and_await_response(&mut channel, &interaction, overall_timeout).await
     }
 
+    /// Asks the wallet to SHARE its account(s) without a ROLA proof (the
+    /// lightweight account-discovery flow). Returns the raw response; read the
+    /// addresses with [`extract_accounts`].
+    pub async fn request_accounts(
+        &self,
+        password: &[u8],
+        ctx: &DappContext,
+        overall_timeout: Duration,
+    ) -> Result<Value, ConnectError> {
+        let mut channel = self.establish(password, overall_timeout).await?;
+        let interaction = account_request(ctx);
+        send_and_await_response(&mut channel, &interaction, overall_timeout).await
+    }
+
     /// Sends a TRANSACTION MANIFEST to the wallet for the owner to sign and submit.
     /// Returns the `transactionIntentHash` on success.
     pub async fn request_transaction(
@@ -163,11 +177,12 @@ impl Connector {
         password: &[u8],
         manifest: &str,
         message: &str,
+        blobs: &[String],
         ctx: &DappContext,
         overall_timeout: Duration,
     ) -> Result<String, ConnectError> {
         let mut channel = self.establish(password, overall_timeout).await?;
-        let interaction = transaction_request(manifest, message, ctx);
+        let interaction = transaction_request(manifest, message, blobs, ctx);
         let response = send_and_await_response(&mut channel, &interaction, overall_timeout).await?;
         Ok(extract_transaction_intent_hash(&response)?)
     }

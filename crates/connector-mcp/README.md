@@ -67,7 +67,9 @@ If the binary is not on your `PATH`, use its absolute path as `command`.
 | `pair_wallet` | Returns a QR (terminal art + PNG + raw payload) to link a wallet. Once per device. |
 | `pair_status` | Waits for the scan/approval and saves the link. |
 | `list_wallets` / `remove_wallet` | Manage paired devices. |
-| `send_transaction` | Sends a manifest to sign **and submit**; returns the intent hash. |
+| `request_accounts` | Asks the wallet to **share its account address(es)** — no signature/proof. Use it to learn which account to fund or transfer from. |
+| `send_transaction` | Sends a manifest to sign **and submit**; returns the intent hash. Supports `blobs` (inline hex) and `blob_files` (local paths). |
+| `deploy_package` | Publishes a Scrypto package: reads the `.wasm` from a local path, **dry-runs it on the Gateway first** (aborts if it would fail), attaches it as a blob, signs and submits. |
 | `request_pre_authorization` | Signs a subintent (V2 pre-authorization) without submitting. |
 | `request_account_proof` | ROLA "log in with Radix"; verifies the proof locally. |
 | `transaction_status` | Reads a transaction's commit status from the Gateway. |

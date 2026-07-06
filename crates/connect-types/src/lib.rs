@@ -111,14 +111,39 @@ pub fn account_proof_request(
     json!({ "interactionId": Uuid::new_v4().to_string(), "metadata": metadata(ctx), "items": items })
 }
 
+/// Builds an account request (`oneTimeAccounts` WITHOUT a ROLA challenge) — the
+/// lightweight "share your account(s)" flow. No signature, so no dApp proof:
+/// use it just to learn the user's account address(es).
+pub fn account_request(ctx: &DappContext) -> Value {
+    json!({
+        "interactionId": Uuid::new_v4().to_string(),
+        "metadata": metadata(ctx),
+        "items": {
+            "discriminator": "unauthorizedRequest",
+            "oneTimeAccounts": {
+                "numberOfAccounts": { "quantifier": "atLeast", "quantity": 1 }
+            }
+        }
+    })
+}
+
 /// Builds a transaction request (a manifest for the wallet to sign and submit).
-pub fn transaction_request(manifest: &str, message: &str, ctx: &DappContext) -> Value {
+///
+/// `blobs` are hex-encoded byte blobs referenced by the manifest via
+/// `Blob("<blake2b-256 hash>")` — e.g. the WASM of a package being published.
+/// Pass an empty slice for ordinary manifests that reference no blobs.
+pub fn transaction_request(
+    manifest: &str,
+    message: &str,
+    blobs: &[String],
+    ctx: &DappContext,
+) -> Value {
     json!({
         "interactionId": Uuid::new_v4().to_string(),
         "metadata": metadata(ctx),
         "items": {
             "discriminator": "transaction",
-            "send": { "version": 1, "transactionManifest": manifest, "blobs": [], "message": message }
+            "send": { "version": 1, "transactionManifest": manifest, "blobs": blobs, "message": message }
         }
     })
 }
@@ -183,6 +208,36 @@ pub fn extract_proofs(response: &Value) -> Result<Vec<(String, Value)>, WalletIn
             p.get("proof"),
         ) {
             out.push((addr.to_string(), proof.clone()));
+        }
+    }
+    Ok(out)
+}
+
+/// Extracts the shared account addresses (and optional labels) from a response
+/// to [`account_request`] — the `oneTimeAccounts.accounts` array, no proofs.
+pub fn extract_accounts(
+    response: &Value,
+) -> Result<Vec<(String, Option<String>)>, WalletInteractionError> {
+    check_failure(response)?;
+    let ota = response
+        .get("items")
+        .and_then(|i| i.get("oneTimeAccounts"))
+        .ok_or_else(|| {
+            WalletInteractionError::Protocol("response without oneTimeAccounts".into())
+        })?;
+    let accounts = ota
+        .get("accounts")
+        .and_then(|a| a.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for account in accounts {
+        if let Some(addr) = account.get("address").and_then(|v| v.as_str()) {
+            let label = account
+                .get("label")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            out.push((addr.to_string(), label));
         }
     }
     Ok(out)
@@ -438,8 +493,31 @@ mod tests {
     }
 
     #[test]
+    fn account_request_has_no_challenge_and_accounts_extract() {
+        // The lightweight account request must NOT carry a ROLA challenge.
+        let req = account_request(&ctx());
+        assert!(req["items"]["oneTimeAccounts"].get("challenge").is_none());
+
+        // Addresses (and optional labels) are read back from the wallet response.
+        let resp = json!({
+            "items": { "oneTimeAccounts": { "accounts": [
+                { "address": "account_tdx_2_x", "label": "Main" },
+                { "address": "account_tdx_2_y" }
+            ] } }
+        });
+        let accounts = extract_accounts(&resp).unwrap();
+        assert_eq!(
+            accounts,
+            vec![
+                ("account_tdx_2_x".to_string(), Some("Main".to_string())),
+                ("account_tdx_2_y".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
     fn transaction_round_trips() {
-        let req = transaction_request("MANIFEST", "hi", &ctx());
+        let req = transaction_request("MANIFEST", "hi", &[], &ctx());
         let parsed = parse_transaction_request(&req).unwrap();
         assert_eq!(parsed.manifest, "MANIFEST");
         let resp = transaction_response(&parsed.interaction_id, "txid_tdx_2_abc");
