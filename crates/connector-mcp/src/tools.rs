@@ -20,8 +20,11 @@ use crate::gateway;
 use crate::rpc::{App, PairOutcome, Pending};
 use crate::store::{now_unix_seconds, Store};
 
-/// Default origin advertised to the wallet when the caller does not set one.
-const DEFAULT_ORIGIN: &str = "https://radix.community";
+/// Origin advertised to the wallet when neither the call nor the
+/// `RADIX_DAPP_ORIGIN` env var set one. Must match the `claimed_websites`
+/// metadata of the dApp definition on-chain, or the wallet shows the request
+/// as unverified (and ROLA verification fails).
+const DEFAULT_ORIGIN: &str = "https://radix-community.genkipool.com";
 /// Default and maximum wallet-approval timeouts (seconds).
 const DEFAULT_SIGN_TIMEOUT: u64 = 300;
 const MAX_TIMEOUT: u64 = 900;
@@ -175,8 +178,8 @@ pub fn list_json() -> Vec<Value> {
                     "manifest": { "type": "string", "description": "The transaction manifest (RTM text) to sign and submit." },
                     "network": { "type": "string", "enum": ["mainnet", "stokenet"], "description": NETWORK_PROP },
                     "message": { "type": "string", "description": "Optional transaction message shown to the user in the wallet." },
-                    "dapp_definition": { "type": "string", "description": "dApp definition address shown to the wallet (optional; unset shows as unverified)." },
-                    "origin": { "type": "string", "description": "Origin URL shown to the wallet (default https://radix.community)." },
+                    "dapp_definition": { "type": "string", "description": "dApp definition address shown to the wallet (optional; falls back to the RADIX_DAPP_DEFINITION_MAINNET/STOKENET env var; if none, the request shows as unverified)." },
+                    "origin": { "type": "string", "description": "Origin URL shown to the wallet (default: RADIX_DAPP_ORIGIN env var, else https://radix-community.genkipool.com)." },
                     "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the first paired wallet)." },
                     "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." }
                 },
@@ -195,8 +198,8 @@ pub fn list_json() -> Vec<Value> {
                     "expire_after_seconds": { "type": "integer", "description": "How long the pre-authorization stays valid, in seconds." },
                     "network": { "type": "string", "enum": ["mainnet", "stokenet"], "description": NETWORK_PROP },
                     "message": { "type": "string", "description": "Optional message shown to the user in the wallet." },
-                    "dapp_definition": { "type": "string", "description": "dApp definition address shown to the wallet (optional)." },
-                    "origin": { "type": "string", "description": "Origin URL shown to the wallet (default https://radix.community)." },
+                    "dapp_definition": { "type": "string", "description": "dApp definition address shown to the wallet (optional; falls back to the RADIX_DAPP_DEFINITION_MAINNET/STOKENET env var)." },
+                    "origin": { "type": "string", "description": "Origin URL shown to the wallet (default: RADIX_DAPP_ORIGIN env var, else https://radix-community.genkipool.com)." },
                     "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the first paired wallet)." },
                     "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." }
                 },
@@ -206,20 +209,20 @@ pub fn list_json() -> Vec<Value> {
         tool(
             "request_account_proof",
             "Request a ROLA account proof (log in with Radix)",
-            "Asks the wallet to sign a ROLA challenge (\"log in with Radix\"). Returns the account address and whether the proof verified locally. `dapp_definition` and `origin` MUST match the values the verifier expects, because they are part of the signed message.",
+            "Asks the wallet to sign a ROLA challenge (\"log in with Radix\"). Returns the account address and whether the proof verified locally. `dapp_definition` and `origin` MUST match the values the verifier expects, because they are part of the signed message; pass them, or configure the RADIX_DAPP_DEFINITION_MAINNET/STOKENET and RADIX_DAPP_ORIGIN env vars.",
             false,
             json!({
                 "type": "object",
                 "properties": {
                     "challenge": { "type": "string", "description": "ROLA challenge as hex (32 bytes)." },
                     "network": { "type": "string", "enum": ["mainnet", "stokenet"], "description": NETWORK_PROP },
-                    "dapp_definition": { "type": "string", "description": "dApp definition address (part of the signed ROLA message)." },
-                    "origin": { "type": "string", "description": "Origin URL (part of the signed ROLA message)." },
+                    "dapp_definition": { "type": "string", "description": "dApp definition address (part of the signed ROLA message; falls back to the RADIX_DAPP_DEFINITION_MAINNET/STOKENET env var, and is required — cannot be empty)." },
+                    "origin": { "type": "string", "description": "Origin URL (part of the signed ROLA message; falls back to RADIX_DAPP_ORIGIN env var, else https://radix-community.genkipool.com)." },
                     "request_persona": { "type": "boolean", "description": "Also ask for the persona name (default false)." },
                     "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the first paired wallet)." },
                     "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." }
                 },
-                "required": ["challenge", "network", "dapp_definition", "origin"]
+                "required": ["challenge", "network"]
             }),
         ),
         tool(
@@ -541,14 +544,16 @@ async fn request_account_proof(app: &Rc<App>, args: &Value) -> ToolResult {
         Ok(n) => n,
         Err(e) => return ToolResult::error(e),
     };
-    let dapp_definition = match req_str(args, "dapp_definition") {
-        Ok(v) => v,
-        Err(e) => return ToolResult::error(e),
-    };
-    let origin = match req_str(args, "origin") {
-        Ok(v) => v,
-        Err(e) => return ToolResult::error(e),
-    };
+    let dapp_definition = resolve_dapp_definition(args, network);
+    if dapp_definition.is_empty() {
+        return ToolResult::error(
+            "missing 'dapp_definition' — pass it, or set the \
+             RADIX_DAPP_DEFINITION_MAINNET / RADIX_DAPP_DEFINITION_STOKENET env var. \
+             It is part of the signed ROLA message, so it cannot be empty."
+                .to_string(),
+        );
+    }
+    let origin = resolve_origin(args);
     let request_persona = opt_bool(args, "request_persona").unwrap_or(false);
     let password = match load_password(app, args) {
         Ok(p) => p,
@@ -663,9 +668,40 @@ fn password_for(state: &LinkState, wallet_public_key: Option<&str>) -> Result<Ve
     }
 }
 
+/// Env var holding the default dApp definition for a network, so the operator
+/// can configure the connector's identity once instead of relying on the agent
+/// to pass `dapp_definition` on every call.
+fn dapp_definition_env(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => "RADIX_DAPP_DEFINITION_MAINNET",
+        Network::Stokenet => "RADIX_DAPP_DEFINITION_STOKENET",
+    }
+}
+
+/// Resolves the dApp definition with precedence: call arg → per-network env var
+/// → empty (which makes the wallet show the request as unverified).
+fn resolve_dapp_definition(args: &Value, network: Network) -> String {
+    opt_str(args, "dapp_definition")
+        .or_else(|| env_var(dapp_definition_env(network)))
+        .unwrap_or_default()
+}
+
+/// Resolves the origin with precedence: call arg → `RADIX_DAPP_ORIGIN` env var
+/// → the built-in default.
+fn resolve_origin(args: &Value) -> String {
+    opt_str(args, "origin")
+        .or_else(|| env_var("RADIX_DAPP_ORIGIN"))
+        .unwrap_or_else(|| DEFAULT_ORIGIN.to_string())
+}
+
+/// Reads an env var, treating unset and empty as "not provided".
+fn env_var(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|s| !s.is_empty())
+}
+
 fn dapp_context(args: &Value, network: Network) -> Result<DappContext, String> {
-    let dapp_definition = opt_str(args, "dapp_definition").unwrap_or_default();
-    let origin = opt_str(args, "origin").unwrap_or_else(|| DEFAULT_ORIGIN.to_string());
+    let dapp_definition = resolve_dapp_definition(args, network);
+    let origin = resolve_origin(args);
     Ok(DappContext::new(network.id(), dapp_definition, origin))
 }
 
@@ -726,5 +762,28 @@ mod tests {
         assert_eq!(clamp_timeout(0), 1);
         assert_eq!(clamp_timeout(10_000), MAX_TIMEOUT);
         assert_eq!(clamp_timeout(300), 300);
+    }
+
+    #[test]
+    fn dapp_definition_env_is_per_network() {
+        assert_eq!(dapp_definition_env(Network::Mainnet), "RADIX_DAPP_DEFINITION_MAINNET");
+        assert_eq!(dapp_definition_env(Network::Stokenet), "RADIX_DAPP_DEFINITION_STOKENET");
+    }
+
+    #[test]
+    fn call_arg_takes_precedence_over_env_and_default() {
+        // An explicit arg is always honoured regardless of env/default.
+        let args = json!({ "dapp_definition": "account_rdx_arg", "origin": "https://arg.example" });
+        assert_eq!(resolve_dapp_definition(&args, Network::Mainnet), "account_rdx_arg");
+        assert_eq!(resolve_origin(&args), "https://arg.example");
+    }
+
+    #[test]
+    fn origin_falls_back_to_default_when_unset() {
+        // With no arg and (in the test env) no RADIX_DAPP_ORIGIN, origin is the default
+        // and the dApp definition is empty.
+        let args = json!({});
+        assert_eq!(resolve_origin(&args), DEFAULT_ORIGIN);
+        assert!(resolve_dapp_definition(&args, Network::Stokenet).is_empty());
     }
 }

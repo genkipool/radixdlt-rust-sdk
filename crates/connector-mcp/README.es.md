@@ -75,6 +75,43 @@ Si el binario no está en tu `PATH`, usa su ruta absoluta como `command`.
 Cada herramienta de firma requiere una `network` explícita (`"mainnet"` o
 `"stokenet"`) — no hay valor por defecto, a propósito.
 
+## Identidad de la dApp (variables de entorno)
+
+Cuando la wallet firma, muestra **qué dApp** lo está pidiendo. Esa identidad es un
+par de valores — la dirección de la dApp definition y el origin — que deben
+coincidir con el `claimed_websites` / la dApp definition registrada on-chain, o la
+wallet marca la petición como *no verificada* (y la verificación ROLA falla por
+completo).
+
+Puedes pasarlos por llamada (`dapp_definition`, `origin` en las herramientas de
+firma), pero es más robusto configurarlos **una vez** para que el conector los
+rellene cuando una llamada los omita. La precedencia es **argumento de la llamada
+→ variable de entorno → valor por defecto integrado**.
+
+| Variable | La usan | Valor por defecto |
+|---|---|---|
+| `RADIX_DAPP_DEFINITION_MAINNET` | firma / ROLA en mainnet | *(vacío → no verificada)* |
+| `RADIX_DAPP_DEFINITION_STOKENET` | firma / ROLA en stokenet | *(vacío → no verificada)* |
+| `RADIX_DAPP_ORIGIN` | toda firma / ROLA | `https://radix-community.genkipool.com` |
+
+Notas:
+
+- La dApp definition es **por red** (mainnet y stokenet son cuentas distintas), de
+  ahí las dos variables separadas.
+- `request_account_proof` (ROLA) **exige** una dApp definition no vacía: si ni la
+  llamada ni la variable de entorno la aportan, la herramienta devuelve un error
+  en vez de firmar una prueba sin sentido.
+- Deja estas variables sin definir solo si quieres que las peticiones aparezcan
+  como una dApp no verificada.
+
+Ejemplo (`claude mcp add` con env, o la configuración JSON de tu cliente):
+
+```sh
+RADIX_DAPP_DEFINITION_MAINNET=account_rdx1... \
+RADIX_DAPP_ORIGIN=https://radix-community.genkipool.com \
+  radix-connector-mcp
+```
+
 ## Flujo típico
 
 1. Construye y previsualiza un manifiesto con el servidor MCP HTTP del portal web

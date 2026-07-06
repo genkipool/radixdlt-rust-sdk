@@ -75,6 +75,42 @@ If the binary is not on your `PATH`, use its absolute path as `command`.
 Every signing tool requires an explicit `network` (`"mainnet"` or `"stokenet"`)
 — there is no default, on purpose.
 
+## dApp identity (environment variables)
+
+When the wallet signs, it shows **which dApp** is asking. That identity is a pair
+of values — the dApp definition address and the origin — that must match the
+`claimed_websites` / dApp definition registered on-chain, or the wallet marks the
+request as *unverified* (and ROLA verification fails outright).
+
+You can pass them per call (`dapp_definition`, `origin` on the signing tools), but
+it is more robust to configure them **once** so the connector fills them in when a
+call omits them. Precedence is **call argument → environment variable → built-in
+default**.
+
+| Variable | Used by | Default |
+|---|---|---|
+| `RADIX_DAPP_DEFINITION_MAINNET` | mainnet signing / ROLA | *(empty → unverified)* |
+| `RADIX_DAPP_DEFINITION_STOKENET` | stokenet signing / ROLA | *(empty → unverified)* |
+| `RADIX_DAPP_ORIGIN` | all signing / ROLA | `https://radix-community.genkipool.com` |
+
+Notes:
+
+- The dApp definition is **per network** (mainnet and stokenet are different
+  accounts), hence the two separate variables.
+- `request_account_proof` (ROLA) **requires** a non-empty dApp definition: if
+  neither the call nor the env var provides one, the tool returns an error rather
+  than signing a meaningless proof.
+- Leave these unset only if you intend the requests to appear as an unverified
+  dApp.
+
+Example (`claude mcp add` with env, or your client's JSON config):
+
+```sh
+RADIX_DAPP_DEFINITION_MAINNET=account_rdx1... \
+RADIX_DAPP_ORIGIN=https://radix-community.genkipool.com \
+  radix-connector-mcp
+```
+
 ## Typical flow
 
 1. Build and preview a manifest with the web portal's HTTP MCP server
