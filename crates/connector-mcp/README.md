@@ -131,6 +131,12 @@ RADIX_DAPP_ORIGIN=https://radix-community.genkipool.com \
   locally.
 - The phone is the only thing that signs. Every action is human-approved there.
 
+## Architecture
+
+Component overview, MCP/stdio transport, the tool set and the pairing/signing
+sequence diagrams are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+([Español](docs/ARCHITECTURE.es.md)).
+
 ## License
 
 Licensed under either of MIT or Apache-2.0 at your option.

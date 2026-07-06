@@ -22,6 +22,11 @@ radixdlt-connect-types = "0.1"
 Error messages are localized to the system language. Part of the
 [RadixDLT Rust SDK](https://crates.io/crates/radixdlt-sdk).
 
+## Schema reference
+
+Every request/response JSON envelope (per discriminator) is documented in
+[`docs/SCHEMA.md`](docs/SCHEMA.md) ([Español](docs/SCHEMA.es.md)).
+
 ## License
 
 Licensed under either of MIT or Apache-2.0 at your option.

@@ -133,6 +133,13 @@ RADIX_DAPP_ORIGIN=https://radix-community.genkipool.com \
   local.
 - El móvil es lo único que firma. Cada acción se aprueba ahí por una persona.
 
+## Arquitectura
+
+El resumen de componentes, el transporte MCP/stdio, el conjunto de herramientas y
+los diagramas de secuencia de emparejamiento/firma están en
+[`docs/ARCHITECTURE.es.md`](docs/ARCHITECTURE.es.md)
+([English](docs/ARCHITECTURE.md)).
+
 ## Licencia
 
 Publicado bajo MIT o Apache-2.0, a tu elección.

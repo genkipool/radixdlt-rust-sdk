@@ -20,6 +20,11 @@ verify_account_proof(&proof, challenge_hex, dapp_definition, origin, network_id)
 Ideal for backends doing "log in with Radix". Error messages are localized to the
 system language. Part of the [RadixDLT Rust SDK](https://crates.io/crates/radixdlt-sdk).
 
+## Specification
+
+The exact signed-message byte layout and the verification predicate (with
+diagrams) are in [`docs/SPEC.md`](docs/SPEC.md) ([Español](docs/SPEC.es.md)).
+
 ## License
 
 Licensed under either of MIT or Apache-2.0 at your option.

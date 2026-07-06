@@ -82,6 +82,13 @@ Ambos transportes comparten el esquema de interacción de
 
 Los mensajes de error se localizan al idioma del sistema.
 
+## Especificación del protocolo
+
+El protocolo de cable completo de Radix Connect (signaling, cripto AES-256-GCM,
+data channel WebRTC, chunking de mensajes, estado del enlace `connector.json`)
+con diagramas de secuencia está en [`docs/PROTOCOL.es.md`](docs/PROTOCOL.es.md)
+([English](docs/PROTOCOL.md)).
+
 ## Licencia
 
 Publicado bajo MIT o Apache-2.0, a tu elección.

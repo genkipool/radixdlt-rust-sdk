@@ -25,6 +25,12 @@ let status = gw.submit_and_wait(&tx).await?;
 Error messages are localized to the system language. Part of the
 [RadixDLT Rust SDK](https://crates.io/crates/radixdlt-sdk).
 
+## Transaction lifecycle
+
+The build → sign → notarize → submit → poll lifecycle, the `TxStatus` state
+machine and the Gateway HTTP endpoint map (with diagrams) are in
+[`docs/LIFECYCLE.md`](docs/LIFECYCLE.md) ([Español](docs/LIFECYCLE.es.md)).
+
 ## License
 
 Licensed under either of MIT or Apache-2.0 at your option.

@@ -81,6 +81,12 @@ Both transports share the interaction schema in
 
 Error messages are localized to the system language.
 
+## Protocol specification
+
+The full Radix Connect wire protocol (signaling, AES-256-GCM crypto, WebRTC data
+channel, message chunking, `connector.json` link state) with sequence diagrams is
+in [`docs/PROTOCOL.md`](docs/PROTOCOL.md) ([Español](docs/PROTOCOL.es.md)).
+
 ## License
 
 Licensed under either of MIT or Apache-2.0 at your option.

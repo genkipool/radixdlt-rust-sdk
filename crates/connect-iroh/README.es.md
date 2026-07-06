@@ -81,6 +81,10 @@ Consulta `examples/login.rs` (`cargo run --example login`) para el flujo complet
 `tests/` para las pruebas de bajo nivel, login y transacción/pre-auth. Los mensajes de
 error se localizan al idioma del sistema.
 
+El protocolo de cable (transporte, framing, emparejamiento, esquema de mensajes y
+diagramas de secuencia por interacción) está especificado en
+[`docs/PROTOCOL.es.md`](docs/PROTOCOL.es.md) ([English](docs/PROTOCOL.md)).
+
 ## Licencia
 
 Publicado bajo MIT o Apache-2.0, a tu elección.

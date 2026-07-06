@@ -80,6 +80,10 @@ See `examples/login.rs` (`cargo run --example login`) for the full flow, and
 `tests/` for the low-level, login, and transaction/pre-auth tests. Error messages are
 localized to the system language.
 
+The wire protocol (transport, framing, pairing, message schema and per-interaction
+sequence diagrams) is specified in [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
+([Español](docs/PROTOCOL.es.md)).
+
 ## License
 
 Licensed under either of MIT or Apache-2.0 at your option.

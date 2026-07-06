@@ -21,6 +21,11 @@ Ideal para backends que hacen "iniciar sesión con Radix". Los mensajes de error
 localizan al idioma del sistema. Forma parte del
 [RadixDLT Rust SDK](https://crates.io/crates/radixdlt-sdk).
 
+## Especificación
+
+El layout exacto de bytes del mensaje firmado y el predicado de verificación (con
+diagramas) están en [`docs/SPEC.es.md`](docs/SPEC.es.md) ([English](docs/SPEC.md)).
+
 ## Licencia
 
 Publicado bajo MIT o Apache-2.0, a tu elección.

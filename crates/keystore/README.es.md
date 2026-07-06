@@ -22,6 +22,12 @@ let signing_key = kf.signing_key(passphrase)?;
 Los mensajes de error se localizan al idioma del sistema. Forma parte del
 [RadixDLT Rust SDK](https://crates.io/crates/radixdlt-sdk).
 
+## Formato del archivo
+
+El formato en disco `key.json` (scrypt + AES-256-GCM) con el flujo de
+cifrado/descifrado está especificado en [`docs/FORMAT.es.md`](docs/FORMAT.es.md)
+([English](docs/FORMAT.md)).
+
 ## Licencia
 
 Publicado bajo MIT o Apache-2.0, a tu elección.
