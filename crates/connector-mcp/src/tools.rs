@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
-use radixdlt_connect::state::{Link, LinkState};
 use radixdlt_connect::crypto::blake2b_256;
+use radixdlt_connect::state::{Link, LinkState};
 use radixdlt_connect::{
     extract_accounts, extract_persona_name, extract_proofs, Connector, DappContext,
 };
@@ -638,7 +638,8 @@ async fn deploy_package(app: &Rc<App>, args: &Value) -> ToolResult {
     // Dry-run on the Gateway (with the WASM blob) before asking the user to
     // approve — a package deploy is costly, so never sign one that would fail.
     // Only a definitive simulated failure blocks; a preview infra error does not.
-    if let Ok(outcome) = gateway::preview(network, &manifest, std::slice::from_ref(&wasm_hex)).await {
+    if let Ok(outcome) = gateway::preview(network, &manifest, std::slice::from_ref(&wasm_hex)).await
+    {
         if !outcome.success {
             return ToolResult::error(format!(
                 "Deploy preview FAILED — not signing (a deploy costs the fee even when it fails):\n{}",
@@ -674,8 +675,8 @@ fn resolve_blobs(args: &Value) -> Result<Vec<String>, String> {
             let path = entry
                 .as_str()
                 .ok_or("each entry in 'blob_files' must be a file path")?;
-            let bytes =
-                std::fs::read(path).map_err(|e| format!("could not read blob file '{path}': {e}"))?;
+            let bytes = std::fs::read(path)
+                .map_err(|e| format!("could not read blob file '{path}': {e}"))?;
             blobs.push(hex::encode(bytes));
         }
     }
@@ -953,15 +954,24 @@ mod tests {
 
     #[test]
     fn dapp_definition_env_is_per_network() {
-        assert_eq!(dapp_definition_env(Network::Mainnet), "RADIX_DAPP_DEFINITION_MAINNET");
-        assert_eq!(dapp_definition_env(Network::Stokenet), "RADIX_DAPP_DEFINITION_STOKENET");
+        assert_eq!(
+            dapp_definition_env(Network::Mainnet),
+            "RADIX_DAPP_DEFINITION_MAINNET"
+        );
+        assert_eq!(
+            dapp_definition_env(Network::Stokenet),
+            "RADIX_DAPP_DEFINITION_STOKENET"
+        );
     }
 
     #[test]
     fn call_arg_takes_precedence_over_env_and_default() {
         // An explicit arg is always honoured regardless of env/default.
         let args = json!({ "dapp_definition": "account_rdx_arg", "origin": "https://arg.example" });
-        assert_eq!(resolve_dapp_definition(&args, Network::Mainnet), "account_rdx_arg");
+        assert_eq!(
+            resolve_dapp_definition(&args, Network::Mainnet),
+            "account_rdx_arg"
+        );
         assert_eq!(resolve_origin(&args), "https://arg.example");
     }
 
@@ -980,7 +990,10 @@ mod tests {
     fn resolve_blobs_reads_inline_hex_and_files() {
         // Inline hex is validated and passed through; odd-length/non-hex is rejected.
         let inline = json!({ "blobs": ["deadbeef", ""] });
-        assert_eq!(resolve_blobs(&inline).unwrap(), vec!["deadbeef".to_string()]);
+        assert_eq!(
+            resolve_blobs(&inline).unwrap(),
+            vec!["deadbeef".to_string()]
+        );
         assert!(resolve_blobs(&json!({ "blobs": ["xyz"] })).is_err());
         assert!(resolve_blobs(&json!({ "blobs": ["abc"] })).is_err());
 
