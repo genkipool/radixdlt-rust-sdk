@@ -26,7 +26,18 @@ $dest = Join-Path $binDir 'radix-connector-mcp.exe'
 
 Write-Host "Downloading radix-connector-mcp ($tag, $target)..."
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-Invoke-WebRequest -Uri $url -OutFile $dest -Headers @{ 'User-Agent' = 'radix-connector-installer' }
+# Download to a temp file, then swap it in. Windows refuses to OVERWRITE a
+# running .exe (e.g. your MCP client has the connector open), but it DOES allow
+# renaming one — so move the old binary aside first, then move the new one into
+# place. The stale .old is cleaned up on the next run.
+$tmp = "$dest.new"
+Invoke-WebRequest -Uri $url -OutFile $tmp -Headers @{ 'User-Agent' = 'radix-connector-installer' }
+if (Test-Path $dest) {
+    Remove-Item "$dest.old" -Force -ErrorAction SilentlyContinue
+    Rename-Item $dest "$dest.old" -Force
+}
+Move-Item $tmp $dest -Force
+Remove-Item "$dest.old" -Force -ErrorAction SilentlyContinue
 
 Write-Host ''
 Write-Host "Installed: $dest"

@@ -48,8 +48,14 @@ dest="$BIN_DIR/radix-connector-mcp"
 
 say "Downloading radix-connector-mcp ($TAG, $target)…"
 mkdir -p "$BIN_DIR"
-curl -fsSL "$url" -o "$dest" || die "download failed: $url"
-chmod +x "$dest"
+# Download to a temp file, then atomically move it into place. Overwriting the
+# binary directly fails with "Text file busy" (curl error 23) when the connector
+# is already running — e.g. your MCP client has it open. A rename swaps the name
+# while any running process keeps the old binary until it exits.
+tmp="$dest.new.$$"
+curl -fsSL "$url" -o "$tmp" || { rm -f "$tmp"; die "download failed: $url"; }
+chmod +x "$tmp"
+mv -f "$tmp" "$dest" || { rm -f "$tmp"; die "could not install to $dest"; }
 
 say ""
 say "Installed: $dest"
