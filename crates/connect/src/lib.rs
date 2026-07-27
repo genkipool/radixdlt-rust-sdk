@@ -353,22 +353,32 @@ mod tests {
         let password = b"same-link-password";
         let generous = Duration::from_secs(5);
 
-        let (first, _) = Connector::take_turn(password, generous).await.expect("first takes the turn");
+        let (first, _) = Connector::take_turn(password, generous)
+            .await
+            .expect("first takes the turn");
 
         // While the first holds it, a second one cannot get through.
         let blocked = Connector::take_turn(password, Duration::from_millis(150)).await;
-        assert_eq!(blocked.err(), Some(ConnectError::LinkBusy), "a busy link must report LinkBusy");
+        assert_eq!(
+            blocked.err(),
+            Some(ConnectError::LinkBusy),
+            "a busy link must report LinkBusy"
+        );
 
         // Releasing it lets the queue move.
         drop(first);
-        let (_second, left) = Connector::take_turn(password, generous).await.expect("the queue moves on release");
+        let (_second, left) = Connector::take_turn(password, generous)
+            .await
+            .expect("the queue moves on release");
         assert!(left <= generous, "the budget must never grow while queuing");
     }
 
     /// Different links are independent: one busy phone must not stall another.
     #[tokio::test]
     async fn different_links_do_not_block_each_other() {
-        let (_a, _) = Connector::take_turn(b"link-a", Duration::from_secs(5)).await.unwrap();
+        let (_a, _) = Connector::take_turn(b"link-a", Duration::from_secs(5))
+            .await
+            .unwrap();
         let b = Connector::take_turn(b"link-b", Duration::from_millis(200)).await;
         assert!(b.is_ok(), "an unrelated link must not wait");
     }
@@ -378,14 +388,21 @@ mod tests {
     #[tokio::test]
     async fn waiting_is_charged_to_the_callers_budget() {
         let password = b"budget-link";
-        let (held, _) = Connector::take_turn(password, Duration::from_secs(5)).await.unwrap();
+        let (held, _) = Connector::take_turn(password, Duration::from_secs(5))
+            .await
+            .unwrap();
         let waiter = tokio::spawn(async move {
-            Connector::take_turn(password, Duration::from_secs(2)).await.map(|(_g, left)| left)
+            Connector::take_turn(password, Duration::from_secs(2))
+                .await
+                .map(|(_g, left)| left)
         });
         tokio::time::sleep(Duration::from_millis(300)).await;
         drop(held);
         let left = waiter.await.unwrap().expect("it should get the turn");
-        assert!(left < Duration::from_secs(2), "the wait must come out of the budget");
+        assert!(
+            left < Duration::from_secs(2),
+            "the wait must come out of the budget"
+        );
     }
 
     #[test]
