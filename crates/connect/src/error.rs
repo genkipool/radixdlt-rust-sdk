@@ -25,6 +25,10 @@ pub enum ConnectError {
     ConfirmationTimeout,
     /// The wallet rejected or cancelled the request.
     WalletRejected(String),
+    /// Another request is already in flight on the same paired link, and it did not
+    /// finish within the timeout. A link carries ONE conversation at a time: requests
+    /// that share it are queued, and this reports the queue never cleared in time.
+    LinkBusy,
 }
 
 impl std::fmt::Display for ConnectError {
@@ -75,6 +79,13 @@ impl std::fmt::Display for ConnectError {
                 lang,
                 format!("the wallet rejected/cancelled the request: {e}"),
                 format!("la wallet rechazó/canceló la solicitud: {e}")
+            ),
+            ConnectError::LinkBusy => tr!(
+                lang,
+                "another request is still in flight on this link (one conversation at a time)"
+                    .to_string(),
+                "ya hay otra petición en curso en este enlace (una conversación a la vez)"
+                    .to_string()
             ),
         };
         f.write_str(&msg)

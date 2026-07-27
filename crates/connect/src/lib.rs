@@ -15,6 +15,16 @@
 //!
 //! This is a pure library: it never prints. User-facing error text is localized to
 //! the system language.
+//!
+//! ## One conversation per link
+//!
+//! A paired link carries ONE conversation at a time: every request opens a fresh channel
+//! through the signaling server keyed by the link password, so two in flight at once race on
+//! the same rendezvous and the second fails within seconds without the wallet ever prompting.
+//! The request methods therefore QUEUE on the link (keyed by the password, process-wide), and
+//! waiting counts against the timeout the caller passed. A caller that will not wait gets
+//! [`ConnectError::LinkBusy`] rather than a failure that looks like an unresponsive wallet.
+//! Callers need no lock of their own — including those that build a [`Connector`] per call.
 
 pub mod chunking;
 mod connector;
@@ -94,6 +104,28 @@ async fn send_and_await_response(
     }
 }
 
+/// The turn-taking mutex for one paired link, created on first use and shared process-wide.
+///
+/// Keyed by a HASH of the password rather than the password itself: the registry is a
+/// `static` that lives for the whole process, and it has no business holding copies of link
+/// secrets. A hash collision would merely make two unrelated links take turns — slower, never
+/// wrong — which is the safe direction for the mistake to fall.
+fn link_turn(password: &[u8]) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    use std::collections::HashMap;
+    use std::hash::{Hash, Hasher};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    static LINKS: OnceLock<Mutex<HashMap<u64, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    password.hash(&mut hasher);
+    let key = hasher.finish();
+    let links = LINKS.get_or_init(|| Mutex::new(HashMap::new()));
+    // A poisoned registry only means some other thread panicked while holding it; the map
+    // itself is still sound, so recover rather than propagate an unrelated panic.
+    let mut links = links.lock().unwrap_or_else(|e| e.into_inner());
+    links.entry(key).or_default().clone()
+}
+
 /// A Radix Connect client carrying the ICE/signaling configuration.
 pub struct Connector {
     ice_servers: Vec<IceServer>,
@@ -141,6 +173,36 @@ impl Connector {
         .await
     }
 
+    /// Takes this link's turn, so only ONE conversation runs on it at a time.
+    ///
+    /// Every request opens a fresh channel through the signaling server keyed by the LINK
+    /// PASSWORD. Two requests in flight on the same link therefore race on the same
+    /// rendezvous: in practice the second one dies within seconds and the wallet never even
+    /// shows a prompt, so the caller sees an unexplained failure. The constraint belongs to
+    /// the link, not to a `Connector` value — callers routinely build one per call
+    /// (`Connector::new().request_…()`) — so the turn is keyed by the password itself and
+    /// shared process-wide.
+    ///
+    /// Waiting counts against `budget`; the remaining time is returned for the request
+    /// itself, so a queued caller can never exceed the deadline it asked for. When the queue
+    /// does not clear in time the caller gets [`ConnectError::LinkBusy`], which says what
+    /// happened instead of looking like an unresponsive wallet.
+    async fn take_turn(
+        password: &[u8],
+        budget: Duration,
+    ) -> Result<(tokio::sync::OwnedMutexGuard<()>, Duration), ConnectError> {
+        let turn = link_turn(password);
+        let started = Instant::now();
+        let guard = tokio::time::timeout(budget, turn.lock_owned())
+            .await
+            .map_err(|_| ConnectError::LinkBusy)?;
+        let left = budget.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return Err(ConnectError::LinkBusy);
+        }
+        Ok((guard, left))
+    }
+
     /// With an already-paired link password, asks the wallet to sign a ROLA account
     /// proof and returns the wallet's response (containing `proofs`).
     pub async fn request_account_proof(
@@ -151,9 +213,10 @@ impl Connector {
         request_persona: bool,
         overall_timeout: Duration,
     ) -> Result<Value, ConnectError> {
-        let mut channel = self.establish(password, overall_timeout).await?;
+        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
+        let mut channel = self.establish(password, budget).await?;
         let interaction = account_proof_request(challenge_hex, ctx, request_persona);
-        send_and_await_response(&mut channel, &interaction, overall_timeout).await
+        send_and_await_response(&mut channel, &interaction, budget).await
     }
 
     /// Asks the wallet to SHARE its account(s) without a ROLA proof (the
@@ -165,9 +228,10 @@ impl Connector {
         ctx: &DappContext,
         overall_timeout: Duration,
     ) -> Result<Value, ConnectError> {
-        let mut channel = self.establish(password, overall_timeout).await?;
+        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
+        let mut channel = self.establish(password, budget).await?;
         let interaction = account_request(ctx);
-        send_and_await_response(&mut channel, &interaction, overall_timeout).await
+        send_and_await_response(&mut channel, &interaction, budget).await
     }
 
     /// Sends a TRANSACTION MANIFEST to the wallet for the owner to sign and submit.
@@ -181,9 +245,10 @@ impl Connector {
         ctx: &DappContext,
         overall_timeout: Duration,
     ) -> Result<String, ConnectError> {
-        let mut channel = self.establish(password, overall_timeout).await?;
+        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
+        let mut channel = self.establish(password, budget).await?;
         let interaction = transaction_request(manifest, message, blobs, ctx);
-        let response = send_and_await_response(&mut channel, &interaction, overall_timeout).await?;
+        let response = send_and_await_response(&mut channel, &interaction, budget).await?;
         Ok(extract_transaction_intent_hash(&response)?)
     }
 
@@ -199,10 +264,11 @@ impl Connector {
         ctx: &DappContext,
         overall_timeout: Duration,
     ) -> Result<String, ConnectError> {
-        let mut channel = self.establish(password, overall_timeout).await?;
+        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
+        let mut channel = self.establish(password, budget).await?;
         let interaction =
             pre_authorization_request(subintent_manifest, message, expire_after_seconds, ctx);
-        let response = send_and_await_response(&mut channel, &interaction, overall_timeout).await?;
+        let response = send_and_await_response(&mut channel, &interaction, budget).await?;
         Ok(extract_signed_partial_transaction(&response)?)
     }
 
@@ -278,6 +344,49 @@ impl Connector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two requests sharing a link must take turns: the second one only starts once the
+    /// first has finished. Without this they race on the same signaling rendezvous and the
+    /// second dies within seconds, with the wallet never prompting.
+    #[tokio::test]
+    async fn requests_on_the_same_link_take_turns() {
+        let password = b"same-link-password";
+        let generous = Duration::from_secs(5);
+
+        let (first, _) = Connector::take_turn(password, generous).await.expect("first takes the turn");
+
+        // While the first holds it, a second one cannot get through.
+        let blocked = Connector::take_turn(password, Duration::from_millis(150)).await;
+        assert_eq!(blocked.err(), Some(ConnectError::LinkBusy), "a busy link must report LinkBusy");
+
+        // Releasing it lets the queue move.
+        drop(first);
+        let (_second, left) = Connector::take_turn(password, generous).await.expect("the queue moves on release");
+        assert!(left <= generous, "the budget must never grow while queuing");
+    }
+
+    /// Different links are independent: one busy phone must not stall another.
+    #[tokio::test]
+    async fn different_links_do_not_block_each_other() {
+        let (_a, _) = Connector::take_turn(b"link-a", Duration::from_secs(5)).await.unwrap();
+        let b = Connector::take_turn(b"link-b", Duration::from_millis(200)).await;
+        assert!(b.is_ok(), "an unrelated link must not wait");
+    }
+
+    /// Time spent queuing is charged to the caller's budget, so a queued request can never
+    /// overrun the deadline it asked for.
+    #[tokio::test]
+    async fn waiting_is_charged_to_the_callers_budget() {
+        let password = b"budget-link";
+        let (held, _) = Connector::take_turn(password, Duration::from_secs(5)).await.unwrap();
+        let waiter = tokio::spawn(async move {
+            Connector::take_turn(password, Duration::from_secs(2)).await.map(|(_g, left)| left)
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(held);
+        let left = waiter.await.unwrap().expect("it should get the turn");
+        assert!(left < Duration::from_secs(2), "the wait must come out of the budget");
+    }
 
     #[test]
     fn default_ice_set_has_stun_and_turn() {
