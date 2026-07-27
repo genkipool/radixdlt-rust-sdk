@@ -17,6 +17,18 @@ minor versions may contain breaking changes.
   English fallback; `Lang` is now `#[non_exhaustive]`, so adding a language is
   non-breaking.
 
+### Fixed
+
+- `radixdlt-connect` — requests sharing a paired link are now serialized. A link
+  carries one conversation at a time, so two in flight at once raced on the same
+  signaling rendezvous: the second failed within seconds and the wallet never
+  prompted, which looked like an unresponsive phone. Requests queue on a turn keyed
+  by the link password (process-wide, so callers that build a `Connector` per call
+  are covered too); waiting is charged to the caller's timeout and a queue that does
+  not clear reports the new `ConnectError::LinkBusy`.
+- `radixdlt-connector-mcp` 0.2.1 — picks up the fix above; concurrent tool calls on
+  the same paired wallet no longer fail silently.
+
 ### Changed
 
 - `radixdlt-connect-iroh` — `IrohConnector::bind_with` takes a `Relay` enum
