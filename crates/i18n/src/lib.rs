@@ -87,7 +87,43 @@ fn detect_uncached() -> Lang {
             }
         }
     }
+    // Nothing in the environment. That is NOT the same as "no preference": a unit started by
+    // systemd, or a command run over a non-interactive ssh session, simply inherits no locale.
+    // Defaulting to English there makes a Spanish machine speak English to its owner — and
+    // worse, whatever is WRITTEN at that moment (an sshd banner, say) keeps doing so at every
+    // later login. So fall back to what the system itself is configured for.
+    for path in ["/etc/locale.conf", "/etc/default/locale"] {
+        if let Ok(txt) = std::fs::read_to_string(path) {
+            if let Some(l) = lang_from_locale_file(&txt) {
+                return l;
+            }
+        }
+    }
     Lang::En
+}
+
+/// Reads `LC_ALL`/`LC_MESSAGES`/`LANG` out of a locale file, in that order of precedence
+/// (the same the environment uses). Values may be quoted. `None` when it names none usefully.
+fn lang_from_locale_file(text: &str) -> Option<Lang> {
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with('#') {
+                continue;
+            }
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            if k.trim() != key {
+                continue;
+            }
+            let v = v.trim().trim_matches('"').trim();
+            if !v.is_empty() && v != "C" && v != "POSIX" {
+                return Some(Lang::from_locale_str(v));
+            }
+        }
+    }
+    None
 }
 
 /// Shortcut for the system language (same as [`Lang::detect`]).
@@ -162,5 +198,43 @@ mod tests {
             tr!(Lang::En, "hello".to_string(), Es: "hola".to_string()),
             "hello"
         );
+    }
+
+    /// A unit started by systemd, or a command over non-interactive ssh, inherits no locale.
+    /// Falling back to English there makes a Spanish machine speak English to its owner, and
+    /// whatever is written at that moment (an sshd banner) keeps doing so at every later login.
+    #[test]
+    fn the_system_locale_file_is_read_when_the_environment_is_empty() {
+        assert_eq!(lang_from_locale_file("LANG=es_ES.UTF-8\n"), Some(Lang::Es));
+        assert_eq!(
+            lang_from_locale_file("LANG=\"es_ES.UTF-8\"\n"),
+            Some(Lang::Es)
+        );
+        assert_eq!(lang_from_locale_file("LANG=en_GB.UTF-8\n"), Some(Lang::En));
+    }
+
+    /// The same precedence the environment uses, so a machine does not answer differently
+    /// depending on which of the two keys its locale happened to be written to.
+    #[test]
+    fn lc_all_outranks_lc_messages_which_outranks_lang() {
+        assert_eq!(
+            lang_from_locale_file("LANG=en_US.UTF-8\nLC_MESSAGES=es_ES.UTF-8\n"),
+            Some(Lang::Es)
+        );
+        assert_eq!(
+            lang_from_locale_file("LANG=es_ES.UTF-8\nLC_ALL=en_US.UTF-8\n"),
+            Some(Lang::En)
+        );
+    }
+
+    /// "C"/"POSIX" mean "no locale chosen", not "English requested": treating them as an
+    /// answer would stop the next source from ever being consulted.
+    #[test]
+    fn a_placeholder_locale_is_not_an_answer() {
+        assert_eq!(lang_from_locale_file("LANG=C\n"), None);
+        assert_eq!(lang_from_locale_file("LANG=POSIX\n"), None);
+        assert_eq!(lang_from_locale_file("LANG=\n"), None);
+        assert_eq!(lang_from_locale_file("# LANG=es_ES.UTF-8\n"), None);
+        assert_eq!(lang_from_locale_file(""), None);
     }
 }
