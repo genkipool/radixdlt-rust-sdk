@@ -56,6 +56,22 @@ minor versions may contain breaking changes.
   `interactionId`, discarding stale queued responses; `LinkState` documents the
   multi-device API in the README.
 
+## [connector-v0.2.4]
+
+### Fixed
+
+- `radixdlt-connect-types` — a `networkId` arriving from the peer was converted
+  with `as u8`, which TRUNCATES instead of rejecting: a value of 258 was read as
+  `2`, which is stokenet. Getting the network wrong in a wallet interaction means
+  signing against the wrong ledger, so an out-of-range value is now refused
+  rather than folded into a valid one.
+
+### Changed
+
+- Rebuilt with the SDK's new quality gates in place (workspace lints, documented
+  public API, verified MSRV). No API change; the binaries differ only by the fix
+  above and by documentation.
+
 ## [connector-v0.2.3]
 
 ### Fixed

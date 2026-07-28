@@ -28,6 +28,9 @@ allow = [
     "LicenseRef-Radix-1.0",
 ]
 confidence-threshold = 0.9
+# Each workspace resolves a different subtree, so a licence allowed for one is unused in
+# another. Warning about that once per workspace is noise, not information.
+unused-allowed-license = "allow"
 
 # ─────────────────────────────────────────────────────────────────────────────────────────
 # OPEN QUESTION BEFORE PUBLISHING TO crates.io — read this before releasing.
@@ -120,6 +123,15 @@ license-files = []
 # Warn rather than deny: the webrtc and Scrypto trees make some unavoidable today — that is
 # exactly why they live in separate workspaces.
 multiple-versions = "warn"
+# The four below are duplicated by the dependency graph itself — different crates pin
+# different majors of the same utility — and nothing here can collapse them. Listing them
+# keeps the check meaningful: a NEW duplicate still warns, which is the one worth seeing.
+skip = [
+    { crate = "windows-sys" },
+    { crate = "syn" },
+    { crate = "getrandom" },
+    { crate = "bitflags" },
+]
 wildcards = "deny"
 
 [sources]
