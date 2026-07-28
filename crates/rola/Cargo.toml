@@ -17,3 +17,6 @@ radixdlt-address = { workspace = true }
 ed25519-dalek = { workspace = true }
 blake2 = { workspace = true }
 hex = { workspace = true }
+
+[lints]
+workspace = true

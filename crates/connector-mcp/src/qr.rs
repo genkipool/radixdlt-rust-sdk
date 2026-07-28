@@ -23,14 +23,9 @@ pub struct RenderedQr {
 /// Builds a QR from `payload` and renders both forms. Fails only if the payload
 /// is too large to encode as a QR code.
 pub fn render(payload: &str) -> Result<RenderedQr, String> {
-    let code =
-        QrCode::new(payload.as_bytes()).map_err(|e| format!("could not build the QR code: {e}"))?;
+    let code = QrCode::new(payload.as_bytes()).map_err(|e| format!("could not build the QR code: {e}"))?;
     let width = code.width();
-    let modules: Vec<bool> = code
-        .to_colors()
-        .into_iter()
-        .map(|c| c == Color::Dark)
-        .collect();
+    let modules: Vec<bool> = code.to_colors().into_iter().map(|c| c == Color::Dark).collect();
     Ok(RenderedQr {
         unicode: to_unicode(width, &modules),
         png_base64: to_png_base64(width, &modules)?,

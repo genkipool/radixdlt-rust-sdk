@@ -11,6 +11,18 @@
 //! This is a pure library: it never reads files, never prints and never exits the
 //! process. User-facing error text is localized to the system language.
 
+// In TESTS a panic IS the failure mechanism. Library code keeps the deny: a panic there is
+// taken in the CONSUMER's process, which they neither chose nor can catch.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic,))]
+// Two shapes of `Value` indexing appear here, and only one of them can panic:
+//   * READING (`v["a"]["b"]`) yields Null for a missing key or a wrong type — it never panics,
+//     and that tolerance is exactly what these parsers want.
+//   * WRITING (`items["k"] = …`) panics on a non-object. Every such site assigns into a value
+//     built by `json!({…})` a few lines above, so it is provably an object.
+// clippy cannot tell either from slice indexing, which genuinely can panic, so the lint is
+// allowed HERE rather than switched off for the crate.
+#![allow(clippy::indexing_slicing)]
+
 use std::time::Duration;
 
 use radix_common::prelude::*;
@@ -130,6 +142,7 @@ pub struct NotarizedTx {
 }
 
 /// A Radix Gateway client bound to one network.
+#[derive(Debug)]
 pub struct Gateway {
     base_url: String,
     network: NetworkDefinition,
@@ -163,27 +176,16 @@ impl Gateway {
 
     // ------------------------------- reads -------------------------------
 
-    async fn post(
-        &self,
-        path: &str,
-        body: serde_json::Value,
-    ) -> Result<serde_json::Value, GatewayError> {
+    async fn post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, GatewayError> {
         let resp = self
             .client
-            .post(format!(
-                "{}/{}",
-                self.base_url,
-                path.trim_start_matches('/')
-            ))
+            .post(format!("{}/{}", self.base_url, path.trim_start_matches('/')))
             .json(&body)
             .send()
             .await
             .map_err(|e| GatewayError::Http(e.to_string()))?;
         let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| GatewayError::Http(e.to_string()))?;
+        let text = resp.text().await.map_err(|e| GatewayError::Http(e.to_string()))?;
         if !status.is_success() {
             return Err(GatewayError::BadResponse(format!("HTTP {status}: {text}")));
         }
@@ -191,21 +193,25 @@ impl Gateway {
     }
 
     /// Current ledger epoch.
+    ///
+    /// # Errors
+    /// [`GatewayError::Http`] when the Gateway is unreachable or answers with a failure
+    /// status, and [`GatewayError::BadResponse`] when the reply does not have the shape this
+    /// client expects — which is how a Gateway version change surfaces.
     pub async fn current_epoch(&self) -> Result<u64, GatewayError> {
-        let v = self
-            .post("status/gateway-status", serde_json::json!({}))
-            .await?;
+        let v = self.post("status/gateway-status", serde_json::json!({})).await?;
         v["ledger_state"]["epoch"]
             .as_u64()
             .ok_or_else(|| GatewayError::BadResponse("missing ledger_state.epoch".into()))
     }
 
     /// Balance of a fungible `resource` held by `account` (0 if none).
-    pub async fn fungible_balance(
-        &self,
-        account: &str,
-        resource: &str,
-    ) -> Result<Decimal, GatewayError> {
+    ///
+    /// # Errors
+    /// [`GatewayError::Http`] when the Gateway is unreachable or answers with a failure
+    /// status, and [`GatewayError::BadResponse`] when the reply does not have the shape this
+    /// client expects — which is how a Gateway version change surfaces.
+    pub async fn fungible_balance(&self, account: &str, resource: &str) -> Result<Decimal, GatewayError> {
         let v = self
             .post(
                 "state/entity/page/fungibles/",
@@ -224,6 +230,11 @@ impl Gateway {
     }
 
     /// XRD balance of `account` (0 if none).
+    ///
+    /// # Errors
+    /// [`GatewayError::Http`] when the Gateway is unreachable or answers with a failure
+    /// status, and [`GatewayError::BadResponse`] when the reply does not have the shape this
+    /// client expects — which is how a Gateway version change surfaces.
     pub async fn xrd_balance(&self, account: &str) -> Result<Decimal, GatewayError> {
         let xrd = AddressBech32Encoder::new(&self.network)
             .encode(XRD.as_bytes())
@@ -232,18 +243,25 @@ impl Gateway {
     }
 
     /// Current status of a transaction by its `txid_...` intent hash.
+    ///
+    /// # Errors
+    /// [`GatewayError::Http`] when the Gateway is unreachable or answers with a failure
+    /// status, and [`GatewayError::BadResponse`] when the reply does not have the shape this
+    /// client expects — which is how a Gateway version change surfaces.
     pub async fn transaction_status(&self, txid: &str) -> Result<TxStatus, GatewayError> {
         let v = self
-            .post(
-                "transaction/status",
-                serde_json::json!({ "intent_hash": txid }),
-            )
+            .post("transaction/status", serde_json::json!({ "intent_hash": txid }))
             .await?;
         Ok(TxStatus::parse(v["status"].as_str().unwrap_or("Unknown")))
     }
 
     /// Global entities affected by a committed transaction (e.g. newly created
     /// components/resources).
+    ///
+    /// # Errors
+    /// [`GatewayError::Http`] when the Gateway is unreachable or answers with a failure
+    /// status, and [`GatewayError::BadResponse`] when the reply does not have the shape this
+    /// client expects — which is how a Gateway version change surfaces.
     pub async fn committed_entities(&self, txid: &str) -> Result<Vec<String>, GatewayError> {
         let v = self
             .post(
@@ -253,15 +271,16 @@ impl Gateway {
             .await?;
         Ok(v["transaction"]["affected_global_entities"]
             .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(String::from))
-                    .collect()
-            })
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
             .unwrap_or_default())
     }
 
     /// Polls until the transaction reaches a final status or `attempts` run out.
+    ///
+    /// # Errors
+    /// As the other queries, plus [`GatewayError::Timeout`] when the transaction has not
+    /// committed within the deadline. A timeout is NOT a failure of the transaction: it may
+    /// still commit afterwards, so callers must not treat it as "did not happen".
     pub async fn wait_for_commit(
         &self,
         txid: &str,
@@ -281,6 +300,10 @@ impl Gateway {
     // ------------------------------- submit ------------------------------
 
     /// Submits a notarized transaction (does not wait for the commit).
+    ///
+    /// # Errors
+    /// [`GatewayError::Http`] on a network failure, and [`GatewayError::SubmitRejected`] when the
+    /// ledger refuses the transaction outright — a rejection is permanent for that intent.
     pub async fn submit(&self, tx: &NotarizedTx) -> Result<(), GatewayError> {
         self.post(
             "transaction/submit",
@@ -295,15 +318,21 @@ impl Gateway {
     }
 
     /// Convenience: submit then poll for the commit (40 attempts, 2 s apart).
+    ///
+    /// # Errors
+    /// As [`Self::submit`] and [`Self::wait_for_commit`] combined.
     pub async fn submit_and_wait(&self, tx: &NotarizedTx) -> Result<TxStatus, GatewayError> {
         self.submit(tx).await?;
-        self.wait_for_commit(&tx.txid, 40, Duration::from_secs(2))
-            .await
+        self.wait_for_commit(&tx.txid, 40, Duration::from_secs(2)).await
     }
 
     // ----------------------------- local build ---------------------------
 
     /// Compiles a v1 transaction manifest from its text form.
+    ///
+    /// # Errors
+    /// [`GatewayError::ManifestCompile`] when the text is not a valid manifest for this network.
+    /// Address prefixes are network-specific, so a mainnet manifest fails here on stokenet.
     pub fn compile_manifest_v1(&self, text: &str) -> Result<TransactionManifestV1, GatewayError> {
         compile_manifest_v1(text, &self.network, BlobProvider::new())
             .map_err(|e| GatewayError::ManifestCompile(format!("{e:?}")))
@@ -312,6 +341,9 @@ impl Gateway {
     /// Builds, signs and notarizes a manifest for an explicit epoch window. Pure:
     /// no network access. `epoch_window` is how many epochs the transaction stays
     /// valid (e.g. 10).
+    ///
+    /// # Errors
+    /// When the manifest cannot be compiled, or a signing key is rejected.
     pub fn notarize_at_epoch(
         &self,
         manifest: TransactionManifestV1,
@@ -352,6 +384,9 @@ impl Gateway {
 
     /// Builds, signs and notarizes a manifest using the current epoch (fetched from
     /// the Gateway). The transaction stays valid for 10 epochs.
+    ///
+    /// # Errors
+    /// As [`Self::notarize_at_epoch`], plus the network errors of fetching the current epoch.
     pub async fn build_notarized(
         &self,
         manifest: TransactionManifestV1,
@@ -367,6 +402,9 @@ impl Gateway {
     /// a partial transaction valid in `[start_epoch, end_epoch)` and signs it with
     /// `signer`. Returns the signed partial transaction as hex (NOT submitted). Pure:
     /// no network access.
+    ///
+    /// # Errors
+    /// When the subintent manifest cannot be compiled, or the signer is rejected.
     pub fn sign_subintent(
         &self,
         subintent_manifest: &str,
@@ -374,12 +412,9 @@ impl Gateway {
         end_epoch: u64,
         signer: &Ed25519PrivateKey,
     ) -> Result<String, GatewayError> {
-        let compiled = compile_manifest::<SubintentManifestV2>(
-            subintent_manifest,
-            &self.network,
-            BlobProvider::new(),
-        )
-        .map_err(|e| GatewayError::ManifestCompile(format!("{e:?}")))?;
+        let compiled =
+            compile_manifest::<SubintentManifestV2>(subintent_manifest, &self.network, BlobProvider::new())
+                .map_err(|e| GatewayError::ManifestCompile(format!("{e:?}")))?;
         let raw = PartialTransactionV2Builder::new()
             .intent_header(IntentHeaderV2 {
                 network_id: self.network.id,
@@ -451,10 +486,7 @@ mod tls_smoke {
     #[ignore]
     async fn https_to_the_real_gateway_works() {
         let gw = super::Gateway::stokenet();
-        let epoch = gw
-            .current_epoch()
-            .await
-            .expect("HTTPS to the Gateway must work");
+        let epoch = gw.current_epoch().await.expect("HTTPS to the Gateway must work");
         assert!(epoch > 0, "a live Gateway reports a non-zero epoch");
     }
 }

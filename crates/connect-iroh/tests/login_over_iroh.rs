@@ -32,9 +32,7 @@ async fn login_with_ticket_pairing() {
     };
     let dapp_fut = async {
         let mut ch = dapp.connect_to_ticket(&ticket).await.unwrap();
-        let proof = request_account_proof(&mut ch, &challenge, &ctx)
-            .await
-            .unwrap();
+        let proof = request_account_proof(&mut ch, &challenge, &ctx).await.unwrap();
         ch.close();
         proof
     };

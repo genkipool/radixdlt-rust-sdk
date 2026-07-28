@@ -1,3 +1,7 @@
+// Examples are demonstrations: `expect` is the idiomatic way to keep them short and to
+// show the failure loudly. Library code keeps the deny.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 //! Runnable "log in with Radix over iroh" demo: a pure-Rust wallet and a dApp,
 //! paired by ticket, complete a ROLA login — no mobile phone, no WebRTC.
 //!
@@ -21,10 +25,7 @@ async fn main() {
     let signer = IrohConnector::bind().await.expect("bind signer");
     let dapp = IrohConnector::bind().await.expect("bind dapp");
     let ticket = signer.ticket();
-    println!(
-        "pairing ticket ({} chars) shared with the dApp",
-        ticket.len()
-    );
+    println!("pairing ticket ({} chars) shared with the dApp", ticket.len());
 
     let ctx = DappContext::new(network_id, dapp_def, origin);
     let challenge = "ab".repeat(32);
@@ -44,8 +45,5 @@ async fn main() {
     };
 
     let (_, proof) = tokio::join!(signer_fut, dapp_fut);
-    println!(
-        "✓ ROLA login verified over iroh for account {}",
-        proof.address
-    );
+    println!("✓ ROLA login verified over iroh for account {}", proof.address);
 }

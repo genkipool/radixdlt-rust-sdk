@@ -1,3 +1,7 @@
+// Examples are demonstrations: `expect` is the idiomatic way to keep them short and to
+// show the failure loudly. Library code keeps the deny.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 //! Generates an encrypted Ed25519 key, saves it, reloads it and unlocks it.
 //!
 //!   cargo run -p radixdlt-keystore --example keygen -- [path]

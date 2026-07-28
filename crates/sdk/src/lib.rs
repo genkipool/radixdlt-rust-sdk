@@ -34,6 +34,18 @@
 //! All user-facing error messages across the SDK are localized to the system
 //! language (English/Spanish).
 
+// In TESTS a panic IS the failure mechanism. Library code keeps the deny: a panic there is
+// taken in the CONSUMER's process, which they neither chose nor can catch.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
+
 /// System-language detection and bilingual text helpers (always available).
 pub use radixdlt_i18n as i18n;
 

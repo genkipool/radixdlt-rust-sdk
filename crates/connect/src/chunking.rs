@@ -143,8 +143,7 @@ impl Reassembler {
                 self.hash
             )));
         }
-        serde_json::from_slice(&msg)
-            .map_err(|e| ConnectError::Protocol(format!("invalid JSON: {e}")))
+        serde_json::from_slice(&msg).map_err(|e| ConnectError::Protocol(format!("invalid JSON: {e}")))
     }
 }
 

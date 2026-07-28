@@ -15,3 +15,6 @@ readme = "README.md"
 radixdlt-i18n = { workspace = true }
 radix-common = { workspace = true }
 hex = { workspace = true }
+
+[lints]
+workspace = true

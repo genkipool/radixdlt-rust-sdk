@@ -24,3 +24,6 @@ hex = { workspace = true }
 [dev-dependencies]
 # The TLS smoke test needs a runtime; the crate itself stays runtime-agnostic.
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

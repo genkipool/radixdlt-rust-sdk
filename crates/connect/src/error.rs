@@ -82,10 +82,8 @@ impl std::fmt::Display for ConnectError {
             ),
             ConnectError::LinkBusy => tr!(
                 lang,
-                "another request is still in flight on this link (one conversation at a time)"
-                    .to_string(),
-                "ya hay otra petición en curso en este enlace (una conversación a la vez)"
-                    .to_string()
+                "another request is still in flight on this link (one conversation at a time)".to_string(),
+                "ya hay otra petición en curso en este enlace (una conversación a la vez)".to_string()
             ),
         };
         f.write_str(&msg)

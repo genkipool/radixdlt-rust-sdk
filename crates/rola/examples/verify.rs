@@ -1,3 +1,7 @@
+// Examples are demonstrations: `expect` is the idiomatic way to keep them short and to
+// show the failure loudly. Library code keeps the deny.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 //! End-to-end ROLA round-trip: a signer produces a proof for a challenge and a
 //! verifier checks it — the "log in with Radix" handshake, in a few lines.
 //!

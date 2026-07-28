@@ -14,6 +14,18 @@
 //!
 //! User-facing error text is localized to the system language.
 
+// In TESTS a panic IS the failure mechanism. Library code keeps the deny: a panic there is
+// taken in the CONSUMER's process, which they neither chose nor can catch.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic,))]
+// Two shapes of `Value` indexing appear here, and only one of them can panic:
+//   * READING (`v["a"]["b"]`) yields Null for a missing key or a wrong type — it never panics,
+//     and that tolerance is exactly what these parsers want.
+//   * WRITING (`items["k"] = …`) panics on a non-object. Every such site assigns into a value
+//     built by `json!({…})` a few lines above, so it is provably an object.
+// clippy cannot tell either from slice indexing, which genuinely can panic, so the lint is
+// allowed HERE rather than switched off for the crate.
+#![allow(clippy::indexing_slicing)]
+
 use radixdlt_i18n::{tr, Lang};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -21,17 +33,22 @@ use uuid::Uuid;
 /// The dApp context sent with every interaction (fixed per application).
 #[derive(Debug, Clone)]
 pub struct DappContext {
+    /// Radix network id (1 = mainnet, 2 = stokenet). The wallet refuses an interaction whose
+    /// network does not match the one it is on, which is what stops a mainnet signature being
+    /// solicited by a testnet dApp.
     pub network_id: u8,
+    /// The dApp definition account. The wallet resolves it to show WHO is asking.
     pub dapp_definition: String,
+    /// Origin the request claims to come from. Bound into the ROLA signature, so a proof
+    /// obtained for one origin cannot be replayed by another.
     pub origin: String,
 }
 
 impl DappContext {
-    pub fn new(
-        network_id: u8,
-        dapp_definition: impl Into<String>,
-        origin: impl Into<String>,
-    ) -> Self {
+    /// Builds the context every interaction carries. The three values together are what the
+    /// wallet shows and what a ROLA proof is bound to, so they identify the asking dApp.
+    #[must_use]
+    pub fn new(network_id: u8, dapp_definition: impl Into<String>, origin: impl Into<String>) -> Self {
         DappContext {
             network_id,
             dapp_definition: dapp_definition.into(),
@@ -93,11 +110,7 @@ pub fn interaction_discriminator(request: &Value) -> Option<&str> {
 
 /// Builds an account-proof request (`oneTimeAccounts` with a ROLA challenge), with
 /// an optional request for the person's name.
-pub fn account_proof_request(
-    challenge_hex: &str,
-    ctx: &DappContext,
-    request_persona: bool,
-) -> Value {
+pub fn account_proof_request(challenge_hex: &str, ctx: &DappContext, request_persona: bool) -> Value {
     let mut items = json!({
         "discriminator": "unauthorizedRequest",
         "oneTimeAccounts": {
@@ -132,12 +145,7 @@ pub fn account_request(ctx: &DappContext) -> Value {
 /// `blobs` are hex-encoded byte blobs referenced by the manifest via
 /// `Blob("<blake2b-256 hash>")` — e.g. the WASM of a package being published.
 /// Pass an empty slice for ordinary manifests that reference no blobs.
-pub fn transaction_request(
-    manifest: &str,
-    message: &str,
-    blobs: &[String],
-    ctx: &DappContext,
-) -> Value {
+pub fn transaction_request(manifest: &str, message: &str, blobs: &[String], ctx: &DappContext) -> Value {
     json!({
         "interactionId": Uuid::new_v4().to_string(),
         "metadata": metadata(ctx),
@@ -174,6 +182,10 @@ pub fn pre_authorization_request(
 }
 
 /// Fails if the response is a wallet `failure` (rejection/cancellation).
+///
+/// # Errors
+/// [`WalletInteractionError::WalletRejected`] when the wallet reports a `failure`, which is
+/// what a person cancelling on their phone looks like on the wire.
 pub fn check_failure(response: &Value) -> Result<(), WalletInteractionError> {
     if is_failure(response) {
         return Err(WalletInteractionError::WalletRejected(
@@ -188,14 +200,16 @@ pub fn check_failure(response: &Value) -> Result<(), WalletInteractionError> {
 }
 
 /// Extracts `(accountAddress, proof)` pairs from an account-proof response.
+///
+/// # Errors
+/// [`WalletInteractionError::WalletRejected`] on a cancelled request, or
+/// [`WalletInteractionError::Protocol`] when the response carries no `oneTimeAccounts`.
 pub fn extract_proofs(response: &Value) -> Result<Vec<(String, Value)>, WalletInteractionError> {
     check_failure(response)?;
     let ota = response
         .get("items")
         .and_then(|i| i.get("oneTimeAccounts"))
-        .ok_or_else(|| {
-            WalletInteractionError::Protocol("response without oneTimeAccounts".into())
-        })?;
+        .ok_or_else(|| WalletInteractionError::Protocol("response without oneTimeAccounts".into()))?;
     let proofs = ota
         .get("proofs")
         .and_then(|p| p.as_array())
@@ -203,10 +217,8 @@ pub fn extract_proofs(response: &Value) -> Result<Vec<(String, Value)>, WalletIn
         .unwrap_or_default();
     let mut out = Vec::new();
     for p in proofs {
-        if let (Some(addr), Some(proof)) = (
-            p.get("accountAddress").and_then(|a| a.as_str()),
-            p.get("proof"),
-        ) {
+        if let (Some(addr), Some(proof)) = (p.get("accountAddress").and_then(|a| a.as_str()), p.get("proof"))
+        {
             out.push((addr.to_string(), proof.clone()));
         }
     }
@@ -215,16 +227,15 @@ pub fn extract_proofs(response: &Value) -> Result<Vec<(String, Value)>, WalletIn
 
 /// Extracts the shared account addresses (and optional labels) from a response
 /// to [`account_request`] — the `oneTimeAccounts.accounts` array, no proofs.
-pub fn extract_accounts(
-    response: &Value,
-) -> Result<Vec<(String, Option<String>)>, WalletInteractionError> {
+///
+/// # Errors
+/// As [`check_failure`], plus [`WalletInteractionError::Protocol`] when the shape is wrong.
+pub fn extract_accounts(response: &Value) -> Result<Vec<(String, Option<String>)>, WalletInteractionError> {
     check_failure(response)?;
     let ota = response
         .get("items")
         .and_then(|i| i.get("oneTimeAccounts"))
-        .ok_or_else(|| {
-            WalletInteractionError::Protocol("response without oneTimeAccounts".into())
-        })?;
+        .ok_or_else(|| WalletInteractionError::Protocol("response without oneTimeAccounts".into()))?;
     let accounts = ota
         .get("accounts")
         .and_then(|a| a.as_array())
@@ -233,10 +244,7 @@ pub fn extract_accounts(
     let mut out = Vec::new();
     for account in accounts {
         if let Some(addr) = account.get("address").and_then(|v| v.as_str()) {
-            let label = account
-                .get("label")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
+            let label = account.get("label").and_then(|v| v.as_str()).map(str::to_string);
             out.push((addr.to_string(), label));
         }
     }
@@ -247,10 +255,7 @@ pub fn extract_accounts(
 /// Handles both a plain string and the `{ givenNames, familyName, nickname, variant }`
 /// shape (order depends on `variant`).
 pub fn extract_persona_name(response: &Value) -> Option<String> {
-    let name = response
-        .get("items")?
-        .get("oneTimePersonaData")?
-        .get("name")?;
+    let name = response.get("items")?.get("oneTimePersonaData")?.get("name")?;
     if let Some(s) = name.as_str() {
         return (!s.is_empty()).then(|| s.to_string());
     }
@@ -264,15 +269,8 @@ pub fn extract_persona_name(response: &Value) -> Option<String> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim();
-    let nick = name
-        .get("nickname")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim();
-    let variant = name
-        .get("variant")
-        .and_then(|v| v.as_str())
-        .unwrap_or("western");
+    let nick = name.get("nickname").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let variant = name.get("variant").and_then(|v| v.as_str()).unwrap_or("western");
     let full = if variant.eq_ignore_ascii_case("eastern") {
         format!("{family} {given}")
     } else {
@@ -289,6 +287,10 @@ pub fn extract_persona_name(response: &Value) -> Option<String> {
 }
 
 /// Extracts the `transactionIntentHash` from a transaction response.
+///
+/// # Errors
+/// As [`check_failure`], plus [`WalletInteractionError::Protocol`] when the response carries
+/// no intent hash — which means the transaction was never submitted.
 pub fn extract_transaction_intent_hash(response: &Value) -> Result<String, WalletInteractionError> {
     check_failure(response)?;
     response
@@ -297,16 +299,16 @@ pub fn extract_transaction_intent_hash(response: &Value) -> Result<String, Walle
         .and_then(|s| s.get("transactionIntentHash"))
         .and_then(|h| h.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| {
-            WalletInteractionError::Protocol("response without transactionIntentHash".into())
-        })
+        .ok_or_else(|| WalletInteractionError::Protocol("response without transactionIntentHash".into()))
 }
 
 /// Extracts the `signedPartialTransaction` from a pre-authorization response
 /// (searched flexibly, since the exact nesting varies by wallet version).
-pub fn extract_signed_partial_transaction(
-    response: &Value,
-) -> Result<String, WalletInteractionError> {
+///
+/// # Errors
+/// As [`check_failure`] on a cancelled request, plus [`WalletInteractionError::Protocol`]
+/// when no signed partial transaction can be found anywhere in the response.
+pub fn extract_signed_partial_transaction(response: &Value) -> Result<String, WalletInteractionError> {
     check_failure(response)?;
     fn find(v: &Value) -> Option<String> {
         if let Some(s) = v.get("signedPartialTransaction").and_then(|s| s.as_str()) {
@@ -318,9 +320,8 @@ pub fn extract_signed_partial_transaction(
             _ => None,
         }
     }
-    find(response).ok_or_else(|| {
-        WalletInteractionError::Protocol("response without signedPartialTransaction".into())
-    })
+    find(response)
+        .ok_or_else(|| WalletInteractionError::Protocol("response without signedPartialTransaction".into()))
 }
 
 // =============================== wallet side ===============================
@@ -336,10 +337,16 @@ fn interaction_id(request: &Value) -> String {
 /// A parsed account-proof request (the wallet must sign the ROLA challenge).
 #[derive(Debug, Clone)]
 pub struct AccountProofRequest {
+    /// Correlates the response with this request. Echoed back by the wallet.
     pub interaction_id: String,
+    /// The ROLA challenge to sign, hex-encoded. Freshness is the verifier's job: signing an
+    /// old challenge is exactly what a replay looks like.
     pub challenge_hex: String,
+    /// Network the request is for. See [`DappContext::network_id`].
     pub network_id: u8,
+    /// The dApp definition account asking for the proof.
     pub dapp_definition: String,
+    /// Origin the request claims. Part of what gets signed.
     pub origin: String,
 }
 
@@ -351,7 +358,15 @@ pub fn parse_account_proof_request(request: &Value) -> Option<AccountProofReques
     Some(AccountProofRequest {
         interaction_id: interaction_id(request),
         challenge_hex,
-        network_id: md.get("networkId").and_then(|n| n.as_u64()).unwrap_or(0) as u8,
+        // `try_into`, not `as`. This value arrives from the PEER, and a truncating cast turns
+        // a networkId of 256 into 0 — a DIFFERENT network — without a word. Getting the
+        // network wrong in a wallet interaction means signing against the wrong ledger, so an
+        // out-of-range value is treated as absent rather than quietly folded into a valid one.
+        network_id: md
+            .get("networkId")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| u8::try_from(n).ok())
+            .unwrap_or(0),
         dapp_definition: md
             .get("dAppDefinitionAddress")
             .and_then(|d| d.as_str())
@@ -368,8 +383,12 @@ pub fn parse_account_proof_request(request: &Value) -> Option<AccountProofReques
 /// A parsed transaction request (the wallet must sign and submit the manifest).
 #[derive(Debug, Clone)]
 pub struct TransactionRequest {
+    /// Correlates the response with this request.
     pub interaction_id: String,
+    /// The transaction manifest to sign and submit. This is what the wallet shows the person,
+    /// so it is the actual subject of their consent.
     pub manifest: String,
+    /// Free-text message displayed alongside the manifest.
     pub message: String,
 }
 
@@ -390,8 +409,14 @@ pub fn parse_transaction_request(request: &Value) -> Option<TransactionRequest> 
 /// A parsed pre-authorization request (the wallet must sign the subintent).
 #[derive(Debug, Clone)]
 pub struct PreAuthorizationRequest {
+    /// Correlates the response with this request.
     pub interaction_id: String,
+    /// The subintent to sign. Unlike a transaction, it commits the signer to a PART of one
+    /// that somebody else completes and submits.
     pub subintent_manifest: String,
+    /// How long the signature stays usable. It bounds the window in which the counterparty
+    /// can complete the transaction — a pre-authorization without expiry never stops being
+    /// spendable.
     pub expire_after_seconds: u64,
 }
 
@@ -411,6 +436,10 @@ pub fn parse_pre_authorization_request(request: &Value) -> Option<PreAuthorizati
 
 /// Builds the wallet's account-proof response (read back with [`extract_proofs`] and
 /// [`extract_persona_name`]).
+///
+/// # Errors
+/// [`WalletInteractionError::Protocol`] when the proofs cannot be encoded into the response
+/// shape the dApp side expects.
 pub fn account_proof_response(
     interaction_id: &str,
     address: &str,
@@ -521,10 +550,7 @@ mod tests {
         let parsed = parse_transaction_request(&req).unwrap();
         assert_eq!(parsed.manifest, "MANIFEST");
         let resp = transaction_response(&parsed.interaction_id, "txid_tdx_2_abc");
-        assert_eq!(
-            extract_transaction_intent_hash(&resp).unwrap(),
-            "txid_tdx_2_abc"
-        );
+        assert_eq!(extract_transaction_intent_hash(&resp).unwrap(), "txid_tdx_2_abc");
     }
 
     #[test]
@@ -534,10 +560,7 @@ mod tests {
         assert_eq!(parsed.subintent_manifest, "YIELD_TO_PARENT;");
         assert_eq!(parsed.expire_after_seconds, 600);
         let resp = pre_authorization_response(&parsed.interaction_id, "deadbeef");
-        assert_eq!(
-            extract_signed_partial_transaction(&resp).unwrap(),
-            "deadbeef"
-        );
+        assert_eq!(extract_signed_partial_transaction(&resp).unwrap(), "deadbeef");
     }
 
     #[test]
@@ -545,9 +568,7 @@ mod tests {
         let resp = failure_response("id", "rejectedByUser");
         assert_eq!(
             extract_proofs(&resp),
-            Err(WalletInteractionError::WalletRejected(
-                "rejectedByUser".into()
-            ))
+            Err(WalletInteractionError::WalletRejected("rejectedByUser".into()))
         );
     }
 }

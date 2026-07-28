@@ -66,13 +66,7 @@ impl App {
 pub async fn handle_line(app: &Rc<App>, line: &str) -> Option<String> {
     let message: Value = match serde_json::from_str(line) {
         Ok(value) => value,
-        Err(_) => {
-            return Some(error_json(
-                Value::Null,
-                PARSE_ERROR,
-                "Body is not valid JSON",
-            ))
-        }
+        Err(_) => return Some(error_json(Value::Null, PARSE_ERROR, "Body is not valid JSON")),
     };
 
     let method = message.get("method").and_then(Value::as_str);

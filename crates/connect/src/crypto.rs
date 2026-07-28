@@ -48,8 +48,7 @@ pub fn encrypt_payload(plaintext: &[u8], key: &[u8]) -> Result<String, ConnectEr
 
 /// Decrypts an `IV ‖ ciphertext‖tag` hex string.
 pub fn decrypt_payload(hex_data: &str, key: &[u8]) -> Result<Vec<u8>, ConnectError> {
-    let raw =
-        hex::decode(hex_data).map_err(|e| ConnectError::Crypto(format!("invalid hex: {e}")))?;
+    let raw = hex::decode(hex_data).map_err(|e| ConnectError::Crypto(format!("invalid hex: {e}")))?;
     if raw.len() < 12 + 16 {
         return Err(ConnectError::Crypto("payload too short".into()));
     }

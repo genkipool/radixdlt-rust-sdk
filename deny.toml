@@ -1,0 +1,127 @@
+# Supply-chain policy for the SDK. `cargo deny check` in CI.
+#
+# The stakes differ from an internal binary in two ways. These crates go to crates.io, so a
+# dependency's LICENCE decides what this project can be distributed as — a fact that is
+# expensive to discover at release time. And the connector binary is installed by AI agents on
+# other people's machines, so an advisory here reaches further than any deployment of ours.
+
+[advisories]
+yanked = "deny"
+ignore = [
+    # `paste` is unmaintained (RUSTSEC). It arrives transitively from Radix's own
+    # `radix-common` and nothing here can drop it. It is a compile-time proc-macro with no
+    # runtime surface, so the exposure is a build-time dependency that will not get fixes —
+    # worth knowing, not worth blocking on. Revisit when Radix moves off it.
+    "RUSTSEC-2024-0436",
+]
+
+[licenses]
+# Permissive only. A copyleft dependency would change the terms this SDK can be redistributed
+# under, which is a decision to take deliberately rather than inherit.
+allow = [
+    "Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC",
+    "Unicode-3.0", "Zlib", "MPL-2.0", "CC0-1.0", "OpenSSL",
+    # Community Data License Agreement, permissive. It covers webpki-root-certs, which is a
+    # bundle of root certificates — DATA, not code — and this is the licence written for that.
+    "CDLA-Permissive-2.0",
+    # See the note below: this is NOT a standard licence.
+    "LicenseRef-Radix-1.0",
+]
+confidence-threshold = 0.9
+
+# ─────────────────────────────────────────────────────────────────────────────────────────
+# OPEN QUESTION BEFORE PUBLISHING TO crates.io — read this before releasing.
+#
+# The Radix Scrypto crates (radix-common, radix-transactions, sbor, …) publish to crates.io
+# with NO `license` field at all — verified against the crates.io API, it is upstream's
+# omission and not a misconfiguration here. Their repository carries "Radix License v1.0", a
+# licence written by the Radix Foundation that has NO SPDX identifier and is not on the SPDX
+# list. It is not Apache-2.0.
+#
+# This SDK declares itself Apache-2.0 while depending on those crates. Whether that
+# combination can be published and redistributed as Apache-2.0 is a question for whoever owns
+# the release, with the licence text in front of them — not something to settle by a field
+# that upstream left blank.
+#
+# They are clarified below under `LicenseRef-Radix-1.0` so the gate keeps working for every
+# OTHER dependency instead of being switched off wholesale. That records the fact; it does not
+# resolve it.
+# ─────────────────────────────────────────────────────────────────────────────────────────
+
+# VERIFIED, NOT ASSUMED: Radix's own crates publish to crates.io with NO `license` field —
+# checked against the crates.io API for radix-common, radix-engine-interface and sbor. That is
+# upstream's omission, not a misconfiguration here.
+#
+# It is recorded as an exception so the gate stays useful for every OTHER dependency, but it is
+# an OPEN QUESTION before publishing this SDK: redistributing a crate whose dependencies state
+# no terms is a decision to take with the licence in front of you, not one to inherit from a
+# missing field. Confirm with RDX Works and replace this with a `[[licenses.clarify]]` naming
+# the actual licence.
+
+
+
+[[licenses.clarify]]
+name = "radix-blueprint-schema-init"
+expression = "LicenseRef-Radix-1.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "radix-common"
+expression = "LicenseRef-Radix-1.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "radix-common-derive"
+expression = "LicenseRef-Radix-1.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "radix-engine-interface"
+expression = "LicenseRef-Radix-1.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "radix-rust"
+expression = "LicenseRef-Radix-1.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "radix-sbor-derive"
+expression = "LicenseRef-Radix-1.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "radix-substate-store-interface"
+expression = "LicenseRef-Radix-1.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "radix-transactions"
+expression = "LicenseRef-Radix-1.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "sbor"
+expression = "LicenseRef-Radix-1.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "sbor-derive"
+expression = "LicenseRef-Radix-1.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "sbor-derive-common"
+expression = "LicenseRef-Radix-1.0"
+license-files = []
+
+[bans]
+# Two semver-compatible copies of one crate is how a fix lands in one place and not the other.
+# Warn rather than deny: the webrtc and Scrypto trees make some unavoidable today — that is
+# exactly why they live in separate workspaces.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

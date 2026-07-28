@@ -1,0 +1,4 @@
+# Tool configuration; the levels live in `[workspace.lints]`.
+too-many-lines-threshold = 120
+cognitive-complexity-threshold = 20
+too-many-arguments-threshold = 8

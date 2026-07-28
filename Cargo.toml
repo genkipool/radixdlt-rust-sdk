@@ -14,13 +14,66 @@ members = [
 # `radixdlt-rust-sdk` repository (published to crates.io). The application will
 # consume it by version/Git later, not by path.
 
+# ── Lints, inherited by every member ─────────────────────────────────────────────────────
+#
+# This is a PUBLIC library headed for crates.io. The bar is higher than for a binary: what is
+# wrong here ships into other people's programs, and what is undocumented here is an interface
+# nobody can use without reading the source.
+[workspace.lints.rust]
+unsafe_code = "deny"
+# In a library the documentation IS the interface. An undocumented public item is one a
+# consumer has to guess at, which is how a "stable" API gets used in ways it never promised.
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+# A panic inside a library is taken in the CONSUMER's process, where they cannot catch it and
+# did not choose it. Errors must be returned, not thrown.
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
+mem_forget = "deny"
+lossy_float_literal = "deny"
+float_cmp = "deny"
+
+# Silent-wrong-answer hazards. This crate derives addresses and verifies signatures: a
+# truncating cast here does not crash, it points money somewhere else.
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_precision_loss = "warn"
+
+# The public contract, spelled out.
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+missing_safety_doc = "deny"
+# must_use_candidate: dropped. It fired 27 times, nearly all of them on plain getters where
+# ignoring the result is not a bug. `#[must_use]` is worth adding by hand where forgetting
+# the value really would be one; as a blanket rule it is churn that trains people to stop
+# reading the linter.
+
+# Comprehension.
+too_many_lines = "warn"
+cognitive_complexity = "warn"
+redundant_clone = "warn"
+
+todo = "warn"
+unimplemented = "deny"
+dbg_macro = "deny"
+
 [workspace.package]
 edition = "2021"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/genkipool/radixdlt-rust-sdk"
 authors = ["Luis Alberto Reoyo Bolaños <68571366+genkipool@users.noreply.github.com>"]
-rust-version = "1.80"
+# VERIFIED, not declared by hand: 1.80 was in here and was false — the tree needs edition2024
+# (Rust 1.85+) and, through the icu crates, 1.87. Checked toolchain by toolchain; 1.86 still
+# fails. `scripts/qa/msrv.sh` re-checks it, because a promise nobody tests drifts the first
+# time someone uses a newer feature — and the first to find out is a user on an older Rust.
+rust-version = "1.87"
 
 [workspace.dependencies]
 ed25519-dalek = "2"

@@ -17,6 +17,18 @@
 //! the WebRTC futures off the `Send` requirement while still letting a slow
 //! pairing run in the background while other tool calls are served.
 
+// In TESTS a panic IS the failure mechanism. Library code keeps the deny: a panic there is
+// taken in the CONSUMER's process, which they neither chose nor can catch.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
+
 mod gateway;
 mod qr;
 mod rpc;

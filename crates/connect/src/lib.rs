@@ -26,6 +26,18 @@
 //! [`ConnectError::LinkBusy`] rather than a failure that looks like an unresponsive wallet.
 //! Callers need no lock of their own — including those that build a [`Connector`] per call.
 
+// In TESTS a panic IS the failure mechanism. Library code keeps the deny: a panic there is
+// taken in the CONSUMER's process, which they neither chose nor can catch.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
+
 pub mod chunking;
 mod connector;
 pub mod crypto;
@@ -87,17 +99,12 @@ async fn send_and_await_response(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    channel
-        .send_message(interaction, Duration::from_secs(15))
-        .await?;
+    channel.send_message(interaction, Duration::from_secs(15)).await?;
     let deadline = Instant::now() + overall_timeout;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let resp = channel.recv_message(remaining).await?;
-        let got = resp
-            .get("interactionId")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let got = resp.get("interactionId").and_then(|v| v.as_str()).unwrap_or("");
         if want_id.is_empty() || got == want_id {
             return Ok(resp);
         }
@@ -159,18 +166,8 @@ impl Connector {
         self
     }
 
-    async fn establish(
-        &self,
-        password: &[u8],
-        open_timeout: Duration,
-    ) -> Result<Channel, ConnectError> {
-        connector::establish(
-            &self.ice_servers,
-            &self.signaling_base,
-            password,
-            open_timeout,
-        )
-        .await
+    async fn establish(&self, password: &[u8], open_timeout: Duration) -> Result<Channel, ConnectError> {
+        connector::establish(&self.ice_servers, &self.signaling_base, password, open_timeout).await
     }
 
     /// Takes this link's turn, so only ONE conversation runs on it at a time.
@@ -266,8 +263,7 @@ impl Connector {
     ) -> Result<String, ConnectError> {
         let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
         let mut channel = self.establish(password, budget).await?;
-        let interaction =
-            pre_authorization_request(subintent_manifest, message, expire_after_seconds, ctx);
+        let interaction = pre_authorization_request(subintent_manifest, message, expire_after_seconds, ctx);
         let response = send_and_await_response(&mut channel, &interaction, budget).await?;
         Ok(extract_signed_partial_transaction(&response)?)
     }
@@ -319,8 +315,8 @@ impl Connector {
         // Verify the wallet's linking signature.
         if let Some(sig_hex) = sig {
             use ed25519_dalek::{Signature, VerifyingKey};
-            let pk_bytes = hex::decode(&wallet_pk)
-                .map_err(|e| ConnectError::Crypto(format!("wallet pk hex: {e}")))?;
+            let pk_bytes =
+                hex::decode(&wallet_pk).map_err(|e| ConnectError::Crypto(format!("wallet pk hex: {e}")))?;
             let pk_arr: [u8; 32] = pk_bytes
                 .as_slice()
                 .try_into()
@@ -434,9 +430,7 @@ mod tests {
         let resp = json!({ "discriminator": "failure", "error": "rejectedByUser" });
         assert_eq!(
             extract_proofs(&resp),
-            Err(WalletInteractionError::WalletRejected(
-                "rejectedByUser".into()
-            ))
+            Err(WalletInteractionError::WalletRejected("rejectedByUser".into()))
         );
     }
 }

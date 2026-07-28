@@ -78,8 +78,7 @@ impl LinkState {
             .links
             .first()
             .ok_or_else(|| ConnectError::Protocol("no paired link".into()))?;
-        hex::decode(&link.password)
-            .map_err(|e| ConnectError::Protocol(format!("invalid password hex: {e}")))
+        hex::decode(&link.password).map_err(|e| ConnectError::Protocol(format!("invalid password hex: {e}")))
     }
 
     /// Raw password bytes of the link paired to a specific wallet public key, so the
@@ -90,8 +89,7 @@ impl LinkState {
             .iter()
             .find(|l| l.wallet_public_key == wallet_public_key)
             .ok_or_else(|| ConnectError::Protocol(format!("no link for {wallet_public_key}")))?;
-        hex::decode(&link.password)
-            .map_err(|e| ConnectError::Protocol(format!("invalid password hex: {e}")))
+        hex::decode(&link.password).map_err(|e| ConnectError::Protocol(format!("invalid password hex: {e}")))
     }
 
     /// Adds a link, replacing any existing one with the same wallet public key (so
@@ -113,8 +111,7 @@ impl LinkState {
     /// Removes the link paired to `wallet_public_key`. Returns true if one was removed.
     pub fn remove_link(&mut self, wallet_public_key: &str) -> bool {
         let before = self.links.len();
-        self.links
-            .retain(|l| l.wallet_public_key != wallet_public_key);
+        self.links.retain(|l| l.wallet_public_key != wallet_public_key);
         self.link = None;
         self.links.len() != before
     }

@@ -133,9 +133,10 @@ impl Signaling {
     }
 
     pub fn send(&self, method: &str, payload: Value) -> Result<(), ConnectError> {
-        let target = self.target_client_id.clone().ok_or_else(|| {
-            ConnectError::Protocol("no targetClientId yet (peer not announced)".into())
-        })?;
+        let target = self
+            .target_client_id
+            .clone()
+            .ok_or_else(|| ConnectError::Protocol("no targetClientId yet (peer not announced)".into()))?;
         self.out
             .send(OutgoingRequest {
                 method: method.into(),

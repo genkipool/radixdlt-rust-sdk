@@ -14,9 +14,7 @@ use tokio::sync::oneshot;
 
 use radixdlt_connect::crypto::blake2b_256;
 use radixdlt_connect::state::{Link, LinkState};
-use radixdlt_connect::{
-    extract_accounts, extract_persona_name, extract_proofs, Connector, DappContext,
-};
+use radixdlt_connect::{extract_accounts, extract_persona_name, extract_proofs, Connector, DappContext};
 use radixdlt_rola::{verify_account_proof, AccountProof};
 
 use crate::gateway;
@@ -364,9 +362,7 @@ async fn pair_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
     let payload = match tokio::time::timeout(QR_READY_TIMEOUT, qr_rx).await {
         Ok(Ok(payload)) => payload,
         _ => {
-            return ToolResult::error(
-                "could not start pairing (the QR payload was not produced). Try again.",
-            )
+            return ToolResult::error("could not start pairing (the QR payload was not produced). Try again.")
         }
     };
 
@@ -435,9 +431,7 @@ async fn pair_status(app: &Rc<App>, args: &Value) -> ToolResult {
 fn finish_pairing(app: &Rc<App>, outcome: PairOutcome, label: Option<String>) -> ToolResult {
     let mut state = match Store::load_or_init(app.config_path()) {
         Ok(state) => state,
-        Err(e) => {
-            return ToolResult::error(format!("paired, but could not open the state file: {e}"))
-        }
+        Err(e) => return ToolResult::error(format!("paired, but could not open the state file: {e}")),
     };
     state.add_or_replace_link(Link {
         password: hex::encode(&outcome.password),
@@ -530,10 +524,7 @@ async fn request_accounts(app: &Rc<App>, args: &Value) -> ToolResult {
         return ToolResult::error("the wallet shared no accounts.".to_string());
     }
 
-    let mut out = format!(
-        "ACCOUNTS SHARED ✓ (network: {net})\n",
-        net = network.label()
-    );
+    let mut out = format!("ACCOUNTS SHARED ✓ (network: {net})\n", net = network.label());
     for (i, (address, label)) in accounts.iter().enumerate() {
         out.push_str(&format!(
             "{n}. {address}  [{label}]\n",
@@ -638,12 +629,13 @@ async fn deploy_package(app: &Rc<App>, args: &Value) -> ToolResult {
     // Dry-run on the Gateway (with the WASM blob) before asking the user to
     // approve — a package deploy is costly, so never sign one that would fail.
     // Only a definitive simulated failure blocks; a preview infra error does not.
-    if let Ok(outcome) = gateway::preview(network, &manifest, std::slice::from_ref(&wasm_hex)).await
-    {
+    if let Ok(outcome) = gateway::preview(network, &manifest, std::slice::from_ref(&wasm_hex)).await {
         if !outcome.success {
             return ToolResult::error(format!(
                 "Deploy preview FAILED — not signing (a deploy costs the fee even when it fails):\n{}",
-                outcome.message.unwrap_or_else(|| "the simulation did not succeed".to_string()),
+                outcome
+                    .message
+                    .unwrap_or_else(|| "the simulation did not succeed".to_string()),
             ));
         }
     }
@@ -675,8 +667,7 @@ fn resolve_blobs(args: &Value) -> Result<Vec<String>, String> {
             let path = entry
                 .as_str()
                 .ok_or("each entry in 'blob_files' must be a file path")?;
-            let bytes = std::fs::read(path)
-                .map_err(|e| format!("could not read blob file '{path}': {e}"))?;
+            let bytes = std::fs::read(path).map_err(|e| format!("could not read blob file '{path}': {e}"))?;
             blobs.push(hex::encode(bytes));
         }
     }
@@ -783,8 +774,7 @@ async fn request_account_proof(app: &Rc<App>, args: &Value) -> ToolResult {
         public_key_hex,
         signature_hex,
     };
-    let verification =
-        verify_account_proof(&ap, &challenge, &dapp_definition, &origin, network.id());
+    let verification = verify_account_proof(&ap, &challenge, &dapp_definition, &origin, network.id());
     let persona = extract_persona_name(&response);
 
     let (verdict, extra) = match verification {
@@ -841,18 +831,17 @@ async fn transaction_status(args: &Value) -> ToolResult {
 /* ──────────────────────────────── helpers ──────────────────────────────── */
 
 fn load_password(app: &Rc<App>, args: &Value) -> Result<Vec<u8>, String> {
-    let state = Store::load(app.config_path()).map_err(|_| {
-        "no paired wallet. Call pair_wallet first (needed once per device).".to_string()
-    })?;
+    let state = Store::load(app.config_path())
+        .map_err(|_| "no paired wallet. Call pair_wallet first (needed once per device).".to_string())?;
     password_for(&state, opt_str(args, "wallet_public_key").as_deref())
 }
 
 fn password_for(state: &LinkState, wallet_public_key: Option<&str>) -> Result<Vec<u8>, String> {
     match wallet_public_key {
         Some(pk) => state.password_bytes_for(pk).map_err(|e| e.to_string()),
-        None => state.password_bytes().map_err(|_| {
-            "no paired wallet. Call pair_wallet first (needed once per device).".to_string()
-        }),
+        None => state
+            .password_bytes()
+            .map_err(|_| "no paired wallet. Call pair_wallet first (needed once per device).".to_string()),
     }
 }
 
@@ -990,10 +979,7 @@ mod tests {
     fn resolve_blobs_reads_inline_hex_and_files() {
         // Inline hex is validated and passed through; odd-length/non-hex is rejected.
         let inline = json!({ "blobs": ["deadbeef", ""] });
-        assert_eq!(
-            resolve_blobs(&inline).unwrap(),
-            vec!["deadbeef".to_string()]
-        );
+        assert_eq!(resolve_blobs(&inline).unwrap(), vec!["deadbeef".to_string()]);
         assert!(resolve_blobs(&json!({ "blobs": ["xyz"] })).is_err());
         assert!(resolve_blobs(&json!({ "blobs": ["abc"] })).is_err());
 

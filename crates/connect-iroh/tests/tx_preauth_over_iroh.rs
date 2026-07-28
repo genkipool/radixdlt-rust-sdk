@@ -5,9 +5,7 @@
 //! ignored by default. Run with:
 //!   cargo test --test tx_preauth_over_iroh -- --ignored
 
-use radixdlt_connect_iroh::protocol::{
-    request_pre_authorization, request_transaction, DappContext, Wallet,
-};
+use radixdlt_connect_iroh::protocol::{request_pre_authorization, request_transaction, DappContext, Wallet};
 use radixdlt_connect_iroh::IrohConnector;
 use radixdlt_keystore::KeyFile;
 

@@ -38,6 +38,18 @@
 //! 2. Add `Xx: "…"` arms to the `tr!` call sites you want translated. Untouched
 //!    call sites keep compiling and fall back to English.
 
+// In TESTS a panic IS the failure mechanism. Library code keeps the deny: a panic there is
+// taken in the CONSUMER's process, which they neither chose nor can catch.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
+
 use std::sync::OnceLock;
 
 /// Language supported by the SDK.
@@ -177,22 +189,13 @@ mod tests {
 
     #[test]
     fn tr_picks_the_right_arm() {
-        assert_eq!(
-            tr!(Lang::Es, "hello".to_string(), "hola".to_string()),
-            "hola"
-        );
-        assert_eq!(
-            tr!(Lang::En, "hello".to_string(), "hola".to_string()),
-            "hello"
-        );
+        assert_eq!(tr!(Lang::Es, "hello".to_string(), "hola".to_string()), "hola");
+        assert_eq!(tr!(Lang::En, "hello".to_string(), "hola".to_string()), "hello");
     }
 
     #[test]
     fn tr_labelled_form_falls_back_to_english() {
-        assert_eq!(
-            tr!(Lang::Es, "hello".to_string(), Es: "hola".to_string()),
-            "hola"
-        );
+        assert_eq!(tr!(Lang::Es, "hello".to_string(), Es: "hola".to_string()), "hola");
         // A language with no labelled arm gets the English text.
         assert_eq!(
             tr!(Lang::En, "hello".to_string(), Es: "hola".to_string()),
@@ -206,10 +209,7 @@ mod tests {
     #[test]
     fn the_system_locale_file_is_read_when_the_environment_is_empty() {
         assert_eq!(lang_from_locale_file("LANG=es_ES.UTF-8\n"), Some(Lang::Es));
-        assert_eq!(
-            lang_from_locale_file("LANG=\"es_ES.UTF-8\"\n"),
-            Some(Lang::Es)
-        );
+        assert_eq!(lang_from_locale_file("LANG=\"es_ES.UTF-8\"\n"), Some(Lang::Es));
         assert_eq!(lang_from_locale_file("LANG=en_GB.UTF-8\n"), Some(Lang::En));
     }
 

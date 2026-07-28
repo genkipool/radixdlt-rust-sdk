@@ -41,3 +41,6 @@ full = ["rola", "keystore", "gateway", "connect-types"]
 
 [package.metadata.docs.rs]
 all-features = true
+
+[lints]
+workspace = true

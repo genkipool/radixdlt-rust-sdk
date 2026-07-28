@@ -1,3 +1,7 @@
+// Examples are demonstrations: `expect` is the idiomatic way to keep them short and to
+// show the failure loudly. Library code keeps the deny.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 //! End-to-end check against a REAL wallet: reuse an existing pairing
 //! (`~/.config/radix-pam/connector.json`), ask the phone for a ROLA proof over
 //! WebRTC and verify it natively in Rust with `radixdlt-rola`.
@@ -29,10 +33,7 @@ async fn main() {
             .unwrap_or_else(|| def.to_string())
     };
     let home = std::env::var("HOME").unwrap_or_default();
-    let state_path = get(
-        "--state",
-        &format!("{home}/.config/radix-pam/connector.json"),
-    );
+    let state_path = get("--state", &format!("{home}/.config/radix-pam/connector.json"));
     let timeout_secs: u64 = get("--timeout", "90").parse().unwrap_or(90);
     let dapp = get("--dapp", DAPP_DEFAULT);
 

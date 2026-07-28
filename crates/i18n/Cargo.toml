@@ -12,3 +12,6 @@ categories = ["localization", "internationalization"]
 readme = "README.md"
 
 [dependencies]
+
+[lints]
+workspace = true

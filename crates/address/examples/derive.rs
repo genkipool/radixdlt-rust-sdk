@@ -1,3 +1,7 @@
+// Examples are demonstrations: `expect` is the idiomatic way to keep them short and to
+// show the failure loudly. Library code keeps the deny.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 //! Derives a Radix virtual-account address from an Ed25519 public key.
 //!
 //! Usage:

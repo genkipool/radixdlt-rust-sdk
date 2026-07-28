@@ -1,8 +1,8 @@
 //! High-level Radix Connect flows over the iroh transport, using the **shared
 //! wallet-interaction schema** ([`radixdlt_connect_types`]) — the exact same JSON
 //! the WebRTC transport uses. Both ends are pure Rust (SDK-to-SDK): the "wallet"
-//! side is a [`Wallet`] that holds a key and answers interactions; the "dApp" side
-//! sends requests over an [`IrohChannel`] and parses responses.
+//! side is a [`crate::protocol::Wallet`] that holds a key and answers interactions; the "dApp" side
+//! sends requests over an [`crate::IrohChannel`] and parses responses.
 //!
 //! Supported interactions: account proof (ROLA), transaction (sign + submit) and
 //! pre-authorization (sign a subintent).
@@ -10,12 +10,11 @@
 use ed25519_dalek::{Signer, SigningKey};
 use radixdlt_address::virtual_account_address;
 use radixdlt_connect_types::{
-    account_proof_request, account_proof_response, extract_proofs,
-    extract_signed_partial_transaction, extract_transaction_intent_hash, failure_response,
-    interaction_discriminator, parse_account_proof_request, parse_pre_authorization_request,
-    parse_transaction_request, pre_authorization_request, pre_authorization_response,
-    transaction_request, transaction_response, AccountProofRequest, PreAuthorizationRequest,
-    TransactionRequest,
+    account_proof_request, account_proof_response, extract_proofs, extract_signed_partial_transaction,
+    extract_transaction_intent_hash, failure_response, interaction_discriminator,
+    parse_account_proof_request, parse_pre_authorization_request, parse_transaction_request,
+    pre_authorization_request, pre_authorization_response, transaction_request, transaction_response,
+    AccountProofRequest, PreAuthorizationRequest, TransactionRequest,
 };
 use radixdlt_gateway_tx::{Ed25519PrivateKey, Gateway};
 use radixdlt_keystore::KeyFile;
@@ -164,9 +163,7 @@ impl Wallet {
     pub async fn answer(&self, channel: &mut IrohChannel) -> Result<(), IrohError> {
         let request = channel.recv_message().await?;
         let response = match interaction_discriminator(&request) {
-            Some("unauthorizedRequest") | Some("authorizedRequest") => {
-                self.account_proof_response(&request)
-            }
+            Some("unauthorizedRequest") | Some("authorizedRequest") => self.account_proof_response(&request),
             Some("transaction") => self.transaction_response(&request).await,
             Some("preAuthorizationRequest") => self.pre_authorization_response(&request).await,
             other => failure_response(
@@ -219,11 +216,7 @@ impl Wallet {
             Ok(m) => m,
             Err(e) => return failure_response(&interaction_id, &e.to_string()),
         };
-        let tx = match self
-            .gateway
-            .build_notarized(compiled, &[&key], &key, false)
-            .await
-        {
+        let tx = match self.gateway.build_notarized(compiled, &[&key], &key, false).await {
             Ok(t) => t,
             Err(e) => return failure_response(&interaction_id, &e.to_string()),
         };

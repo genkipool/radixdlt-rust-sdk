@@ -42,11 +42,7 @@ impl IceServer {
     }
 
     /// A TURN server with username/password credentials.
-    pub fn turn(
-        url: impl Into<String>,
-        username: impl Into<String>,
-        credential: impl Into<String>,
-    ) -> Self {
+    pub fn turn(url: impl Into<String>, username: impl Into<String>, credential: impl Into<String>) -> Self {
         IceServer {
             urls: vec![url.into()],
             username: username.into(),
@@ -322,8 +318,8 @@ impl Channel {
         message: &Value,
         confirm_timeout: Duration,
     ) -> Result<(), ConnectError> {
-        let bytes = serde_json::to_vec(message)
-            .map_err(|e| ConnectError::Protocol(format!("serialization: {e}")))?;
+        let bytes =
+            serde_json::to_vec(message).map_err(|e| ConnectError::Protocol(format!("serialization: {e}")))?;
         let (message_id, packages) = message_to_chunks(&bytes);
         for p in &packages {
             self.dc

@@ -13,6 +13,18 @@
 //!
 //! User-facing error text is localized to the system language.
 
+// In TESTS a panic IS the failure mechanism. Library code keeps the deny: a panic there is
+// taken in the CONSUMER's process, which they neither chose nor can catch.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
@@ -206,10 +218,9 @@ impl IrohConnector {
 
     /// Connects to a peer using a ticket produced by [`ticket`](Self::ticket).
     pub async fn connect_to_ticket(&self, ticket: &str) -> Result<IrohChannel, IrohError> {
-        let bytes =
-            hex::decode(ticket).map_err(|e| IrohError::Connect(format!("invalid ticket: {e}")))?;
-        let addr: EndpointAddr = serde_json::from_slice(&bytes)
-            .map_err(|e| IrohError::Connect(format!("invalid ticket: {e}")))?;
+        let bytes = hex::decode(ticket).map_err(|e| IrohError::Connect(format!("invalid ticket: {e}")))?;
+        let addr: EndpointAddr =
+            serde_json::from_slice(&bytes).map_err(|e| IrohError::Connect(format!("invalid ticket: {e}")))?;
         self.connect(addr).await
     }
 
@@ -252,9 +263,7 @@ impl IrohConnector {
             .accept()
             .await
             .ok_or_else(|| IrohError::Accept("endpoint closed".to_string()))?;
-        let conn = incoming
-            .await
-            .map_err(|e| IrohError::Accept(e.to_string()))?;
+        let conn = incoming.await.map_err(|e| IrohError::Accept(e.to_string()))?;
         let (send, recv) = conn
             .accept_bi()
             .await

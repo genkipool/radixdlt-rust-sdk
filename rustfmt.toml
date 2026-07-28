@@ -1,0 +1,2 @@
+# Same width as the sibling PAM project, so code moving between them keeps its shape.
+max_width = 110
