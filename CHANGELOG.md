@@ -56,6 +56,25 @@ minor versions may contain breaking changes.
   `interactionId`, discarding stale queued responses; `LinkState` documents the
   multi-device API in the README.
 
+## [connector-v0.2.2]
+
+### Changed
+
+- `radixdlt-connector-mcp` — rebuilt on `reqwest` 0.13. The binary is otherwise
+  unchanged: same MCP protocol, same commands, no API difference.
+
+  TLS root certificates now come from the OPERATING SYSTEM's trust store
+  (`rustls-platform-verifier`) instead of being compiled into the binary
+  (`webpki-roots`), which is what `reqwest` 0.13's `rustls` feature selects.
+  A corporate or self-managed CA installed on the machine is honoured from now
+  on, and the three platforms no longer share one embedded root set.
+
+  Verified against the live Stokenet Gateway on **Linux only** — the maintainers
+  have no macOS or Windows hardware. The platform verifier exists precisely to
+  handle those, and no failure is expected, but if HTTPS to the Gateway fails on
+  macOS or Windows after upgrading, this change is where to look; 0.2.1 is the
+  last release with embedded roots.
+
 ## [0.1.0]
 
 First release. All crates start at `0.1.0`.
