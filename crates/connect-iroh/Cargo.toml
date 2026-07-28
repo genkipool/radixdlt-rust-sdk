@@ -18,13 +18,28 @@ keywords = ["radix", "radixdlt", "iroh", "quic", "p2p"]
 categories = ["cryptography::cryptocurrencies", "network-programming"]
 readme = "README.md"
 
+[features]
+# Answering wallet requests (`protocol::Wallet`): account proofs, transactions and
+# pre-authorizations. ON by default, so nothing changes for anyone already using this crate.
+#
+# It is separable because the Scrypto engine it pulls pins `regex` to EXACTLY 1.9.3, while
+# `webrtc` (the mobile-wallet transport) requires `>=1.9.5`. Those two cannot resolve in one
+# dependency tree, so a crate that only relays bytes over iroh — and never builds or submits a
+# transaction — used to be locked out of any workspace containing the mobile wallet, purely
+# because of a dependency it did not use.
+default = ["wallet"]
+wallet = ["dep:radixdlt-gateway-tx"]
+
 [dependencies]
 radixdlt-i18n = { path = "../i18n", version = "0.1.0" }
 radixdlt-connect-types = { path = "../connect-types", version = "0.1.0" }
 radixdlt-address = { path = "../address", version = "0.1.0" }
 radixdlt-rola = { path = "../rola", version = "0.1.0" }
 radixdlt-keystore = { path = "../keystore", version = "0.1.0" }
-radixdlt-gateway-tx = { path = "../gateway-tx", version = "0.1.0" }
+# Only the `wallet` side needs this: it drags in the whole Scrypto engine (radix-engine,
+# radix-transactions). Optional so that a caller wanting ONLY the iroh transport does not
+# inherit it — see the note on the `wallet` feature below.
+radixdlt-gateway-tx = { path = "../gateway-tx", version = "0.1.0", optional = true }
 iroh = "1"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"

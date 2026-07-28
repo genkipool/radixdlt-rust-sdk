@@ -19,6 +19,16 @@ minor versions may contain breaking changes.
 
 ### Changed
 
+- `radixdlt-connect-iroh` — `protocol::Wallet` (and with it the `radixdlt-gateway-tx`
+  dependency) is now behind a `wallet` feature, **on by default**, so nothing
+  changes for existing users. It is separable because the Scrypto engine that
+  crate pulls pins `regex` to exactly `1.9.3`, while `webrtc` requires `>=1.9.5`:
+  a consumer that only wants the iroh transport could not share a dependency tree
+  with the mobile wallet, over a dependency it never used. Take it with
+  `default-features = false` to get the transport alone.
+
+### Changed
+
 - `reqwest` aligned to `0.13` across every crate and workspace (it was pinned to
   `0.12` while `iroh` already pulled `0.13`). Any binary combining the Gateway
   client with the iroh transport was linking two independent HTTP and TLS stacks;

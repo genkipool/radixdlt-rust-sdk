@@ -20,6 +20,9 @@ use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, TransportAd
 use radixdlt_i18n::{tr, Lang};
 use serde_json::Value;
 
+/// Answering wallet requests. Behind the `wallet` feature because it needs the Scrypto
+/// engine, whose exact `regex` pin cannot coexist with the mobile wallet's webrtc stack.
+#[cfg(feature = "wallet")]
 pub mod protocol;
 
 /// Derives the `EndpointId` (as a string) from a 32-byte seed, without binding an
