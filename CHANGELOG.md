@@ -56,6 +56,20 @@ minor versions may contain breaking changes.
   `interactionId`, discarding stale queued responses; `LinkState` documents the
   multi-device API in the README.
 
+## [connector-v0.2.3]
+
+### Fixed
+
+- `radixdlt-connector-mcp` — messages now follow the SYSTEM's language when the
+  process inherits no locale. An MCP server is started by an agent, not from a
+  shell, so `LANG` is usually absent: every error it surfaced came out in English
+  even on a machine configured in Spanish. `Lang::detect` now consults
+  `/etc/locale.conf` and `/etc/default/locale` before falling back to English.
+
+  Verified on Linux only — no macOS or Windows hardware here. Those systems do
+  not use these files, so their behaviour is unchanged (English fallback), which
+  is what 0.2.2 already did everywhere.
+
 ## [connector-v0.2.2]
 
 ### Changed
