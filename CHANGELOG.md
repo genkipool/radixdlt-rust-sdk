@@ -17,6 +17,15 @@ minor versions may contain breaking changes.
   English fallback; `Lang` is now `#[non_exhaustive]`, so adding a language is
   non-breaking.
 
+### Changed
+
+- `reqwest` aligned to `0.13` across every crate and workspace (it was pinned to
+  `0.12` while `iroh` already pulled `0.13`). Any binary combining the Gateway
+  client with the iroh transport was linking two independent HTTP and TLS stacks;
+  now there is one. HTTPS to the Gateway is covered by an ignored smoke test
+  (`cargo test -p radixdlt-gateway-tx -- --ignored`), because a wrong TLS-roots
+  feature fails at runtime rather than at compile time.
+
 ### Fixed
 
 - `radixdlt-connect` — requests sharing a paired link are now serialized. A link

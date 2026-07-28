@@ -441,3 +441,20 @@ mod tests {
         assert!(!hex.is_empty());
     }
 }
+
+#[cfg(test)]
+mod tls_smoke {
+    /// HTTPS against the REAL Stokenet Gateway. Feature flags decide which TLS roots are
+    /// compiled in, and a wrong choice fails only at runtime — so this must be measured,
+    /// not assumed. Ignored by default (needs network): `cargo test -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn https_to_the_real_gateway_works() {
+        let gw = super::Gateway::stokenet();
+        let epoch = gw
+            .current_epoch()
+            .await
+            .expect("HTTPS to the Gateway must work");
+        assert!(epoch > 0, "a live Gateway reports a non-zero epoch");
+    }
+}

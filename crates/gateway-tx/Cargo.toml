@@ -20,3 +20,7 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 rand_core = { workspace = true }
 hex = { workspace = true }
+
+[dev-dependencies]
+# The TLS smoke test needs a runtime; the crate itself stays runtime-agnostic.
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
