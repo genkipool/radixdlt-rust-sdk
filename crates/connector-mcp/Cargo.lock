@@ -1887,7 +1887,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connector-mcp"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "base64 0.22.1",
  "dirs",
@@ -1900,6 +1900,7 @@ dependencies = [
  "radixdlt-rola",
  "rand_core 0.6.4",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",

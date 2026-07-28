@@ -51,5 +51,27 @@ else
 fi
 
 echo
+echo "== it can open the WALLET path without crashing =="
+# The check that was missing, and its absence let three broken releases through. 0.2.2 to
+# 0.2.4 panicked on rustls' crypto provider the moment the signalling connection opened — so
+# nothing ever reached the phone — while the MCP handshake and the Gateway call above both
+# kept passing. Those two exercise HTTP; the wallet path is the tool's actual purpose.
+#
+# No approval is needed on the phone: reaching the point where the wallet is contacted is
+# enough to prove the provider is installed and TLS came up.
+dapp="${RADIX_DAPP_DEFINITION_STOKENET:-account_tdx_2_129grv2vv4q3w7aqzzwesc5k0xp4lg5dj4p78q80ca79rj5rct8mujk}"
+call=$(printf '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"request_accounts","arguments":{"network":"stokenet","dapp_definition":"%s"}}}' "$dapp")
+err=$(mktemp)
+{ printf '%s\n' "$init"; sleep 1; printf '%s\n' "$call"; sleep 12; } | timeout 25 "$BIN" >/dev/null 2>"$err"
+if grep -qiE "CryptoProvider|panicked" "$err"; then
+    echo "  FAILED: the binary panics before it can reach the wallet" >&2
+    head -3 "$err" >&2
+    fail=1
+else
+    echo "  ok — the signalling path opens"
+fi
+rm -f "$err"
+
+echo
 [ "$fail" = 0 ] && echo "Release $TAG verified." || echo "Release $TAG FAILED verification." >&2
 exit $fail

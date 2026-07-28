@@ -56,6 +56,23 @@ minor versions may contain breaking changes.
   `interactionId`, discarding stale queued responses; `LinkState` documents the
   multi-device API in the README.
 
+## [connector-v0.2.5]
+
+### Fixed
+
+- **Versions 0.2.2 to 0.2.4 could not talk to the wallet at all.** They panicked
+  on rustls' crypto provider the moment the signalling connection opened, so no
+  request ever reached the phone. The binary links two providers — aws-lc-rs
+  arrives with `reqwest`, ring with `webrtc` — and rustls refuses to guess
+  between them; one is now installed explicitly at startup.
+
+  Introduced in 0.2.2 by the move to `reqwest` 0.13, and missed because the
+  release check only exercised the MCP handshake and a Gateway call. Both are
+  HTTP, both kept working, and neither touches the wallet path that is the whole
+  point of the tool. `scripts/qa/verify-release.sh` now opens that path too.
+
+  **If you are on 0.2.2, 0.2.3 or 0.2.4, upgrade.** 0.2.1 is unaffected.
+
 ## [connector-v0.2.4]
 
 ### Fixed

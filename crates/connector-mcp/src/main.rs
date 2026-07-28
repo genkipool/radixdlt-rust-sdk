@@ -42,6 +42,19 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::rpc::App;
 
 fn main() {
+    // Pick rustls' crypto provider explicitly, before anything opens a TLS connection.
+    //
+    // This binary links TWO providers — aws-lc-rs arrives with `reqwest`, ring with `webrtc` —
+    // and rustls will not guess between them: it panics the moment a connection needs one.
+    // That is what happened in 0.2.2 through 0.2.4, and it broke the tool's whole purpose,
+    // because the panic lands on the WALLET path: the signalling connection dies and nothing
+    // ever reaches the phone. The Gateway calls kept working, which is why a release check that
+    // only exercised HTTP did not notice.
+    //
+    // The error is ignored on purpose: it only means a provider was already installed, which is
+    // just as good an outcome as installing one.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
