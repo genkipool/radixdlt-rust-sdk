@@ -16,6 +16,7 @@ use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 
@@ -103,17 +104,28 @@ pub struct Channel {
 
 /// Establishes the WebRTC connection with the wallet using the link password.
 /// Resolves once the data channel is open.
+///
+/// `relay_only` restricts ICE to relay candidates: no host or server-reflexive candidate is
+/// gathered, so the only path out is the TURN allocation. Paired with a TURN server reached
+/// over TCP it makes the whole connection outbound-TCP, which is what hosts that forbid UDP
+/// require.
 pub async fn establish(
     ice_servers: &[IceServer],
     signaling_base: &str,
     password: &[u8],
     open_timeout: Duration,
+    relay_only: bool,
 ) -> Result<Channel, ConnectError> {
     let mut signaling = Signaling::connect(password, signaling_base).await?;
 
     let api = APIBuilder::new().build();
     let config = RTCConfiguration {
         ice_servers: to_rtc(ice_servers),
+        ice_transport_policy: if relay_only {
+            RTCIceTransportPolicy::Relay
+        } else {
+            RTCIceTransportPolicy::All
+        },
         ..Default::default()
     };
     let pc = Arc::new(

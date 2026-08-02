@@ -137,6 +137,7 @@ fn link_turn(password: &[u8]) -> std::sync::Arc<tokio::sync::Mutex<()>> {
 pub struct Connector {
     ice_servers: Vec<IceServer>,
     signaling_base: String,
+    relay_only: bool,
 }
 
 impl Default for Connector {
@@ -144,6 +145,7 @@ impl Default for Connector {
         Connector {
             ice_servers: radix_default_ice_servers(),
             signaling_base: SIGNALING_BASE.to_string(),
+            relay_only: false,
         }
     }
 }
@@ -166,8 +168,27 @@ impl Connector {
         self
     }
 
+    /// Restricts ICE to relay candidates only.
+    ///
+    /// Host and server-reflexive candidates are not gathered, so the connection goes through
+    /// the TURN allocation and nothing else. Combined with a TURN server reached over TCP
+    /// (`turns:…?transport=tcp`) the process opens no UDP socket at all, which is what a host
+    /// that forbids UDP requires. It costs latency and relay bandwidth, so it is off by
+    /// default: the default ICE set already falls back to the relay when direct paths fail.
+    pub fn with_relay_only(mut self, relay_only: bool) -> Self {
+        self.relay_only = relay_only;
+        self
+    }
+
     async fn establish(&self, password: &[u8], open_timeout: Duration) -> Result<Channel, ConnectError> {
-        connector::establish(&self.ice_servers, &self.signaling_base, password, open_timeout).await
+        connector::establish(
+            &self.ice_servers,
+            &self.signaling_base,
+            password,
+            open_timeout,
+            self.relay_only,
+        )
+        .await
     }
 
     /// Takes this link's turn, so only ONE conversation runs on it at a time.
