@@ -20,7 +20,7 @@ off-ledger primitives that, until now, only existed in JavaScript/TypeScript. Bu
 | [`radixdlt-address`](crates/address) | Virtual-account address derivation |
 | [`radixdlt-keystore`](crates/keystore) | Encrypted Ed25519 keystore (scrypt + AES-256-GCM) |
 | [`radixdlt-gateway-tx`](crates/gateway-tx) | Gateway client + local transaction signing |
-| [`radixdlt-connect`](crates/connect) | Radix Connect over **WebRTC** (talks to the mobile wallet) |
+| [`radixdlt-connect`](crates/connect) | Radix Connect over **WebRTC** (talks to the mobile wallet), including TURN over TCP/TLS for networks with no UDP |
 | [`radixdlt-connect-iroh`](crates/connect-iroh) | Radix Connect over **Iroh/QUIC** (pure-Rust SDK-to-SDK) |
 | [`radixdlt-connector-mcp`](crates/connector-mcp) | Local **MCP server** (binary): lets AI agents pair a wallet and sign transactions via `radixdlt-connect` |
 | [`radixdlt-i18n`](crates/i18n) | System-locale detection + bilingual text helpers |

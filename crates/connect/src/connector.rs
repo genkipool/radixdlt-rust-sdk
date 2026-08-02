@@ -9,19 +9,18 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
-use webrtc::api::APIBuilder;
-use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
-use webrtc::data_channel::RTCDataChannel;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
-use webrtc::ice_transport::ice_server::RTCIceServer;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelInit};
+use webrtc::peer_connection::{
+    PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
+    RTCIceCandidateInit, RTCIceServer, RTCIceTransportPolicy, RTCPeerConnectionIceEvent,
+    RTCSessionDescription,
+};
+use webrtc::runtime::{Runtime, TokioRuntime};
 
 use crate::chunking::{message_to_chunks, Package, Reassembler};
 use crate::error::ConnectError;
 use crate::signaling::{SignalEvent, Signaling};
+use crate::turn_tcp::{TurnTcpRuntime, TurnTcpServer};
 
 /// An ICE (STUN/TURN) server. A STUN server leaves `username`/`credential` empty.
 #[derive(Debug, Clone)]
@@ -74,58 +73,221 @@ pub fn radix_default_ice_servers() -> Vec<IceServer> {
 fn to_rtc(servers: &[IceServer]) -> Vec<RTCIceServer> {
     servers
         .iter()
-        .map(|s| {
-            if s.username.is_empty() {
-                RTCIceServer {
-                    urls: s.urls.clone(),
-                    ..Default::default()
-                }
-            } else {
-                RTCIceServer {
-                    urls: s.urls.clone(),
-                    username: s.username.clone(),
-                    credential: s.credential.clone(),
-                    credential_type: RTCIceCredentialType::Password,
-                }
-            }
+        .map(|s| RTCIceServer {
+            urls: s.urls.clone(),
+            username: s.username.clone(),
+            credential: s.credential.clone(),
         })
         .collect()
+}
+
+/// Rewrites the address in an SDP `a=candidate` line.
+///
+/// The line is space-separated and positional (RFC 5245 §15.1): foundation, component,
+/// transport, priority, then the connection address at index 4. Anything shorter is not a
+/// candidate line and is left exactly as it came.
+fn candidate_at(line: &str, addr: std::net::IpAddr) -> String {
+    let mut fields: Vec<&str> = line.split(' ').collect();
+    let shown = addr.to_string();
+    match fields.get_mut(4) {
+        Some(slot) => {
+            *slot = &shown;
+            fields.join(" ")
+        }
+        None => line.to_string(),
+    }
+}
+
+/// Forwards locally gathered ICE candidates to the negotiation loop.
+///
+/// The peer-connection API reports events through this trait rather than through closures,
+/// so the sender lives here and the loop owns the matching receiver.
+///
+/// `advertise_as` is set when a TCP relay carries the traffic. The peer connection builds
+/// candidates from the socket it bound, which is this machine, and no setting will talk it
+/// out of that: `SettingEngine::set_nat_1to1_ips` exists but nothing reads it. So the
+/// address is corrected here, on the way out. This is not a fiction — it names where our
+/// traffic genuinely arrives, which is the relay, and it is the only address that could be
+/// of any use to the peer.
+#[derive(Clone)]
+struct IceCandidateForwarder {
+    local_candidates: mpsc::UnboundedSender<Value>,
+    advertise_as: Option<std::net::IpAddr>,
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for IceCandidateForwarder {
+    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        if let Ok(init) = event.candidate.to_json() {
+            let candidate = match self.advertise_as {
+                Some(addr) => candidate_at(&init.candidate, addr),
+                None => init.candidate,
+            };
+            let _ = self.local_candidates.send(json!({
+                "candidate": candidate,
+                "sdpMid": init.sdp_mid,
+                "sdpMLineIndex": init.sdp_mline_index,
+            }));
+        }
+    }
 }
 
 /// Result of establishing the channel: the data channel plus a receiver of incoming
 /// application messages already reassembled (JSON Value).
 pub struct Channel {
-    pub dc: Arc<RTCDataChannel>,
+    pub dc: Arc<dyn DataChannel>,
     incoming: mpsc::UnboundedReceiver<Value>,
     confirmations: mpsc::UnboundedReceiver<String>, // messageIds confirmed by the peer
-    _pc: Arc<RTCPeerConnection>,
+    _pc: Arc<dyn PeerConnection>,
+}
+
+/// Gathers ICE candidates through a TCP relay and reports them, talking to no wallet.
+///
+/// A relay that authenticates but advertises the wrong address fails exactly like a relay
+/// that is unreachable — both end as a channel that never opens — so this separates the two.
+/// Every candidate returned should carry the relay's own address; anything else means the
+/// peer would be told to reach somewhere it cannot.
+pub async fn probe_relay_candidates(
+    server: &TurnTcpServer,
+    wait: Duration,
+) -> Result<(std::net::SocketAddr, Vec<String>), ConnectError> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+    let rt = TurnTcpRuntime::connect(server).await?;
+    let relayed = rt.relayed_addr();
+
+    let pc = PeerConnectionBuilder::new()
+        .with_configuration(RTCConfigurationBuilder::new().build())
+        .with_handler(Arc::new(IceCandidateForwarder {
+            local_candidates: tx,
+            advertise_as: Some(relayed.ip()),
+        }))
+        .with_runtime(rt)
+        .with_udp_addrs(vec![format!("0.0.0.0:{}", relayed.port())])
+        .build()
+        .await
+        .map_err(|e| ConnectError::WebRtc(format!("peer connection: {e}")))?;
+
+    // Gathering only starts once there is something to gather for.
+    let dc_init = RTCDataChannelInit {
+        negotiated: Some(0),
+        ordered: true,
+        ..Default::default()
+    };
+    pc.create_data_channel("data", Some(dc_init))
+        .await
+        .map_err(|e| ConnectError::WebRtc(format!("data channel: {e}")))?;
+    let offer = pc
+        .create_offer(None)
+        .await
+        .map_err(|e| ConnectError::WebRtc(format!("create_offer: {e}")))?;
+    pc.set_local_description(offer)
+        .await
+        .map_err(|e| ConnectError::WebRtc(format!("set_local: {e}")))?;
+
+    let mut found = Vec::new();
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => break,
+            cand = rx.recv() => match cand {
+                Some(c) => {
+                    if let Some(s) = c.get("candidate").and_then(|s| s.as_str()) {
+                        found.push(s.to_string());
+                    }
+                }
+                None => break,
+            },
+        }
+    }
+    Ok((relayed, found))
 }
 
 /// Establishes the WebRTC connection with the wallet using the link password.
 /// Resolves once the data channel is open.
+///
+/// `relay_only` restricts ICE to relay candidates: no host or server-reflexive candidate is
+/// gathered, so the only path out is the TURN allocation. Paired with a TURN server reached
+/// over TCP it makes the whole connection outbound-TCP, which is what hosts that forbid UDP
+/// require.
 pub async fn establish(
     ice_servers: &[IceServer],
     signaling_base: &str,
     password: &[u8],
     open_timeout: Duration,
+    relay_only: bool,
+    turn_tcp: Option<&TurnTcpServer>,
 ) -> Result<Channel, ConnectError> {
     let mut signaling = Signaling::connect(password, signaling_base).await?;
 
-    let api = APIBuilder::new().build();
-    let config = RTCConfiguration {
-        ice_servers: to_rtc(ice_servers),
-        ..Default::default()
+    // Local ICE candidates → send over signaling. The handler must exist before the peer
+    // connection is built, because gathering starts as soon as it does.
+    let (local_cand_tx, mut local_cand_rx) = mpsc::unbounded_channel::<Value>();
+
+    // With a TCP relay the allocation sits BELOW the peer connection: it is handed a
+    // "socket" that is already the relay. It therefore gets no ICE servers of its own --
+    // there is nothing left for it to gather -- and not the relay-only policy, which would
+    // discard the one candidate that works.
+    //
+    // Getting the ADDRESS advertised is the subtle part. The candidates are built from the
+    // std socket the builder binds, not from what `wrap_udp_socket` hands back, so left
+    // alone it would offer this machine's own address and the wallet would have nowhere to
+    // go. `set_nat_1to1_ips` is the documented cure -- it is how a cloud instance advertises
+    // its public address instead of its private one -- but it rewrites the IP and keeps the
+    // port, so the port has to match: hence binding locally to the very port the relay
+    // allocated. That socket is never read or written; only its number matters.
+    let (runtime, servers, policy, udp_addr, advertise_as): (
+        Arc<dyn Runtime>,
+        Vec<RTCIceServer>,
+        RTCIceTransportPolicy,
+        String,
+        Option<std::net::IpAddr>,
+    ) = match turn_tcp {
+        Some(server) => {
+            let rt = TurnTcpRuntime::connect(server).await?;
+            let relayed = rt.relayed_addr();
+            (
+                rt,
+                Vec::new(),
+                RTCIceTransportPolicy::All,
+                format!("0.0.0.0:{}", relayed.port()),
+                Some(relayed.ip()),
+            )
+        }
+        None => (
+            Arc::new(TokioRuntime),
+            to_rtc(ice_servers),
+            if relay_only {
+                RTCIceTransportPolicy::Relay
+            } else {
+                RTCIceTransportPolicy::All
+            },
+            "0.0.0.0:0".to_string(),
+            None,
+        ),
     };
-    let pc = Arc::new(
-        api.new_peer_connection(config)
-            .await
-            .map_err(|e| ConnectError::WebRtc(format!("peer connection: {e}")))?,
-    );
+
+    let config = RTCConfigurationBuilder::new()
+        .with_ice_servers(servers)
+        .with_ice_transport_policy(policy)
+        .build();
+
+    let pc = PeerConnectionBuilder::new()
+        .with_configuration(config)
+        .with_handler(Arc::new(IceCandidateForwarder {
+            local_candidates: local_cand_tx,
+            advertise_as,
+        }))
+        .with_runtime(runtime)
+        .with_udp_addrs(vec![udp_addr])
+        .build()
+        .await
+        .map_err(|e| ConnectError::WebRtc(format!("peer connection: {e}")))?;
+    let pc: Arc<dyn PeerConnection> = Arc::new(pc);
 
     // Negotiated data channel (id 0), same as the browser extension.
     let dc_init = RTCDataChannelInit {
         negotiated: Some(0),
-        ordered: Some(true),
+        ordered: true,
         ..Default::default()
     };
     let dc = pc
@@ -138,92 +300,72 @@ pub async fn establish(
     let (conf_tx, conf_rx) = mpsc::unbounded_channel::<String>();
     let (open_tx, mut open_rx) = mpsc::unbounded_channel::<()>();
 
-    // Reassembler for incoming application messages.
-    let reassembler: Arc<Mutex<Option<Reassembler>>> = Arc::new(Mutex::new(None));
-
-    {
-        let open_tx = open_tx.clone();
-        dc.on_open(Box::new(move || {
-            let _ = open_tx.send(());
-            Box::pin(async {})
-        }));
-    }
-
+    // Data-channel events are pulled rather than pushed, so one task drains them for the
+    // life of the channel: it reassembles chunked application messages, confirms each one
+    // to the peer, and reports the peer's confirmations of ours. It ends when the channel
+    // does, which is what stops `poll` yielding.
     {
         let dc_for_msg = dc.clone();
-        let reassembler = reassembler.clone();
-        let incoming_tx = incoming_tx.clone();
-        let conf_tx = conf_tx.clone();
-        dc.on_message(Box::new(move |msg| {
-            let text = String::from_utf8_lossy(&msg.data).to_string();
-            let dc_for_msg = dc_for_msg.clone();
-            let reassembler = reassembler.clone();
-            let incoming_tx = incoming_tx.clone();
-            let conf_tx = conf_tx.clone();
-            Box::pin(async move {
-                let pkg: Package = match serde_json::from_str(&text) {
-                    Ok(p) => p,
-                    Err(_) => return,
-                };
-                match &pkg {
-                    Package::MetaData { .. } => {
-                        *reassembler.lock().await = Reassembler::from_meta(&pkg);
+        let open_tx = open_tx.clone();
+        tokio::spawn(async move {
+            // Reassembler for incoming application messages.
+            let reassembler: Arc<Mutex<Option<Reassembler>>> = Arc::new(Mutex::new(None));
+            while let Some(event) = dc_for_msg.poll().await {
+                match event {
+                    DataChannelEvent::OnOpen => {
+                        let _ = open_tx.send(());
                     }
-                    Package::Chunk { .. } => {
-                        let mut guard = reassembler.lock().await;
-                        if let Some(re) = guard.as_mut() {
-                            if re.add(&pkg) {
-                                match re.finish() {
-                                    Ok(value) => {
-                                        // Confirm receipt to the peer.
-                                        let conf = json!({
-                                            "packageType": "receiveMessageConfirmation",
-                                            "messageId": re.message_id,
-                                        });
-                                        let _ = dc_for_msg.send_text(conf.to_string()).await;
-                                        let _ = incoming_tx.send(value);
-                                    }
-                                    Err(_) => {
-                                        let err = json!({
-                                            "packageType": "receiveMessageError",
-                                            "messageId": re.message_id,
-                                            "error": "messageHashesMismatch",
-                                        });
-                                        let _ = dc_for_msg.send_text(err.to_string()).await;
+                    DataChannelEvent::OnClose => break,
+                    DataChannelEvent::OnMessage(msg) => {
+                        let text = String::from_utf8_lossy(&msg.data).to_string();
+                        let pkg: Package = match serde_json::from_str(&text) {
+                            Ok(p) => p,
+                            Err(_) => continue,
+                        };
+                        match &pkg {
+                            Package::MetaData { .. } => {
+                                *reassembler.lock().await = Reassembler::from_meta(&pkg);
+                            }
+                            Package::Chunk { .. } => {
+                                let mut guard = reassembler.lock().await;
+                                if let Some(re) = guard.as_mut() {
+                                    if re.add(&pkg) {
+                                        match re.finish() {
+                                            Ok(value) => {
+                                                // Confirm receipt to the peer.
+                                                let conf = json!({
+                                                    "packageType": "receiveMessageConfirmation",
+                                                    "messageId": re.message_id,
+                                                });
+                                                let _ = dc_for_msg.send_text(&conf.to_string()).await;
+                                                let _ = incoming_tx.send(value);
+                                            }
+                                            Err(_) => {
+                                                let err = json!({
+                                                    "packageType": "receiveMessageError",
+                                                    "messageId": re.message_id,
+                                                    "error": "messageHashesMismatch",
+                                                });
+                                                let _ = dc_for_msg.send_text(&err.to_string()).await;
+                                            }
+                                        }
+                                        *guard = None;
                                     }
                                 }
-                                *guard = None;
+                            }
+                            Package::ReceiveMessageConfirmation { messageId } => {
+                                let _ = conf_tx.send(messageId.clone());
+                            }
+                            Package::ReceiveMessageError { messageId, .. } => {
+                                let _ = conf_tx.send(format!("ERROR:{messageId}"));
                             }
                         }
                     }
-                    Package::ReceiveMessageConfirmation { messageId } => {
-                        let _ = conf_tx.send(messageId.clone());
-                    }
-                    Package::ReceiveMessageError { messageId, .. } => {
-                        let _ = conf_tx.send(format!("ERROR:{messageId}"));
-                    }
-                }
-            })
-        }));
-    }
-
-    // Local ICE candidates → send over signaling.
-    let (local_cand_tx, mut local_cand_rx) = mpsc::unbounded_channel::<Value>();
-    pc.on_ice_candidate(Box::new(move |cand| {
-        let local_cand_tx = local_cand_tx.clone();
-        Box::pin(async move {
-            if let Some(c) = cand {
-                if let Ok(init) = c.to_json() {
-                    let payload = json!({
-                        "candidate": init.candidate,
-                        "sdpMid": init.sdp_mid,
-                        "sdpMLineIndex": init.sdp_mline_index,
-                    });
-                    let _ = local_cand_tx.send(payload);
+                    _ => {}
                 }
             }
-        })
-    }));
+        });
+    }
 
     // Negotiation loop: consume signaling events and local candidates.
     let pc_neg = pc.clone();
@@ -287,7 +429,7 @@ pub async fn establish(
     }
 }
 
-async fn add_remote_candidate(pc: &Arc<RTCPeerConnection>, payload: Value) {
+async fn add_remote_candidate(pc: &Arc<dyn PeerConnection>, payload: Value) {
     let candidate = payload
         .get("candidate")
         .and_then(|c| c.as_str())
@@ -306,6 +448,8 @@ async fn add_remote_candidate(pc: &Arc<RTCPeerConnection>, payload: Value) {
         sdp_mid,
         sdp_mline_index,
         username_fragment: None,
+        // Only meaningful for LOCAL srflx/relay candidates; a remote one carries no server.
+        url: None,
     };
     let _ = pc.add_ice_candidate(init).await;
 }
@@ -323,7 +467,7 @@ impl Channel {
         let (message_id, packages) = message_to_chunks(&bytes);
         for p in &packages {
             self.dc
-                .send_text(p.clone())
+                .send_text(p)
                 .await
                 .map_err(|e| ConnectError::WebRtc(format!("send chunk: {e}")))?;
         }
@@ -349,5 +493,39 @@ impl Channel {
             .await
             .map_err(|_| ConnectError::ResponseTimeout)?
             .ok_or(ConnectError::SignalingClosed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The address sits at index 4 and nothing else may move: the peer parses by position.
+    #[test]
+    fn the_candidate_address_is_replaced_in_place() {
+        let line = "candidate:291967603 1 udp 2130706431 0.0.0.0 43378 typ host";
+        let out = candidate_at(line, "37.27.44.221".parse().expect("ip"));
+        assert_eq!(
+            out,
+            "candidate:291967603 1 udp 2130706431 37.27.44.221 43378 typ host"
+        );
+    }
+
+    /// Trailing attributes (raddr, rport, generation…) must survive untouched.
+    #[test]
+    fn everything_after_the_address_is_preserved() {
+        let line = "candidate:1 1 udp 41885439 10.0.0.1 5000 typ relay raddr 0.0.0.0 rport 0";
+        let out = candidate_at(line, "203.0.113.7".parse().expect("ip"));
+        assert!(out.ends_with("typ relay raddr 0.0.0.0 rport 0"));
+        assert!(out.contains(" 203.0.113.7 5000 "));
+    }
+
+    /// Something too short to be a candidate line is not mangled into one.
+    #[test]
+    fn a_line_that_is_not_a_candidate_is_left_alone() {
+        assert_eq!(
+            candidate_at("nonsense", "1.2.3.4".parse().expect("ip")),
+            "nonsense"
+        );
     }
 }

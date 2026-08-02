@@ -74,6 +74,43 @@ state.remove_link(&wallet_pk);
 state.save(path)?;                              // 0600 permissions on Unix
 ```
 
+### Networks that block UDP (`turn_tcp`)
+
+WebRTC wants UDP, and plenty of places will not give it: corporate firewalls,
+guest Wi-Fi, and most serverless hosts. This crate can carry the whole interaction
+over **TURN on TCP/TLS 443** instead, opening no UDP socket at all:
+
+```rust
+use radixdlt_connect::{Connector, TurnTcpServer};
+
+let relay = TurnTcpServer::parse(
+    "turns:relay.example.com:443?transport=tcp",
+    "username",
+    "credential",
+)?;
+let response = Connector::new()
+    .with_turn_tcp(relay)
+    .request_account_proof(&password, &challenge, &ctx, true, timeout)
+    .await?;
+```
+
+It supersedes `with_ice_servers` and `with_relay_only`: the allocation sits *below*
+the peer connection, standing in for its socket, so there is nothing left for ICE
+to gather. Expect it to be slower than a direct path and to send every byte through
+the relay — reach for it when UDP is unavailable, not by default.
+
+`probe_relay_candidates(&relay, wait)` allocates and reports the candidates that
+would be offered, with no wallet involved. Worth running against a new relay: one
+that authenticates but advertises an unreachable address fails exactly like one
+that is down, as a channel that never opens.
+
+> **This does not exist elsewhere in the Rust ecosystem.** `webrtc-ice` leaves TCP
+> and TURNS as an unimplemented `TODO` in `gather_candidates_relay` (still so in
+> 0.17.2), and `webrtc` 0.20 discards any `turns:` or non-UDP URL with a warning.
+> So a `turns:…?transport=tcp` entry in an ICE configuration does nothing at all —
+> including the one in this crate's own `radix_default_ice_servers`, which is kept
+> for compatibility. If you rely on a TCP relay, use `with_turn_tcp`.
+
 For pure-Rust peer-to-peer connections (no mobile wallet), see the alternative
 transport [`radixdlt-connect-iroh`](https://crates.io/crates/radixdlt-connect-iroh).
 Both transports share the interaction schema in

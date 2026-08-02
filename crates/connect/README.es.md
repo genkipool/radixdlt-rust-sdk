@@ -75,6 +75,44 @@ state.remove_link(&wallet_pk);
 state.save(path)?;                              // permisos 0600 en Unix
 ```
 
+### Redes que bloquean UDP (`turn_tcp`)
+
+WebRTC quiere UDP, y hay muchos sitios que no lo dan: cortafuegos corporativos,
+wifis de invitados y casi todas las plataformas serverless. Este crate puede llevar
+la interacción entera por **TURN sobre TCP/TLS 443**, sin abrir un solo socket UDP:
+
+```rust
+use radixdlt_connect::{Connector, TurnTcpServer};
+
+let relay = TurnTcpServer::parse(
+    "turns:relay.example.com:443?transport=tcp",
+    "usuario",
+    "credencial",
+)?;
+let response = Connector::new()
+    .with_turn_tcp(relay)
+    .request_account_proof(&password, &challenge, &ctx, true, timeout)
+    .await?;
+```
+
+Sustituye a `with_ice_servers` y `with_relay_only`: la asignación queda *por debajo*
+de la conexión, haciendo de socket suyo, así que a ICE no le queda nada que recoger.
+Cuenta con que sea más lento que un camino directo y con que cada byte pase por el
+relay — úsalo cuando no haya UDP, no por defecto.
+
+`probe_relay_candidates(&relay, wait)` hace la asignación e informa de los candidatos
+que se ofrecerían, sin que intervenga ninguna wallet. Merece la pena contra un relay
+nuevo: uno que autentica pero anuncia una dirección inalcanzable falla exactamente
+igual que uno caído, como un canal que nunca abre.
+
+> **Esto no existe en ningún otro sitio del ecosistema Rust.** `webrtc-ice` deja TCP
+> y TURNS como un `TODO` sin implementar en `gather_candidates_relay` (sigue así en
+> 0.17.2), y `webrtc` 0.20 descarta con un aviso cualquier URL `turns:` o que no sea
+> UDP. O sea que una entrada `turns:…?transport=tcp` en una configuración ICE no hace
+> absolutamente nada — incluida la del propio `radix_default_ice_servers` de este
+> crate, que se conserva por compatibilidad. Si dependes de un relay TCP, usa
+> `with_turn_tcp`.
+
 Para conexiones peer-to-peer en Rust puro (sin wallet móvil), consulta el transporte
 alternativo [`radixdlt-connect-iroh`](https://crates.io/crates/radixdlt-connect-iroh).
 Ambos transportes comparten el esquema de interacción de
