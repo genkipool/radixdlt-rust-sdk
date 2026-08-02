@@ -407,4 +407,82 @@ mod tests {
             "and its address must not have moved"
         );
     }
+
+    /// A key file MUST be owner-only. Nothing tested this, so removing the call that applies
+    /// the mode left every stored private key world-readable and every test still passed.
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_key_file_is_readable_only_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ks-perm-{}", std::process::id()));
+        let path = dir.join("key.json");
+        let kf = KeyFile::generate(2, "pw").expect("generate");
+        kf.save(&path).expect("save");
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "a key file must not be readable by anyone else"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `save` reporting success without writing anything is indistinguishable from working,
+    /// right up until the moment somebody needs the key back.
+    #[test]
+    fn save_writes_a_file_that_loads_back_identically() {
+        let dir = std::env::temp_dir().join(format!("ks-save-{}", std::process::id()));
+        let path = dir.join("nested").join("key.json");
+        let kf = KeyFile::generate(2, "pw").expect("generate");
+        kf.save(&path).expect("save");
+        assert!(path.exists(), "save must actually create the file");
+        let back = KeyFile::load(&path).expect("load");
+        assert_eq!(back.public_key, kf.public_key);
+        assert_eq!(back.address, kf.address);
+        assert_eq!(
+            back.private_key("pw").expect("decrypt"),
+            kf.private_key("pw").expect("decrypt"),
+            "and the key inside must survive the round trip to disk"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The blob is a FORMAT shared with the Node signer, so the field widths are part of the
+    /// contract: a wrong split still round-trips through our own decrypt (it re-joins the two)
+    /// while producing a file no other implementation can read.
+    #[test]
+    fn the_blob_splits_ciphertext_and_tag_at_the_documented_widths() {
+        let blob = CryptoBlob::encrypt(&[7u8; 32], "pw").expect("encrypt");
+        assert_eq!(blob.tag.len(), 32, "the GCM tag is 16 bytes, hex-encoded");
+        assert_eq!(blob.ciphertext.len(), 64, "the key is 32 bytes, hex-encoded");
+        assert_eq!(blob.salt.len(), 32, "16-byte salt");
+        assert_eq!(blob.iv.len(), 24, "12-byte nonce");
+    }
+
+    /// `n` is written for other implementations to read; ours ignores it and uses the constant.
+    /// So a wrong value here is invisible to us and fatal to them.
+    #[test]
+    fn the_recorded_scrypt_parameters_match_the_constants() {
+        let blob = CryptoBlob::encrypt(&[7u8; 32], "pw").expect("encrypt");
+        assert_eq!(blob.n, 32768, "n = 2^15");
+        assert_eq!(blob.r, SCRYPT_R);
+        assert_eq!(blob.p, SCRYPT_P);
+        assert_eq!(blob.kdf, "scrypt");
+    }
+
+    #[test]
+    fn a_new_key_file_is_stamped_with_the_current_time() {
+        let kf = KeyFile::generate(2, "pw").expect("generate");
+        let created: u64 = kf.created_at.parse().expect("createdAt is an epoch");
+        // Any moment after this crate was written, and not in the future.
+        assert!(
+            created > 1_700_000_000,
+            "createdAt must be a real timestamp, got {created}"
+        );
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_secs();
+        assert!(created <= now + 5, "createdAt must not be in the future");
+    }
 }

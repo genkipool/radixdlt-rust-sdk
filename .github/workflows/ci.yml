@@ -160,10 +160,10 @@ jobs:
   # ── Mutation testing ─────────────────────────────────────────────────────────────────
   #
   # Coverage says a line ran; this says whether breaking it would be noticed. Scoped to the
-  # crates that decide whether a signature is real. Weekly and on demand: too slow for a push.
+  # crates that decide whether a signature is real, which is why it runs on every push like
+  # the rest: measured at ~3 minutes for 83 mutants, cheap enough not to hold back.
   mutation:
     name: Mutation testing
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

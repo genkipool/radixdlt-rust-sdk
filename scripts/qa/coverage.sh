@@ -15,11 +15,11 @@ cd "$(dirname "$0")/../.." || exit 1
 declare -A MIN=(
     ["rola/src/lib.rs"]=74           # signature verification
     ["address/src/lib.rs"]=67        # address derivation
-    ["connect-types/src/lib.rs"]=85  # the wire schema, pure parsing
-    ["keystore/src/lib.rs"]=65       # key custody
+    ["connect-types/src/lib.rs"]=93  # the wire schema, pure parsing
+    ["keystore/src/lib.rs"]=79       # key custody
     ["i18n/src/lib.rs"]=65
 )
-GLOBAL_MIN=65
+GLOBAL_MIN=71
 
 OUT=target/qa/coverage
 mkdir -p "$OUT"
