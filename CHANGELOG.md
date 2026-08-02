@@ -9,6 +9,31 @@ minor versions may contain breaking changes.
 
 ### Added
 
+- `radixdlt-connect` — **TURN over TCP/TLS**, so a wallet interaction can complete
+  without opening a single UDP socket: for networks that block UDP (corporate
+  firewalls, guest Wi-Fi) and hosts that do not offer it at all. Turn it on with
+  `Connector::with_turn_tcp(TurnTcpServer::parse("turns:relay.example.com:443?transport=tcp", user, pass)?)`.
+
+  This is not available anywhere else in the Rust ecosystem: `webrtc-ice` leaves
+  TCP and TURNS as an unimplemented `TODO` in `gather_candidates_relay` (still so
+  in 0.17.2, its newest release), and `webrtc` 0.20 discards any `turns:` or
+  non-UDP URL with a warning. The consequence is worth knowing even if you never
+  use this: a `turns:…?transport=tcp` entry in an ICE configuration — including
+  the one in this crate's own `radix_default_ice_servers` — has never done
+  anything, so a UDP-less network has had no fallback and the symptom is a wallet
+  that appears not to respond.
+
+  The Sans-I/O TURN client already spoke TCP; only the half that owns a stream was
+  missing. `Runtime` and `AsyncUdpSocket` being public traits is what keeps this
+  out of a fork: the peer connection is handed a runtime whose "UDP socket" is the
+  allocation itself. Verified against a real wallet — proof returned and verified
+  in 21.9 s with zero UDP sockets and two outbound TCP/443 connections.
+- `radixdlt-connect` — `probe_relay_candidates`, which allocates on a TCP relay and
+  reports the candidates that would be offered, with no wallet involved. A relay
+  that authenticates but advertises an unreachable address fails exactly like one
+  that is down — a channel that never opens — and this separates them.
+- `radixdlt-connect` — `Connector::with_relay_only`, restricting ICE to relay
+  candidates. Off by default.
 - `radixdlt-connector-mcp` — local MCP server (stdio) that pairs a Radix Wallet
   over Radix Connect and gets transactions signed on the user's machine (pairing
   QR, `send_transaction`, pre-authorization, ROLA account proof, transaction
@@ -19,6 +44,17 @@ minor versions may contain breaking changes.
 
 ### Changed
 
+- `radixdlt-connect` — moved to `webrtc` 0.20 (from 0.11), which is a different
+  library rather than a newer one: webrtc-rs split into a Sans-I/O core (`rtc`)
+  with a thin async layer over it. Peer events arrive through a
+  `PeerConnectionEventHandler` trait instead of closures, and data-channel events
+  are pulled with `poll()` instead of pushed through `on_message`. None of that
+  reaches this crate's own API — `Connector` is unchanged — but `Channel::dc` is
+  now `Arc<dyn DataChannel>`.
+- Every workspace refreshed to the latest compatible dependencies. The crypto
+  majors (`ed25519-dalek` 2→3, `rand_core`, `aes-gcm`, `scrypt`, `base64`) are
+  deliberately not part of this: they interlock and they sit under signature
+  verification, so they get their own change with its own verification.
 - `radixdlt-connect-iroh` — `protocol::Wallet` (and with it the `radixdlt-gateway-tx`
   dependency) is now behind a `wallet` feature, **on by default**, so nothing
   changes for existing users. It is separable because the Scrypto engine that

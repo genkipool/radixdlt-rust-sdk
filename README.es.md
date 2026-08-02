@@ -21,7 +21,7 @@ integraciones de wallet en Rust puro.
 | [`radixdlt-address`](crates/address) | Derivación de direcciones de cuenta virtual |
 | [`radixdlt-keystore`](crates/keystore) | Keystore Ed25519 cifrado (scrypt + AES-256-GCM) |
 | [`radixdlt-gateway-tx`](crates/gateway-tx) | Cliente del Gateway + firma local de transacciones |
-| [`radixdlt-connect`](crates/connect) | Radix Connect sobre **WebRTC** (habla con la wallet del móvil) |
+| [`radixdlt-connect`](crates/connect) | Radix Connect sobre **WebRTC** (habla con la wallet del móvil), con TURN sobre TCP/TLS para redes sin UDP |
 | [`radixdlt-connect-iroh`](crates/connect-iroh) | Radix Connect sobre **Iroh/QUIC** (SDK-a-SDK en Rust puro) |
 | [`radixdlt-connector-mcp`](crates/connector-mcp) | **Servidor MCP** local (binario): permite a agentes de IA emparejar una wallet y firmar transacciones vía `radixdlt-connect` |
 | [`radixdlt-i18n`](crates/i18n) | Detección del idioma del sistema + textos bilingües |
