@@ -14,6 +14,7 @@ step "Formatting"   ./scripts/qa/for-each-workspace.sh cargo fmt --all --check |
 step "Clippy"       ./scripts/qa/for-each-workspace.sh cargo clippy --all-targets --all-features || fail=1
 step "Tests"        ./scripts/qa/for-each-workspace.sh cargo test --all-features || fail=1
 step "Docs"         ./scripts/qa/docs.sh || fail=1
+step "MSRV"         ./scripts/qa/msrv.sh || fail=1
 step "Coverage"     ./scripts/qa/coverage.sh || fail=1
 step "Supply chain" cargo deny check || fail=1
 step "Public API"   ./scripts/qa/semver.sh || fail=1

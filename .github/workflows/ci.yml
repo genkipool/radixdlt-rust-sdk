@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `develop` too: work lands there first, and a branch nobody checks is a branch
+    # whose problems are found after they reach `main`.
+    branches: [main, develop]
   pull_request:
 
 env:
