@@ -29,7 +29,6 @@ use radix_common::prelude::*;
 use radix_transactions::manifest::{compile_manifest, compile_manifest_v1, BlobProvider};
 use radix_transactions::prelude::*;
 use radixdlt_i18n::{tr, Lang};
-use rand_core::{OsRng, RngCore};
 
 /// Re-exported so callers can build a signing key without depending on
 /// `radix-common` directly: `Ed25519PrivateKey::from_bytes(&secret_32)`.
@@ -357,7 +356,7 @@ impl Gateway {
             network_id: self.network.id,
             start_epoch_inclusive: Epoch::of(start_epoch),
             end_epoch_exclusive: Epoch::of(start_epoch + epoch_window),
-            nonce: rand_nonce(),
+            nonce: rand_nonce()?,
             notary_public_key: notary.public_key().into(),
             notary_is_signatory,
             tip_percentage: 0,
@@ -422,7 +421,7 @@ impl Gateway {
                 end_epoch_exclusive: Epoch::of(end_epoch),
                 min_proposer_timestamp_inclusive: None,
                 max_proposer_timestamp_exclusive: None,
-                intent_discriminator: rand_nonce() as u64,
+                intent_discriminator: u64::from(rand_nonce()?),
             })
             .manifest(compiled)
             .sign(signer)
@@ -433,10 +432,13 @@ impl Gateway {
     }
 }
 
-fn rand_nonce() -> u32 {
-    let mut b = [0u8; 4];
-    OsRng.fill_bytes(&mut b);
-    u32::from_le_bytes(b)
+/// A fresh transaction nonce from the operating system.
+///
+/// Fallible on purpose. Two transactions that differ only by nonce hash to different
+/// intents, so a nonce the system could not randomise is a nonce that could collide -- and
+/// substituting a fixed one to keep an infallible signature would hide exactly that.
+fn rand_nonce() -> Result<u32, GatewayError> {
+    getrandom::u32().map_err(|e| GatewayError::Encode(format!("system randomness: {e}")))
 }
 
 #[cfg(test)]

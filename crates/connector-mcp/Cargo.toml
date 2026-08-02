@@ -23,11 +23,11 @@ name = "radix-connector-mcp"
 path = "src/main.rs"
 
 [dependencies]
-radixdlt-connect = { path = "../connect", version = "0.1.0" }
-radixdlt-connect-types = { path = "../connect-types", version = "0.1.0" }
-radixdlt-rola = { path = "../rola", version = "0.1.0" }
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
+radixdlt-connect = { path = "../connect", version = "0.2.0" }
+radixdlt-connect-types = { path = "../connect-types", version = "0.2.0" }
+radixdlt-rola = { path = "../rola", version = "0.2.0" }
+ed25519-dalek = "3"
+getrandom = "0.4"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -40,7 +40,7 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] 
 dirs = "5"
 qrcode = { version = "0.14", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
-base64 = "0.22"
+base64 = "0.23"
 
 [profile.release]
 opt-level = 3

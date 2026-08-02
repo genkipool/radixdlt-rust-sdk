@@ -16,7 +16,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::SigningKey;
 use radixdlt_connect::state::{Identity, LinkState};
-use rand_core::OsRng;
 
 /// Namespace for connector-state helpers (no instance state of its own).
 pub struct Store;
@@ -44,7 +43,7 @@ impl Store {
         }
         let state = LinkState {
             version: 1,
-            identity: new_identity(),
+            identity: new_identity()?,
             link: None,
             links: Vec::new(),
         };
@@ -78,10 +77,16 @@ pub fn now_unix_seconds() -> String {
 }
 
 /// Generates a brand-new Ed25519 connector identity (hex-encoded).
-fn new_identity() -> Identity {
-    let signing = SigningKey::generate(&mut OsRng);
-    Identity {
+///
+/// Fallible because the entropy is: this is a long-lived private key, and one built from
+/// randomness the system could not supply would be a key someone else can derive.
+fn new_identity() -> Result<Identity, String> {
+    let mut secret = [0u8; 32];
+    getrandom::fill(&mut secret).map_err(|e| format!("system randomness: {e}"))?;
+    let signing = SigningKey::from_bytes(&secret);
+    secret.fill(0);
+    Ok(Identity {
         private_key: hex::encode(signing.to_bytes()),
         public_key: hex::encode(signing.verifying_key().to_bytes()),
-    }
+    })
 }

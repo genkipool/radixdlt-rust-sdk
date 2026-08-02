@@ -54,8 +54,7 @@ async fn main() {
 
     // Random 32-byte challenge.
     let mut challenge = [0u8; 32];
-    use rand_core::RngCore;
-    rand_core::OsRng.fill_bytes(&mut challenge);
+    getrandom::fill(&mut challenge).expect("system randomness");
     let challenge_hex = hex::encode(challenge);
 
     println!(">>> OPEN THE RADIX WALLET ON YOUR PHONE AND APPROVE THE REQUEST <<<");

@@ -326,11 +326,11 @@ impl Connector {
         timeout: Duration,
     ) -> Result<(String, Vec<u8>), ConnectError> {
         use ed25519_dalek::{Signer, SigningKey};
-        use rand_core::RngCore;
 
         // New 32-byte link password.
         let mut password = [0u8; 32];
-        rand_core::OsRng.fill_bytes(&mut password);
+        getrandom::fill(&mut password)
+            .map_err(|e| ConnectError::Crypto(format!("system randomness: {e}")))?;
 
         // Connector identity signs blake2b("L"‖password).
         let sk_bytes = hex::decode(identity_private_key_hex)

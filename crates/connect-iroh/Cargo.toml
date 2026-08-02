@@ -8,7 +8,7 @@
 [package]
 name = "radixdlt-connect-iroh"
 description = "Iroh (QUIC) peer-to-peer transport for the RadixDLT Rust SDK: an alternative to WebRTC for pure-Rust SDK-to-SDK connections."
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/genkipool/radixdlt-rust-sdk"
@@ -31,17 +31,17 @@ default = ["wallet"]
 wallet = ["dep:radixdlt-gateway-tx"]
 
 [dependencies]
-radixdlt-i18n = { path = "../i18n", version = "0.1.0" }
-radixdlt-connect-types = { path = "../connect-types", version = "0.1.0" }
-radixdlt-address = { path = "../address", version = "0.1.0" }
-radixdlt-rola = { path = "../rola", version = "0.1.0" }
-radixdlt-keystore = { path = "../keystore", version = "0.1.0" }
+radixdlt-i18n = { path = "../i18n", version = "0.2.0" }
+radixdlt-connect-types = { path = "../connect-types", version = "0.2.0" }
+radixdlt-address = { path = "../address", version = "0.2.0" }
+radixdlt-rola = { path = "../rola", version = "0.2.0" }
+radixdlt-keystore = { path = "../keystore", version = "0.2.0" }
 # Only the `wallet` side needs this: it drags in the whole Scrypto engine (radix-engine,
 # radix-transactions). Optional so that a caller wanting ONLY the iroh transport does not
 # inherit it — see the note on the `wallet` feature below.
-radixdlt-gateway-tx = { path = "../gateway-tx", version = "0.1.0", optional = true }
+radixdlt-gateway-tx = { path = "../gateway-tx", version = "0.2.0", optional = true }
 iroh = "1"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 hex = "0.4"

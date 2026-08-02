@@ -7,6 +7,42 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **The crypto stack moved up a generation**, and every crate with it: `ed25519-dalek`
+  2 to 3, `aes-gcm` 0.10 to 0.11, `scrypt` 0.11 to 0.12, `base64` 0.22 to 0.23.
+  `rand_core` is gone entirely -- `OsRng` no longer exists in either `rand_core`
+  0.10 or `rand` 0.10, the ecosystem having settled on asking `getrandom` for OS
+  entropy directly. Workspace version accordingly 0.1.0 to 0.2.0.
+
+  Verified with a real wallet on both transports, because no test can cover it:
+  a ROLA proof over the ordinary path (15.8 s) and one over the TCP relay with
+  zero UDP sockets (14.8 s), each returned and verified natively.
+
+  Key files written by the previous stack still open. scrypt 0.12 drops the
+  output length from `Params::new` and takes it from the output buffer instead --
+  the same 32 bytes, so the derivation is unchanged. That is now held down by a
+  test carrying a real `key.json` produced by the OLD build, rather than by a
+  re-encryption this build agrees with.
+- `radixdlt-keystore` — `KeystoreError` is `#[non_exhaustive]`, so future error
+  variants stop being breaking changes. Adding one is what forced this release to
+  be breaking at all.
+
+### Fixed
+
+- `radixdlt-keystore`, `radixdlt-connect` — a key file or link password of the
+  wrong length **panicked** instead of erroring. `Key::from_slice` and
+  `Nonce::from_slice` panic on a length mismatch, and they sat in library code
+  reading a `key.json` and a `connector.json` that a user can edit by hand: one
+  stray hex character brought down the calling process. aes-gcm 0.11 deprecates
+  both in favour of `TryFrom`, which is how they now report a corrupt field.
+- Randomness failures are no longer silent. `fill_bytes` could not report one, so
+  `CryptoBlob::encrypt` documented an error it was incapable of returning. Salt,
+  nonce, connector identity and transaction nonce now all fail closed --
+  `KeystoreError::RandomnessUnavailable` is the new variant. A predictable salt or
+  nonce destroys the encryption that rests on it, and a transaction nonce the
+  system could not randomise is one that can collide.
+
 ### Added
 
 - `radixdlt-connector-mcp` — local MCP server (stdio) that pairs a Radix Wallet
