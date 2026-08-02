@@ -28,7 +28,7 @@ use aes_gcm::{Aes256Gcm, Key, Nonce};
 use ed25519_dalek::SigningKey;
 use radixdlt_address::{network_by_id, virtual_account_address, AddressError};
 use radixdlt_i18n::{tr, Lang};
-use rand_core::{OsRng, RngCore};
+
 use serde::{Deserialize, Serialize};
 
 /// scrypt cost parameter: log2(N). N = 2^15 = 32768 (matches the Node signer).
@@ -39,7 +39,13 @@ pub const SCRYPT_R: u32 = 8;
 pub const SCRYPT_P: u32 = 1;
 
 /// Keystore errors. Their `Display` text is localized to the system language.
+///
+/// Marked `#[non_exhaustive]`: a keystore learns new ways to fail as the crypto beneath it
+/// moves, and each one should not force a breaking release on everyone who matches on this.
+/// `RandomnessUnavailable` is the case in point -- it only became expressible once the RNG
+/// could report a failure. Match with a `_` arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KeystoreError {
     /// A hex field of the keystore is corrupt (field name included).
     CorruptField(String),
@@ -49,6 +55,10 @@ pub enum KeystoreError {
     UnexpectedKeyLength,
     /// Encryption failed unexpectedly.
     EncryptionFailed,
+    /// The operating system could not provide randomness, so no salt, nonce or key
+    /// could be generated. Never silently continued past: a predictable salt or nonce
+    /// destroys the encryption that depends on it.
+    RandomnessUnavailable,
     /// Filesystem error while reading/writing the key file.
     Io(String),
     /// The key file is not valid JSON / has the wrong shape.
@@ -75,6 +85,11 @@ impl std::fmt::Display for KeystoreError {
                 lang,
                 "decrypted private key has an unexpected length".to_string(),
                 "la clave privada descifrada tiene un tamaño inesperado".to_string()
+            ),
+            KeystoreError::RandomnessUnavailable => tr!(
+                lang,
+                "the operating system could not provide randomness".to_string(),
+                "el sistema operativo no pudo proporcionar aleatoriedad".to_string()
             ),
             KeystoreError::EncryptionFailed => tr!(
                 lang,
@@ -132,14 +147,16 @@ impl CryptoBlob {
     /// Never because of the passphrase: any passphrase encrypts, including a bad one.
     pub fn encrypt(private_key: &[u8; 32], passphrase: &str) -> Result<CryptoBlob, KeystoreError> {
         let mut salt = [0u8; 16];
-        OsRng.fill_bytes(&mut salt);
         let mut iv = [0u8; 12];
-        OsRng.fill_bytes(&mut iv);
+        // Fails closed. `fill_bytes` could not report a problem, so this promise in the
+        // doc comment above was unenforceable until now.
+        getrandom::fill(&mut salt).map_err(|_| KeystoreError::RandomnessUnavailable)?;
+        getrandom::fill(&mut iv).map_err(|_| KeystoreError::RandomnessUnavailable)?;
         let key = scrypt_key(passphrase, &salt);
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+        let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(key));
         let mut combined = cipher
             .encrypt(
-                Nonce::from_slice(&iv),
+                &Nonce::from(iv),
                 Payload {
                     msg: private_key,
                     aad: b"",
@@ -174,11 +191,14 @@ impl CryptoBlob {
         let tag = hex::decode(&self.tag).map_err(|_| KeystoreError::CorruptField("tag".into()))?;
         ciphertext.extend_from_slice(&tag); // aes-gcm expects ciphertext ‖ tag
 
+        // The nonce comes from a file a user can edit, and the old `Nonce::from_slice` would
+        // PANIC on any length but 12 rather than report a corrupt field.
+        let nonce = Nonce::try_from(&iv[..]).map_err(|_| KeystoreError::CorruptField("iv".into()))?;
         let key = scrypt_key(passphrase, &salt);
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+        let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(key));
         let plaintext = cipher
             .decrypt(
-                Nonce::from_slice(&iv),
+                &nonce,
                 Payload {
                     msg: &ciphertext,
                     aad: b"",
@@ -223,7 +243,7 @@ impl KeyFile {
     /// When the system RNG is unavailable, or the freshly generated key cannot be encrypted.
     pub fn generate(network_id: u8, passphrase: &str) -> Result<KeyFile, KeystoreError> {
         let mut secret = [0u8; 32];
-        OsRng.fill_bytes(&mut secret);
+        getrandom::fill(&mut secret).map_err(|_| KeystoreError::RandomnessUnavailable)?;
         let kf = KeyFile::from_private_key(&secret, network_id, passphrase);
         secret.fill(0);
         kf
@@ -308,7 +328,11 @@ impl KeyFile {
 // at runtime — and returning an error the caller cannot act on would be worse than saying so.
 #[allow(clippy::expect_used)]
 fn scrypt_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {
-    let params = scrypt::Params::new(SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P, 32).expect("scrypt params");
+    // The output length is no longer a parameter: scrypt 0.12 takes it from the buffer, and
+    // documents that a length set on `Params` is ignored. Same 32 bytes either way, so the
+    // derivation is unchanged and key files written by earlier versions still open --
+    // which `a_key_file_from_before_this_change_still_opens` holds us to.
+    let params = scrypt::Params::new(SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P).expect("scrypt params");
     let mut out = [0u8; 32];
     scrypt::scrypt(passphrase.as_bytes(), salt, &params, &mut out).expect("scrypt");
     out
@@ -357,5 +381,30 @@ mod tests {
         let sk = kf.signing_key("pw").unwrap();
         let derived = virtual_account_address(&hex::encode(sk.verifying_key().to_bytes()), 2).unwrap();
         assert_eq!(derived, kf.address);
+    }
+
+    /// A key file written BEFORE the crypto stack was upgraded (ed25519-dalek 2, scrypt 0.11,
+    /// aes-gcm 0.10) must still open. This is the failure that would be both catastrophic and
+    /// silent: every stored key becomes unreadable, and nothing says so until someone tries.
+    ///
+    /// The fixture is a real file produced by that older build, not a re-encryption by this
+    /// one -- which would only prove the code agrees with itself.
+    #[test]
+    fn a_key_file_from_before_this_change_still_opens() {
+        const BEFORE: &str = r#"{"version":1,"network":"stokenet","networkId":2,"publicKey":"5f60f5d663981c77e678b3e77693c6a9dd24f9641cfa8f8f04fc289bf7d73bea","address":"account_tdx_2_128exm3fvj87wn78yqpdakq5949h6dsc46g7whm3pfjm0mdaxv3xtk0","createdAt":"1785684343","crypto":{"kdf":"scrypt","salt":"ece1270e844f691612be87f7df013a0b","n":32768,"r":8,"p":1,"iv":"3ec5a50b616ad3333f335bfa","tag":"be78570bc602fbfb9ef59bf1abeb549a","ciphertext":"afef046ab51ce355398353c9ce1f47aeb52f94d7f9d53775e67cbc583c9e9cd2"}}"#;
+        let kf: KeyFile = serde_json::from_str(BEFORE).expect("the old shape still parses");
+        let secret = kf
+            .private_key("correct horse battery staple")
+            .expect("the old file still decrypts");
+        let signing = SigningKey::from_bytes(&secret);
+        assert_eq!(
+            hex::encode(signing.verifying_key().to_bytes()),
+            "5f60f5d663981c77e678b3e77693c6a9dd24f9641cfa8f8f04fc289bf7d73bea",
+            "the key recovered must be the very one that was stored"
+        );
+        assert_eq!(
+            kf.address, "account_tdx_2_128exm3fvj87wn78yqpdakq5949h6dsc46g7whm3pfjm0mdaxv3xtk0",
+            "and its address must not have moved"
+        );
     }
 }

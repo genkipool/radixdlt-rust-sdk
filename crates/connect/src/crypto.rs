@@ -9,7 +9,6 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
-use rand_core::{OsRng, RngCore};
 
 use crate::error::ConnectError;
 
@@ -26,14 +25,23 @@ pub fn connection_id_hex(password: &[u8]) -> String {
     hex::encode(blake2b_256(password))
 }
 
+/// The AES key from a link password, refusing anything that is not 32 bytes.
+///
+/// `Key::from_slice` would PANIC on a wrong length -- in library code, on input that arrives
+/// from a file the user can edit. An error is the only acceptable answer.
+fn aes_key(key: &[u8]) -> Result<Key<Aes256Gcm>, ConnectError> {
+    Key::<Aes256Gcm>::try_from(key)
+        .map_err(|_| ConnectError::Crypto("the link password is not a 32-byte key".into()))
+}
+
 /// Encrypts `plaintext` and returns `IV ‖ ciphertext‖tag` as hex (signaling format).
 pub fn encrypt_payload(plaintext: &[u8], key: &[u8]) -> Result<String, ConnectError> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let cipher = Aes256Gcm::new(&aes_key(key)?);
     let mut iv = [0u8; 12];
-    OsRng.fill_bytes(&mut iv);
+    getrandom::fill(&mut iv).map_err(|e| ConnectError::Crypto(format!("system randomness: {e}")))?;
     let ct = cipher
         .encrypt(
-            Nonce::from_slice(&iv),
+            &Nonce::from(iv),
             Payload {
                 msg: plaintext,
                 aad: b"",
@@ -53,9 +61,12 @@ pub fn decrypt_payload(hex_data: &str, key: &[u8]) -> Result<Vec<u8>, ConnectErr
         return Err(ConnectError::Crypto("payload too short".into()));
     }
     let (iv, ct) = raw.split_at(12);
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let cipher = Aes256Gcm::new(&aes_key(key)?);
+    // `split_at(12)` guarantees the length, so this conversion cannot fail.
+    let nonce =
+        Nonce::try_from(iv).map_err(|_| ConnectError::Crypto("payload nonce is not 12 bytes".into()))?;
     cipher
-        .decrypt(Nonce::from_slice(iv), Payload { msg: ct, aad: b"" })
+        .decrypt(&nonce, Payload { msg: ct, aad: b"" })
         .map_err(|_| ConnectError::Crypto("decryption failed (key/iv/tag)".into()))
 }
 

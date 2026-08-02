@@ -79,8 +79,7 @@ async fn main() {
     let password = state.password_bytes().expect("no pairing in the state file");
 
     let mut challenge = [0u8; 32];
-    use rand_core::RngCore;
-    rand_core::OsRng.fill_bytes(&mut challenge);
+    getrandom::fill(&mut challenge).expect("system randomness");
     let challenge_hex = hex::encode(challenge);
 
     let connector = if relay_tcp {
