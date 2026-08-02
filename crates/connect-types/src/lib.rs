@@ -571,4 +571,116 @@ mod tests {
             Err(WalletInteractionError::WalletRejected("rejectedByUser".into()))
         );
     }
+
+    /// The discriminator is how a wallet decides WHICH kind of request it is looking at, so a
+    /// constant here would route every interaction to the same handler.
+    #[test]
+    fn each_request_carries_its_own_discriminator() {
+        let c = ctx();
+        assert_eq!(
+            interaction_discriminator(&account_proof_request("aa", &c, false)),
+            Some("unauthorizedRequest")
+        );
+        assert_eq!(
+            interaction_discriminator(&account_request(&c)),
+            Some("unauthorizedRequest")
+        );
+        assert_eq!(
+            interaction_discriminator(&transaction_request("CALL", "", &[], &c)),
+            Some("transaction")
+        );
+        assert_eq!(
+            interaction_discriminator(&pre_authorization_request("CALL", "", 60, &c)),
+            Some("preAuthorizationRequest")
+        );
+        assert_eq!(
+            interaction_discriminator(&json!({})),
+            None,
+            "and something that is not a request has none"
+        );
+    }
+
+    /// An empty request reaches the wallet and simply does nothing, which looks like the phone
+    /// ignoring you rather than like a bug here.
+    #[test]
+    fn an_account_request_is_fully_formed() {
+        let r = account_request(&ctx());
+        assert!(
+            !r["interactionId"].as_str().unwrap_or("").is_empty(),
+            "without an id no response can be correlated"
+        );
+        assert!(
+            r.get("metadata").is_some(),
+            "the wallet shows the metadata to the user"
+        );
+        assert_eq!(r["items"]["discriminator"], "unauthorizedRequest");
+        assert!(r["items"]["oneTimeAccounts"].get("challenge").is_none());
+    }
+
+    /// Every request must be distinguishable from every other, or the correlation that discards
+    /// stale wallet responses matches the wrong one.
+    #[test]
+    fn interaction_ids_are_unique_and_survive_parsing() {
+        let c = ctx();
+        let first = account_proof_request("aa", &c, false);
+        let second = account_proof_request("aa", &c, false);
+        assert_ne!(first["interactionId"], second["interactionId"]);
+
+        let parsed = parse_account_proof_request(&first).expect("parsed");
+        assert_eq!(
+            parsed.interaction_id,
+            first["interactionId"].as_str().unwrap_or_default(),
+            "the id read back must be the one that was sent"
+        );
+        assert!(!parsed.interaction_id.is_empty());
+    }
+
+    /// The three branches of the name are separate rules, and dropping either negation makes
+    /// the function return the wrong one of them.
+    #[test]
+    fn a_persona_name_falls_back_from_full_name_to_nickname_to_nothing() {
+        let full = json!({ "items": { "oneTimePersonaData": { "name": {
+            "variant": "western", "givenNames": "Ada", "familyName": "Lovelace", "nickname": "Ada L"
+        }}}});
+        assert_eq!(extract_persona_name(&full).as_deref(), Some("Ada Lovelace"));
+
+        let eastern = json!({ "items": { "oneTimePersonaData": { "name": {
+            "variant": "eastern", "givenNames": "Ada", "familyName": "Lovelace", "nickname": ""
+        }}}});
+        assert_eq!(extract_persona_name(&eastern).as_deref(), Some("Lovelace Ada"));
+
+        let only_nick = json!({ "items": { "oneTimePersonaData": { "name": {
+            "variant": "western", "givenNames": "", "familyName": "", "nickname": "Ada L"
+        }}}});
+        assert_eq!(
+            extract_persona_name(&only_nick).as_deref(),
+            Some("Ada L"),
+            "with no given or family name, the nickname is what there is"
+        );
+
+        let nothing = json!({ "items": { "oneTimePersonaData": { "name": {
+            "variant": "western", "givenNames": "", "familyName": "", "nickname": ""
+        }}}});
+        assert_eq!(extract_persona_name(&nothing), None);
+        assert_eq!(extract_persona_name(&json!({})), None);
+    }
+
+    /// The wallet nests this inside arrays, so a search that only walks objects finds nothing
+    /// on exactly the shape that arrives in practice.
+    #[test]
+    fn a_signed_partial_transaction_is_found_inside_arrays_too() {
+        let nested = json!({ "items": { "responses": [
+            { "unrelated": true },
+            { "signedPartialTransaction": "deadbeef" }
+        ]}});
+        assert_eq!(
+            extract_signed_partial_transaction(&nested).expect("found"),
+            "deadbeef"
+        );
+
+        let plain = json!({ "items": { "signedPartialTransaction": "cafe" } });
+        assert_eq!(extract_signed_partial_transaction(&plain).expect("found"), "cafe");
+
+        assert!(extract_signed_partial_transaction(&json!({ "items": {} })).is_err());
+    }
 }

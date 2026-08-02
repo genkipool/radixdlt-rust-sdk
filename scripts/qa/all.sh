@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Every gate, in the order CI runs them. Green here means green there.
 #
-# Mutation testing and the release check are NOT included: one takes minutes, the other needs a
-# published tag. Run `scripts/qa/mutants.sh` when you touch the crypto, and
+# The release check is NOT included: it needs a published tag. Run
 # `scripts/qa/verify-release.sh <tag>` after publishing.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
@@ -18,6 +17,7 @@ step "MSRV"         ./scripts/qa/msrv.sh || fail=1
 step "Coverage"     ./scripts/qa/coverage.sh || fail=1
 step "Supply chain" cargo deny check || fail=1
 step "Public API"   ./scripts/qa/semver.sh || fail=1
+step "Mutation"     ./scripts/qa/mutants.sh || fail=1
 
 echo
 if [ "$fail" = 0 ]; then echo "ALL GATES PASSED."; else echo "SOME GATES FAILED — fix the code, not the gate." >&2; fi
