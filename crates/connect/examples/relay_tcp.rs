@@ -16,7 +16,7 @@
 
 use std::time::{Duration, Instant};
 
-use radixdlt_connect::{extract_proofs, Connector, DappContext, IceServer, LinkState};
+use radixdlt_connect::{extract_proofs, Connector, DappContext, LinkState, TurnTcpServer};
 use radixdlt_rola::{verify_account_proof, AccountProof};
 
 // Matches the daemon's defaults, so this measures the transport and nothing else.
@@ -25,13 +25,9 @@ const ORIGIN: &str = "http://localhost:8080";
 const NETWORK_ID: u8 = 2;
 
 /// The relay the default ICE set already carries, kept to its TLS/TCP endpoint alone.
-fn tcp_only_ice() -> Vec<IceServer> {
-    vec![IceServer::turn(
-        "turns:standard.relay.metered.ca:443?transport=tcp",
-        "51253affa7c2960189ce8cb6",
-        "3HWkp3Wgg2cujD2g",
-    )]
-}
+const RELAY_URL: &str = "turns:standard.relay.metered.ca:443?transport=tcp";
+const RELAY_USER: &str = "51253affa7c2960189ce8cb6";
+const RELAY_PASS: &str = "3HWkp3Wgg2cujD2g";
 
 #[tokio::main]
 async fn main() {
@@ -49,6 +45,36 @@ async fn main() {
     let dapp = get("--dapp", DAPP_DEFAULT);
     let relay_tcp = get("--mode", "relay-tcp") == "relay-tcp";
 
+    // Probing needs no wallet: it answers "does the allocation work at all", which is half
+    // the stack, before anyone is asked to pick up a phone.
+    if get("--mode", "relay-tcp") == "probe" {
+        let relay = TurnTcpServer::parse(RELAY_URL, RELAY_USER, RELAY_PASS).expect("relay url");
+        println!("allocating on {} (tls={})…", relay.addr, relay.tls);
+        match radixdlt_connect::probe_relay_candidates(&relay, Duration::from_secs(5)).await {
+            Ok((relayed, candidates)) => {
+                println!("allocated, relayed address = {relayed}");
+                println!("candidates that would be offered to the wallet:");
+                for c in &candidates {
+                    println!("  {c}");
+                }
+                let good = candidates.iter().all(|c| c.contains(&relayed.ip().to_string()));
+                println!(
+                    "RESULT: {}",
+                    if !candidates.is_empty() && good {
+                        "every candidate points at the relay"
+                    } else {
+                        "WRONG - a candidate does not point at the relay"
+                    }
+                );
+                std::process::exit(if good { 0 } else { 3 });
+            }
+            Err(e) => {
+                println!("RESULT: PROBE FAILED — {e}");
+                std::process::exit(2);
+            }
+        }
+    }
+
     let state = LinkState::load(&state_path).expect("loading the link state");
     let password = state.password_bytes().expect("no pairing in the state file");
 
@@ -58,11 +84,10 @@ async fn main() {
     let challenge_hex = hex::encode(challenge);
 
     let connector = if relay_tcp {
-        println!("mode: RELAY-TCP — ICE restricted to relay, TURN over TLS/TCP 443 only");
-        println!("      no host or server-reflexive candidate is gathered, so no UDP path exists");
-        Connector::new()
-            .with_ice_servers(tcp_only_ice())
-            .with_relay_only(true)
+        println!("mode: RELAY-TCP — the allocation is made over TLS/TCP 443 and stands in for");
+        println!("      the peer connection's socket, so the process opens no UDP socket at all");
+        let relay = TurnTcpServer::parse(RELAY_URL, RELAY_USER, RELAY_PASS).expect("relay url");
+        Connector::new().with_turn_tcp(relay)
     } else {
         println!("mode: DEFAULT (control) — stock ICE set, free to choose UDP");
         Connector::new()

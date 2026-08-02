@@ -1555,6 +1555,7 @@ dependencies = [
  "async-trait",
  "base64",
  "blake2",
+ "bytes",
  "ed25519-dalek",
  "futures-util",
  "hex",
@@ -1562,11 +1563,16 @@ dependencies = [
  "radixdlt-i18n",
  "radixdlt-rola",
  "rand_core 0.6.4",
+ "rtc",
+ "rustls",
+ "sansio",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "uuid",
+ "webpki-roots 1.0.9",
  "webrtc",
 ]
 
@@ -2042,6 +2048,7 @@ version = "0.23.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",

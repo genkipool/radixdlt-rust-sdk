@@ -34,6 +34,12 @@ uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 webrtc = "0.20"
 async-trait = "0.1.91"
+rtc = "0.20"
+bytes = "1"
+sansio = "1"
+webpki-roots = "1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 
 [dev-dependencies]
 # Used by the `prove` example to verify the ROLA proof returned by the wallet.

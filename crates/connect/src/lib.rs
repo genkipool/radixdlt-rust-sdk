@@ -44,12 +44,14 @@ pub mod crypto;
 mod error;
 mod signaling;
 pub mod state;
+/// A TURN allocation reached over TCP/TLS, presented to WebRTC as a UDP socket.
+pub mod turn_tcp;
 
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-pub use connector::{radix_default_ice_servers, Channel, IceServer};
+pub use connector::{probe_relay_candidates, radix_default_ice_servers, Channel, IceServer};
 pub use error::ConnectError;
 pub use radixdlt_connect_types::{
     account_proof_request, account_request, extract_accounts, extract_persona_name, extract_proofs,
@@ -58,6 +60,7 @@ pub use radixdlt_connect_types::{
 };
 pub use signaling::SIGNALING_BASE;
 pub use state::LinkState;
+pub use turn_tcp::{TurnTcpRuntime, TurnTcpServer};
 
 /// Waits for a `linkClient` message from the wallet (pairing) on an established
 /// channel. Returns `(walletPublicKey, signatureHex)`.
@@ -138,6 +141,7 @@ pub struct Connector {
     ice_servers: Vec<IceServer>,
     signaling_base: String,
     relay_only: bool,
+    turn_tcp: Option<TurnTcpServer>,
 }
 
 impl Default for Connector {
@@ -146,6 +150,7 @@ impl Default for Connector {
             ice_servers: radix_default_ice_servers(),
             signaling_base: SIGNALING_BASE.to_string(),
             relay_only: false,
+            turn_tcp: None,
         }
     }
 }
@@ -180,6 +185,22 @@ impl Connector {
         self
     }
 
+    /// Reaches the wallet through a TURN relay over TCP/TLS, opening no UDP socket at all.
+    ///
+    /// For hosts that do not offer UDP: corporate networks that block it, and most
+    /// serverless platforms. The allocation is made before the peer connection exists and
+    /// stands in for its socket, so ICE has a public address to offer and never discovers
+    /// there is a relay beneath it. See [`turn_tcp`] for the shape of that.
+    ///
+    /// It supersedes both [`with_ice_servers`](Self::with_ice_servers) and
+    /// [`with_relay_only`](Self::with_relay_only): with the relay underneath, there is
+    /// nothing left for ICE to gather. Slower than a direct path and every byte crosses the
+    /// relay, so reach for it when UDP is unavailable rather than by default.
+    pub fn with_turn_tcp(mut self, server: TurnTcpServer) -> Self {
+        self.turn_tcp = Some(server);
+        self
+    }
+
     async fn establish(&self, password: &[u8], open_timeout: Duration) -> Result<Channel, ConnectError> {
         connector::establish(
             &self.ice_servers,
@@ -187,6 +208,7 @@ impl Connector {
             password,
             open_timeout,
             self.relay_only,
+            self.turn_tcp.as_ref(),
         )
         .await
     }
