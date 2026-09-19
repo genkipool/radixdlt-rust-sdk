@@ -56,6 +56,20 @@ minor versions may contain breaking changes.
   `interactionId`, discarding stale queued responses; `LinkState` documents the
   multi-device API in the README.
 
+## [connector-v0.3.2]
+
+### Added
+
+- `radixdlt-connect` — `Connector::request_account_proof_sharing`, which says exactly
+  what the person is asked to share along with the signature (`PersonaRequest`: name,
+  email, or nothing), and `extract_persona_email` to read the address back out of the
+  wallet's answer. `request_account_proof` keeps its old meaning.
+- `radixdlt-connector-mcp` — `request_account_proof` gained `request_email`: ask the
+  wallet for the persona's name and email address, printed on their own lines. Nothing
+  is asked for by default -- a data request is one-time and the wallet will not let the
+  person approve until they provide what is asked for, so asking for an email they have
+  not set up turns a login into a form.
+
 ## [connector-v0.3.1]
 
 The same connector, a generation newer underneath. Nothing it exposes or stores
