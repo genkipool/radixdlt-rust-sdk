@@ -108,14 +108,50 @@ pub fn interaction_discriminator(request: &Value) -> Option<&str> {
 
 // =============================== dApp side ===============================
 
-/// Builds an account-proof request (`oneTimeAccounts` with a ROLA challenge), with
-/// an optional request for the person's own data: their name and their email address.
+/// What the person is asked to SHARE about themselves, beside the signature.
 ///
-/// Both are asked for together because they answer the same question — WHO signed — and a
-/// wallet address answers it for nobody: an audit trail that says `account_tdx_2_12x…` names
-/// somebody no company can write to. The person still approves the sharing in their wallet,
-/// and a wallet that shares neither is simply a login with no name on it.
+/// A one-time data request is not a suggestion: the wallet will not let the person approve until
+/// they provide what was asked for. So asking for an email is asking somebody without one to
+/// invent one before they can log in — which is why nothing here is asked for by default, and
+/// why what is asked never decides anything. The signature is the credential; this is a label
+/// for the trail.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PersonaRequest {
+    pub name: bool,
+    pub email: bool,
+}
+
+impl PersonaRequest {
+    /// Nothing but the signature.
+    pub const NONE: Self = Self { name: false, email: false };
+    /// The name, which is what a page shows instead of an account address.
+    pub const NAME: Self = Self { name: true, email: false };
+    /// Name and email: for a deployment whose trail has to name somebody reachable.
+    pub const NAME_AND_EMAIL: Self = Self { name: true, email: true };
+
+    fn asked(self) -> bool {
+        self.name || self.email
+    }
+}
+
+/// Builds an account-proof request (`oneTimeAccounts` with a ROLA challenge), optionally asking
+/// for the person's name. Unchanged behaviour: see [`account_proof_request_sharing`] to ask for
+/// the email too.
 pub fn account_proof_request(challenge_hex: &str, ctx: &DappContext, request_persona: bool) -> Value {
+    let share = if request_persona {
+        PersonaRequest::NAME
+    } else {
+        PersonaRequest::NONE
+    };
+    account_proof_request_sharing(challenge_hex, ctx, share)
+}
+
+/// Builds an account-proof request, saying exactly what the person is asked to share.
+pub fn account_proof_request_sharing(
+    challenge_hex: &str,
+    ctx: &DappContext,
+    share: PersonaRequest,
+) -> Value {
     let mut items = json!({
         "discriminator": "unauthorizedRequest",
         "oneTimeAccounts": {
@@ -123,13 +159,15 @@ pub fn account_proof_request(challenge_hex: &str, ctx: &DappContext, request_per
             "numberOfAccounts": { "quantifier": "atLeast", "quantity": 1 }
         }
     });
-    if request_persona {
-        items["oneTimePersonaData"] = json!({
-            "isRequestingName": true,
-            // `atLeast 1`, not "exactly one": a person with two addresses picks the one they
-            // want to be reached at rather than being refused for having two.
-            "numberOfRequestedEmailAddresses": { "quantifier": "atLeast", "quantity": 1 }
-        });
+    if share.asked() {
+        let mut data = json!({ "isRequestingName": share.name });
+        if share.email {
+            // `atLeast 1`, not "exactly one": somebody with two addresses picks the one they
+            // want to be reached at instead of being refused for having two.
+            data["numberOfRequestedEmailAddresses"] =
+                json!({ "quantifier": "atLeast", "quantity": 1 });
+        }
+        items["oneTimePersonaData"] = data;
     }
     json!({ "interactionId": Uuid::new_v4().to_string(), "metadata": metadata(ctx), "items": items })
 }
@@ -523,21 +561,34 @@ pub fn failure_response(interaction_id: &str, error: &str) -> Value {
 mod persona_tests {
     use super::*;
 
-    #[test]
-    fn the_request_asks_for_the_name_and_an_email() {
-        let ctx = DappContext {
+    fn ctx() -> DappContext {
+        DappContext {
             network_id: 2,
             dapp_definition: "account_tdx_2_1x".into(),
             origin: "https://example.org".into(),
-        };
-        let asked = account_proof_request("ab", &ctx, true);
-        let data = &asked["items"]["oneTimePersonaData"];
+        }
+    }
+
+    /// The email is asked for ONLY when somebody asked for it. A wallet will not let a person
+    /// approve a one-time data request they cannot fulfil, so an email asked for by default
+    /// would turn "sign in" into "first write down an address you may not want to give".
+    #[test]
+    fn nothing_about_the_person_is_asked_for_unless_it_is_asked_for() {
+        let quiet = account_proof_request("ab", &ctx(), false);
+        assert!(quiet["items"].get("oneTimePersonaData").is_none());
+
+        let named = account_proof_request("ab", &ctx(), true);
+        let data = &named["items"]["oneTimePersonaData"];
+        assert_eq!(data["isRequestingName"], serde_json::json!(true));
+        assert!(
+            data.get("numberOfRequestedEmailAddresses").is_none(),
+            "the old call must keep asking for the name and nothing else"
+        );
+
+        let both = account_proof_request_sharing("ab", &ctx(), PersonaRequest::NAME_AND_EMAIL);
+        let data = &both["items"]["oneTimePersonaData"];
         assert_eq!(data["isRequestingName"], serde_json::json!(true));
         assert_eq!(data["numberOfRequestedEmailAddresses"]["quantity"], serde_json::json!(1));
-        // Without persona data nothing is asked for: a login that needs no name must not make
-        // the wallet offer the person's details.
-        let quiet = account_proof_request("ab", &ctx, false);
-        assert!(quiet["items"].get("oneTimePersonaData").is_none());
     }
 
     #[test]

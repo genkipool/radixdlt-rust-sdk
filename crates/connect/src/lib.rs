@@ -54,8 +54,8 @@ use serde_json::{json, Value};
 pub use connector::{probe_relay_candidates, radix_default_ice_servers, Channel, IceServer};
 pub use error::ConnectError;
 pub use radixdlt_connect_types::{
-    account_proof_request, account_request, extract_accounts, extract_persona_email,
-    extract_persona_name, extract_proofs,
+    account_proof_request, account_proof_request_sharing, account_request, extract_accounts,
+    extract_persona_email, extract_persona_name, extract_proofs, PersonaRequest,
     extract_signed_partial_transaction, extract_transaction_intent_hash, pre_authorization_request,
     transaction_request, DappContext, WalletInteractionError,
 };
@@ -254,9 +254,29 @@ impl Connector {
         request_persona: bool,
         overall_timeout: Duration,
     ) -> Result<Value, ConnectError> {
+        let share = if request_persona {
+            PersonaRequest::NAME
+        } else {
+            PersonaRequest::NONE
+        };
+        self.request_account_proof_sharing(password, challenge_hex, ctx, share, overall_timeout)
+            .await
+    }
+
+    /// The same, saying exactly what the person is asked to share about themselves. Nothing
+    /// shared changes the proof: the signature is what the caller verifies, and what the person
+    /// declines to share simply is not in the answer.
+    pub async fn request_account_proof_sharing(
+        &self,
+        password: &[u8],
+        challenge_hex: &str,
+        ctx: &DappContext,
+        share: PersonaRequest,
+        overall_timeout: Duration,
+    ) -> Result<Value, ConnectError> {
         let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
         let mut channel = self.establish(password, budget).await?;
-        let interaction = account_proof_request(challenge_hex, ctx, request_persona);
+        let interaction = account_proof_request_sharing(challenge_hex, ctx, share);
         send_and_await_response(&mut channel, &interaction, budget).await
     }
 
