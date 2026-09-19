@@ -14,7 +14,10 @@ use tokio::sync::oneshot;
 
 use radixdlt_connect::crypto::blake2b_256;
 use radixdlt_connect::state::{Link, LinkState};
-use radixdlt_connect::{extract_accounts, extract_persona_name, extract_proofs, Connector, DappContext};
+use radixdlt_connect::{
+    extract_accounts, extract_persona_email, extract_persona_name, extract_proofs, Connector, DappContext,
+    PersonaRequest,
+};
 use radixdlt_rola::{verify_account_proof, AccountProof};
 
 use crate::gateway;
@@ -259,6 +262,7 @@ pub fn list_json() -> Vec<Value> {
                     "dapp_definition": { "type": "string", "description": "dApp definition address (part of the signed ROLA message; falls back to the RADIX_DAPP_DEFINITION_MAINNET/STOKENET env var, and is required — cannot be empty)." },
                     "origin": { "type": "string", "description": "Origin URL (part of the signed ROLA message; falls back to RADIX_DAPP_ORIGIN env var, else https://radix-community.genkipool.com)." },
                     "request_persona": { "type": "boolean", "description": "Also ask for the persona name (default false)." },
+                    "request_email": { "type": "boolean", "description": "Also ask for the persona name and email address (default false). The wallet will not let the person approve until they provide what is asked for, so ask only when the answer needs it." },
                     "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the first paired wallet)." },
                     "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." }
                 },
@@ -733,7 +737,14 @@ async fn request_account_proof(app: &Rc<App>, args: &Value) -> ToolResult {
         );
     }
     let origin = resolve_origin(args);
-    let request_persona = opt_bool(args, "request_persona").unwrap_or(false);
+    // What the person is asked to share besides the signature. Nothing by default: a one-time
+    // data request is one the wallet will not let them skip, so asking for an email they do not
+    // have turns "log in" into "first write one down".
+    let share = PersonaRequest {
+        name: opt_bool(args, "request_persona").unwrap_or(false)
+            || opt_bool(args, "request_email").unwrap_or(false),
+        email: opt_bool(args, "request_email").unwrap_or(false),
+    };
     let password = match load_password(app, args) {
         Ok(p) => p,
         Err(e) => return ToolResult::error(e),
@@ -743,7 +754,7 @@ async fn request_account_proof(app: &Rc<App>, args: &Value) -> ToolResult {
 
     let connector = Connector::new();
     let response = match connector
-        .request_account_proof(&password, &challenge, &ctx, request_persona, timeout)
+        .request_account_proof_sharing(&password, &challenge, &ctx, share, timeout)
         .await
     {
         Ok(v) => v,
@@ -776,6 +787,7 @@ async fn request_account_proof(app: &Rc<App>, args: &Value) -> ToolResult {
     };
     let verification = verify_account_proof(&ap, &challenge, &dapp_definition, &origin, network.id());
     let persona = extract_persona_name(&response);
+    let email = extract_persona_email(&response);
 
     let (verdict, extra) = match verification {
         Ok(()) => ("VERIFIED ✓", String::new()),
@@ -786,12 +798,14 @@ async fn request_account_proof(app: &Rc<App>, args: &Value) -> ToolResult {
         "ACCOUNT PROOF {verdict} (network: {net})\n\
          Address:    {address}\n\
          Public key: {pk}\n\
-         Persona:    {persona}{extra}",
+         Persona:    {persona}\n\
+         Email:      {email}{extra}",
         verdict = verdict,
         net = network.label(),
         address = ap.address,
         pk = ap.public_key_hex,
         persona = persona.as_deref().unwrap_or("(not requested / not shared)"),
+        email = email.as_deref().unwrap_or("(not requested / not shared)"),
         extra = extra,
     ))
 }

@@ -117,17 +117,28 @@ pub fn interaction_discriminator(request: &Value) -> Option<&str> {
 /// for the trail.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PersonaRequest {
+    /// Ask for the person's name, which is what a page shows instead of an account address.
     pub name: bool,
+    /// Ask for an email address too, for a trail that has to name somebody reachable.
     pub email: bool,
 }
 
 impl PersonaRequest {
     /// Nothing but the signature.
-    pub const NONE: Self = Self { name: false, email: false };
+    pub const NONE: Self = Self {
+        name: false,
+        email: false,
+    };
     /// The name, which is what a page shows instead of an account address.
-    pub const NAME: Self = Self { name: true, email: false };
+    pub const NAME: Self = Self {
+        name: true,
+        email: false,
+    };
     /// Name and email: for a deployment whose trail has to name somebody reachable.
-    pub const NAME_AND_EMAIL: Self = Self { name: true, email: true };
+    pub const NAME_AND_EMAIL: Self = Self {
+        name: true,
+        email: true,
+    };
 
     fn asked(self) -> bool {
         self.name || self.email
@@ -147,11 +158,7 @@ pub fn account_proof_request(challenge_hex: &str, ctx: &DappContext, request_per
 }
 
 /// Builds an account-proof request, saying exactly what the person is asked to share.
-pub fn account_proof_request_sharing(
-    challenge_hex: &str,
-    ctx: &DappContext,
-    share: PersonaRequest,
-) -> Value {
+pub fn account_proof_request_sharing(challenge_hex: &str, ctx: &DappContext, share: PersonaRequest) -> Value {
     let mut items = json!({
         "discriminator": "unauthorizedRequest",
         "oneTimeAccounts": {
@@ -164,8 +171,7 @@ pub fn account_proof_request_sharing(
         if share.email {
             // `atLeast 1`, not "exactly one": somebody with two addresses picks the one they
             // want to be reached at instead of being refused for having two.
-            data["numberOfRequestedEmailAddresses"] =
-                json!({ "quantifier": "atLeast", "quantity": 1 });
+            data["numberOfRequestedEmailAddresses"] = json!({ "quantifier": "atLeast", "quantity": 1 });
         }
         items["oneTimePersonaData"] = data;
     }
@@ -588,7 +594,10 @@ mod persona_tests {
         let both = account_proof_request_sharing("ab", &ctx(), PersonaRequest::NAME_AND_EMAIL);
         let data = &both["items"]["oneTimePersonaData"];
         assert_eq!(data["isRequestingName"], serde_json::json!(true));
-        assert_eq!(data["numberOfRequestedEmailAddresses"]["quantity"], serde_json::json!(1));
+        assert_eq!(
+            data["numberOfRequestedEmailAddresses"]["quantity"],
+            serde_json::json!(1)
+        );
     }
 
     #[test]
@@ -598,7 +607,10 @@ mod persona_tests {
         assert_eq!(extract_persona_email(&plain).as_deref(), Some("ana@example.org"));
         let wrapped = serde_json::json!({ "items": { "oneTimePersonaData": {
             "emailAddresses": [{ "value": "luis@example.org" }] } } });
-        assert_eq!(extract_persona_email(&wrapped).as_deref(), Some("luis@example.org"));
+        assert_eq!(
+            extract_persona_email(&wrapped).as_deref(),
+            Some("luis@example.org")
+        );
         // Nothing shared is not an error: it is a login with no email on it.
         let none = serde_json::json!({ "items": { "oneTimePersonaData": { "name": {} } } });
         assert_eq!(extract_persona_email(&none), None);
