@@ -54,7 +54,8 @@ use serde_json::{json, Value};
 pub use connector::{probe_relay_candidates, radix_default_ice_servers, Channel, IceServer};
 pub use error::ConnectError;
 pub use radixdlt_connect_types::{
-    account_proof_request, account_request, extract_accounts, extract_persona_name, extract_proofs,
+    account_proof_request, account_request, extract_accounts, extract_persona_email,
+    extract_persona_name, extract_proofs,
     extract_signed_partial_transaction, extract_transaction_intent_hash, pre_authorization_request,
     transaction_request, DappContext, WalletInteractionError,
 };

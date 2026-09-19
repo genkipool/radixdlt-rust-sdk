@@ -109,7 +109,12 @@ pub fn interaction_discriminator(request: &Value) -> Option<&str> {
 // =============================== dApp side ===============================
 
 /// Builds an account-proof request (`oneTimeAccounts` with a ROLA challenge), with
-/// an optional request for the person's name.
+/// an optional request for the person's own data: their name and their email address.
+///
+/// Both are asked for together because they answer the same question — WHO signed — and a
+/// wallet address answers it for nobody: an audit trail that says `account_tdx_2_12x…` names
+/// somebody no company can write to. The person still approves the sharing in their wallet,
+/// and a wallet that shares neither is simply a login with no name on it.
 pub fn account_proof_request(challenge_hex: &str, ctx: &DappContext, request_persona: bool) -> Value {
     let mut items = json!({
         "discriminator": "unauthorizedRequest",
@@ -119,7 +124,12 @@ pub fn account_proof_request(challenge_hex: &str, ctx: &DappContext, request_per
         }
     });
     if request_persona {
-        items["oneTimePersonaData"] = json!({ "isRequestingName": true });
+        items["oneTimePersonaData"] = json!({
+            "isRequestingName": true,
+            // `atLeast 1`, not "exactly one": a person with two addresses picks the one they
+            // want to be reached at rather than being refused for having two.
+            "numberOfRequestedEmailAddresses": { "quantifier": "atLeast", "quantity": 1 }
+        });
     }
     json!({ "interactionId": Uuid::new_v4().to_string(), "metadata": metadata(ctx), "items": items })
 }
@@ -284,6 +294,24 @@ pub fn extract_persona_name(response: &Value) -> Option<String> {
     } else {
         None
     }
+}
+
+/// The email address the person shared, if they shared one.
+///
+/// The wallet sends `emailAddresses` as a list; the first is the one to record. It is data for
+/// the trail and for the dashboard, never for a decision: access is decided on the ROLA proof
+/// and nothing else, so a missing or unexpected email changes nobody's access.
+#[must_use]
+pub fn extract_persona_email(response: &Value) -> Option<String> {
+    let data = response.get("items")?.get("oneTimePersonaData")?;
+    let list = data.get("emailAddresses")?.as_array()?;
+    list.iter()
+        .find_map(|entry| match entry {
+            // Wallets have sent both shapes: a plain string and `{ "value": "…" }`.
+            Value::String(s) => Some(s.clone()),
+            other => other.get("value")?.as_str().map(str::to_string),
+        })
+        .filter(|email| !email.is_empty())
 }
 
 /// Extracts the `transactionIntentHash` from a transaction response.
@@ -489,6 +517,42 @@ pub fn pre_authorization_response(interaction_id: &str, signed_partial_transacti
 /// Builds a wallet `failure` response (read back as [`WalletInteractionError`]).
 pub fn failure_response(interaction_id: &str, error: &str) -> Value {
     json!({ "discriminator": "failure", "interactionId": interaction_id, "error": error })
+}
+
+#[cfg(test)]
+mod persona_tests {
+    use super::*;
+
+    #[test]
+    fn the_request_asks_for_the_name_and_an_email() {
+        let ctx = DappContext {
+            network_id: 2,
+            dapp_definition: "account_tdx_2_1x".into(),
+            origin: "https://example.org".into(),
+        };
+        let asked = account_proof_request("ab", &ctx, true);
+        let data = &asked["items"]["oneTimePersonaData"];
+        assert_eq!(data["isRequestingName"], serde_json::json!(true));
+        assert_eq!(data["numberOfRequestedEmailAddresses"]["quantity"], serde_json::json!(1));
+        // Without persona data nothing is asked for: a login that needs no name must not make
+        // the wallet offer the person's details.
+        let quiet = account_proof_request("ab", &ctx, false);
+        assert!(quiet["items"].get("oneTimePersonaData").is_none());
+    }
+
+    #[test]
+    fn an_email_is_read_in_either_shape_the_wallet_sends() {
+        let plain = serde_json::json!({ "items": { "oneTimePersonaData": {
+            "emailAddresses": ["ana@example.org"] } } });
+        assert_eq!(extract_persona_email(&plain).as_deref(), Some("ana@example.org"));
+        let wrapped = serde_json::json!({ "items": { "oneTimePersonaData": {
+            "emailAddresses": [{ "value": "luis@example.org" }] } } });
+        assert_eq!(extract_persona_email(&wrapped).as_deref(), Some("luis@example.org"));
+        // Nothing shared is not an error: it is a login with no email on it.
+        let none = serde_json::json!({ "items": { "oneTimePersonaData": { "name": {} } } });
+        assert_eq!(extract_persona_email(&none), None);
+        assert_eq!(extract_persona_email(&serde_json::json!({})), None);
+    }
 }
 
 #[cfg(test)]
