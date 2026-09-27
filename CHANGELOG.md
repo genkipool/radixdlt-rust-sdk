@@ -9,6 +9,22 @@ minor versions may contain breaking changes.
 
 ### Added
 
+- `radixdlt-connect-types` / `radixdlt-connect` — **authorized LOGIN requests**, so the
+  PERSON behind a wallet can be proven and not merely claimed: `login_request`,
+  `extract_login` and `Connector::request_login`. An `unauthorizedRequest` can ask
+  for a name, but a name is a string somebody typed — the answer never names the
+  persona, so nothing that decides on *who* signed could be built on it. A login
+  makes the identity key sign the same challenge the accounts sign, and the answer
+  carries `identityAddress` beside a proof a ROLA verifier accepts as-is
+  (`{challenge, address, type: "persona", proof}`).
+
+  It also **asks for no persona data**, which matters more than it sounds: a
+  one-time data request is mandatory for whoever answers it, so asking for a name
+  and an email that a persona does not have does not yield an anonymous answer —
+  the wallet closes. Verified against a real phone. The persona's own `label`
+  comes back with every login for nothing, which is what a line of an audit trail
+  should show when no name was configured.
+
 - `radixdlt-connector-mcp` — local MCP server (stdio) that pairs a Radix Wallet
   over Radix Connect and gets transactions signed on the user's machine (pairing
   QR, `send_transaction`, pre-authorization, ROLA account proof, transaction

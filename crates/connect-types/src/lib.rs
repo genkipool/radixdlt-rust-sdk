@@ -178,6 +178,93 @@ pub fn account_proof_request_sharing(challenge_hex: &str, ctx: &DappContext, sha
     json!({ "interactionId": Uuid::new_v4().to_string(), "metadata": metadata(ctx), "items": items })
 }
 
+/// Builds a LOGIN request: the persona signs the challenge too, so the person is PROVEN.
+///
+/// The difference from [`account_proof_request_sharing`] is not a detail. An
+/// `unauthorizedRequest` asks the wallet for accounts and, optionally, for a name and an email —
+/// and a name is a string somebody typed. It never names the PERSONA, so nothing about who the
+/// person is can be verified from it, and a service that decides anything on «who» cannot use it.
+///
+/// An `authorizedRequest` with `loginWithChallenge` makes the identity key sign the same challenge
+/// the accounts sign. The response then carries `items.auth.persona.identityAddress` beside a
+/// proof over it, which ROLA verifies exactly as it verifies an account proof. That is what lets
+/// a server say «this machine is being enrolled by the same person who is signed in to the panel»
+/// rather than taking somebody's word for it.
+///
+/// Accounts are still requested ONE-TIME and with the same challenge: a login says who somebody
+/// is, and the account proof says what they hold. Both are wanted, and asking for them together
+/// is one approval on the phone rather than two.
+#[must_use]
+pub fn login_request(challenge_hex: &str, ctx: &DappContext, share: PersonaRequest) -> Value {
+    let mut items = json!({
+        "discriminator": "authorizedRequest",
+        "auth": { "discriminator": "loginWithChallenge", "challenge": challenge_hex },
+        // Nothing is being revoked, and saying so explicitly matters: a wallet that treats a
+        // missing `reset` as «forget what you shared with this dApp» would make every login
+        // re-ask for everything.
+        "reset": { "accounts": false, "personaData": false },
+        "oneTimeAccounts": {
+            "challenge": challenge_hex,
+            "numberOfAccounts": { "quantifier": "atLeast", "quantity": 1 }
+        }
+    });
+    if share.asked() {
+        let mut data = json!({ "isRequestingName": share.name });
+        if share.email {
+            data["numberOfRequestedEmailAddresses"] = json!({ "quantifier": "atLeast", "quantity": 1 });
+        }
+        items["oneTimePersonaData"] = data;
+    }
+    json!({ "interactionId": Uuid::new_v4().to_string(), "metadata": metadata(ctx), "items": items })
+}
+
+/// The persona that logged in and its proof, from a response to [`login_request`].
+///
+/// Returns the identity address, the label the person gave that persona, and the proof itself in
+/// the shape a ROLA verifier wants (`{ challenge, address, type: "persona", proof }`) — so the
+/// caller forwards it rather than reassembling it and getting the `type` wrong.
+///
+/// # Errors
+/// As [`check_failure`], plus [`WalletInteractionError::Protocol`] when the response carries no
+/// signed login — which is what a wallet answers when the request was not an authorized one.
+pub fn extract_login(response: &Value) -> Result<(String, String, Value), WalletInteractionError> {
+    check_failure(response)?;
+    let auth = response
+        .get("items")
+        .and_then(|i| i.get("auth"))
+        .ok_or_else(|| WalletInteractionError::Protocol("response without auth".into()))?;
+    let persona = auth
+        .get("persona")
+        .ok_or_else(|| WalletInteractionError::Protocol("login without a persona".into()))?;
+    let identity = persona
+        .get("identityAddress")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| WalletInteractionError::Protocol("persona without an address".into()))?;
+    let proof = auth
+        .get("proof")
+        .ok_or_else(|| WalletInteractionError::Protocol("login without a proof".into()))?;
+    let label = persona
+        .get("label")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let challenge = auth
+        .get("challenge")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    Ok((
+        identity.to_string(),
+        label,
+        json!({
+            "challenge": challenge,
+            "address": identity,
+            "type": "persona",
+            "proof": proof.clone()
+        }),
+    ))
+}
+
 /// Builds an account request (`oneTimeAccounts` WITHOUT a ROLA challenge) — the
 /// lightweight "share your account(s)" flow. No signature, so no dApp proof:
 /// use it just to learn the user's account address(es).
@@ -598,6 +685,67 @@ mod persona_tests {
             data["numberOfRequestedEmailAddresses"]["quantity"],
             serde_json::json!(1)
         );
+    }
+
+    /// A LOGIN asks the identity key to sign, which is the only way the person is PROVEN.
+    ///
+    /// The distinction is not cosmetic. An `unauthorizedRequest` can ask for a name, and a name is
+    /// a string somebody typed — it never names the persona, so nothing that has to know WHO
+    /// signed can be built on it. Checked field by field because the wallet is strict: a login
+    /// request missing `auth` is answered as an ordinary data request, with no persona in it.
+    #[test]
+    fn a_login_asks_the_identity_to_sign_the_same_challenge() {
+        let asked = login_request("ab", &ctx(), PersonaRequest::NONE);
+        let items = &asked["items"];
+        assert_eq!(items["discriminator"], serde_json::json!("authorizedRequest"));
+        assert_eq!(
+            items["auth"]["discriminator"],
+            serde_json::json!("loginWithChallenge")
+        );
+        // ONE challenge for both halves: the person and the account answer the same question, so
+        // a verifier can tie them together and one approval on the phone covers both.
+        assert_eq!(items["auth"]["challenge"], serde_json::json!("ab"));
+        assert_eq!(items["oneTimeAccounts"]["challenge"], serde_json::json!("ab"));
+        // Nothing is revoked by logging in, and saying so explicitly matters: a wallet that read a
+        // missing `reset` as "forget what you shared" would re-ask for everything every time.
+        assert_eq!(items["reset"]["accounts"], serde_json::json!(false));
+        // And no persona DATA unless it was asked for, for the reason above.
+        assert!(items.get("oneTimePersonaData").is_none());
+    }
+
+    /// The proof comes back in the shape a ROLA verifier wants, so nobody reassembles it by hand.
+    ///
+    /// `type` in particular: a persona proof labelled `account` is verified against a derived
+    /// ACCOUNT address, which no identity key will ever match — a valid signature refused for
+    /// looking like the wrong kind of thing.
+    #[test]
+    fn a_login_answer_carries_the_person_and_a_proof_over_them() {
+        let answer = serde_json::json!({
+            "discriminator": "success",
+            "items": { "auth": {
+                "discriminator": "loginWithChallenge",
+                "challenge": "ab",
+                "persona": { "identityAddress": "identity_tdx_2_1person", "label": "Genki" },
+                "proof": { "publicKey": "aa", "signature": "bb", "curve": "curve25519" }
+            } }
+        });
+        let (identity, label, proof) = extract_login(&answer).expect("a login");
+        assert_eq!(identity, "identity_tdx_2_1person");
+        assert_eq!(label, "Genki");
+        assert_eq!(proof["type"], serde_json::json!("persona"));
+        assert_eq!(proof["address"], serde_json::json!("identity_tdx_2_1person"));
+        assert_eq!(proof["challenge"], serde_json::json!("ab"));
+        assert_eq!(proof["proof"]["signature"], serde_json::json!("bb"));
+    }
+
+    /// An answer with no login is said out loud, not reported as a login with an empty person.
+    #[test]
+    fn an_answer_without_a_login_is_not_one() {
+        // What an `unauthorizedRequest` answers with: accounts, maybe a name, no persona at all.
+        let ordinary = account_proof_response("id", "account_tdx_2_1a", "aa", "bb", Some("Luis"));
+        assert!(extract_login(&ordinary).is_err());
+        // And a wallet that refused is a refusal, which `check_failure` already words.
+        assert!(extract_login(&failure_response("id", "rejectedByUser")).is_err());
     }
 
     #[test]

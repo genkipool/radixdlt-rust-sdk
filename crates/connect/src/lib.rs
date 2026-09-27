@@ -54,10 +54,10 @@ use serde_json::{json, Value};
 pub use connector::{probe_relay_candidates, radix_default_ice_servers, Channel, IceServer};
 pub use error::ConnectError;
 pub use radixdlt_connect_types::{
-    account_proof_request, account_proof_request_sharing, account_request, extract_accounts,
+    account_proof_request, account_proof_request_sharing, account_request, extract_accounts, extract_login,
     extract_persona_email, extract_persona_name, extract_proofs, extract_signed_partial_transaction,
-    extract_transaction_intent_hash, pre_authorization_request, transaction_request, DappContext,
-    PersonaRequest, WalletInteractionError,
+    extract_transaction_intent_hash, login_request, pre_authorization_request, transaction_request,
+    DappContext, PersonaRequest, WalletInteractionError,
 };
 pub use signaling::SIGNALING_BASE;
 pub use state::LinkState;
@@ -277,6 +277,31 @@ impl Connector {
         let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
         let mut channel = self.establish(password, budget).await?;
         let interaction = account_proof_request_sharing(challenge_hex, ctx, share);
+        send_and_await_response(&mut channel, &interaction, budget).await
+    }
+
+    /// Asks the wallet to LOG IN: the persona signs the challenge too, so the person is proven.
+    ///
+    /// [`request_account_proof_sharing`](Self::request_account_proof_sharing) proves an ACCOUNT and
+    /// can ask for a name — but a name is a string somebody typed, and the answer never names the
+    /// persona at all. This asks for an `authorizedRequest` with `loginWithChallenge`, whose answer
+    /// carries the identity address and a proof over it. Read it with
+    /// [`extract_login`]; the account proofs are in the same
+    /// answer, over the same challenge, so one approval on the phone covers both.
+    ///
+    /// # Errors
+    /// As [`request_account_proof_sharing`](Self::request_account_proof_sharing).
+    pub async fn request_login(
+        &self,
+        password: &[u8],
+        challenge_hex: &str,
+        ctx: &DappContext,
+        share: PersonaRequest,
+        overall_timeout: Duration,
+    ) -> Result<Value, ConnectError> {
+        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
+        let mut channel = self.establish(password, budget).await?;
+        let interaction = login_request(challenge_hex, ctx, share);
         send_and_await_response(&mut channel, &interaction, budget).await
     }
 
