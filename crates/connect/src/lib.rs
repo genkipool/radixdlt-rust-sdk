@@ -59,6 +59,11 @@ pub use radixdlt_connect_types::{
     extract_transaction_intent_hash, login_request, pre_authorization_request, transaction_request,
     DappContext, PersonaRequest, WalletInteractionError,
 };
+pub use radixdlt_connect_types::{
+    authorized_request, extract_ongoing_accounts, extract_ownership_proofs, extract_persona_phones,
+    ownership_request, unauthorized_request, AccountsWanted, Auth, AuthorizedRequest, OwnershipWanted,
+    PersonaDataWanted, Quantity,
+};
 pub use signaling::SIGNALING_BASE;
 pub use state::LinkState;
 pub use turn_tcp::{TurnTcpRuntime, TurnTcpServer};
@@ -302,6 +307,67 @@ impl Connector {
         let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
         let mut channel = self.establish(password, budget).await?;
         let interaction = login_request(challenge_hex, ctx, share);
+        send_and_await_response(&mut channel, &interaction, budget).await
+    }
+
+    /// Sends any AUTHORIZED request ([`AuthorizedRequest`]): a persona — logging in, or one already
+    /// logged in — and whatever else is asked in the same approval (proof of ownership, ongoing or
+    /// one-time accounts and persona data, a reset). Returns the raw answer, read with the
+    /// `extract_*` functions.
+    ///
+    /// # Errors
+    /// As [`request_account_proof_sharing`](Self::request_account_proof_sharing).
+    pub async fn request_authorized(
+        &self,
+        password: &[u8],
+        request: &AuthorizedRequest,
+        ctx: &DappContext,
+        overall_timeout: Duration,
+    ) -> Result<Value, ConnectError> {
+        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
+        let mut channel = self.establish(password, budget).await?;
+        let interaction = authorized_request(request, ctx);
+        send_and_await_response(&mut channel, &interaction, budget).await
+    }
+
+    /// Asks the wallet to prove EXACT accounts (and the persona, with `own.identity`) as a persona
+    /// already logged in to this dApp (`identity`) — one confirmation, nothing to pick. Read the
+    /// proofs with [`extract_ownership_proofs`].
+    ///
+    /// # Errors
+    /// As [`request_account_proof_sharing`](Self::request_account_proof_sharing).
+    pub async fn request_ownership(
+        &self,
+        password: &[u8],
+        identity: &str,
+        own: &OwnershipWanted,
+        ctx: &DappContext,
+        overall_timeout: Duration,
+    ) -> Result<Value, ConnectError> {
+        let request = AuthorizedRequest {
+            proof_of_ownership: Some(own.clone()),
+            ..AuthorizedRequest::new(Auth::UsePersona(identity.to_string()))
+        };
+        self.request_authorized(password, &request, ctx, overall_timeout)
+            .await
+    }
+
+    /// Sends any UNAUTHORIZED request: one-time accounts and/or persona data, with exact or
+    /// minimum quantities and phone numbers.
+    ///
+    /// # Errors
+    /// As [`request_account_proof_sharing`](Self::request_account_proof_sharing).
+    pub async fn request_unauthorized(
+        &self,
+        password: &[u8],
+        accounts: Option<&AccountsWanted>,
+        persona_data: Option<PersonaDataWanted>,
+        ctx: &DappContext,
+        overall_timeout: Duration,
+    ) -> Result<Value, ConnectError> {
+        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
+        let mut channel = self.establish(password, budget).await?;
+        let interaction = unauthorized_request(accounts, persona_data, ctx);
         send_and_await_response(&mut channel, &interaction, budget).await
     }
 

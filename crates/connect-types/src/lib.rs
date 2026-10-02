@@ -30,6 +30,13 @@ use radixdlt_i18n::{tr, Lang};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+mod requests;
+pub use requests::{
+    authorized_request, extract_ongoing_accounts, extract_ownership_proofs, extract_persona_phones,
+    ownership_request, unauthorized_request, AccountsWanted, Auth, AuthorizedRequest, OwnershipWanted,
+    PersonaDataWanted, Quantity,
+};
+
 /// The dApp context sent with every interaction (fixed per application).
 #[derive(Debug, Clone)]
 pub struct DappContext {
@@ -87,7 +94,7 @@ impl std::fmt::Display for WalletInteractionError {
 
 impl std::error::Error for WalletInteractionError {}
 
-fn metadata(ctx: &DappContext) -> Value {
+pub(crate) fn metadata(ctx: &DappContext) -> Value {
     json!({
         "version": 2,
         "networkId": ctx.network_id,
