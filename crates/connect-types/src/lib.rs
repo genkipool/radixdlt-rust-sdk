@@ -789,11 +789,9 @@ mod tests {
     /// say which network the wallet is on, and its message does.
     #[test]
     fn a_wallet_failure_keeps_its_message() {
-        let with = json!({ "discriminator": "failure", "error": "wrongNetwork", "message": "wallet is on 1" });
-        assert_eq!(
-            check_failure(&with),
-            Err(WalletInteractionError::WalletRejected("wrongNetwork: wallet is on 1".into()))
-        );
+        let with = json!({ "discriminator": "failure", "error": "wrongNetwork", "message": "on 1" });
+        let kept = WalletInteractionError::WalletRejected("wrongNetwork: on 1".into());
+        assert_eq!(check_failure(&with), Err(kept));
         let empty = json!({ "discriminator": "failure", "error": "rejectedByUser", "message": "" });
         assert_eq!(
             check_failure(&empty),
