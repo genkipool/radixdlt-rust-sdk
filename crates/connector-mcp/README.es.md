@@ -97,6 +97,22 @@ Si el binario no está en tu `PATH`, usa su ruta absoluta como `command`.
 | `connector_log` | La traza del conector de cada petición, paso a paso. |
 | `transaction_status` | Lee el estado de commit de una transacción desde el Gateway. |
 
+### Sin internet: un relé local por el cable USB
+
+`radix-connector-mcp relay --listen <dir> [--turn <dir> --turn-password <pw>]` arranca en este
+equipo un relé de señalización de Radix Connect (y, si se pide, un servidor TURN). Añádelo como
+servidor de señalización en la Radix Wallet (Ajustes › Preferencias › Servidores de señalización)
+y lístalo en `RADIX_CONNECT_RELAYS` o en `/etc/radix-connect/relays`: los conectores prueban a la
+vez el relé público y este. Lo aprendido con un móvil real:
+
+- **La lista STUN de la billetera no puede estar vacía**: el WebRTC de Android lanza una excepción
+  y la billetera se cierra al abrir un canal. TURN sí puede ir vacío.
+- **Solo compartir conexión por USB no basta**: la billetera llega al relé, pero su WebRTC solo usa
+  las redes que Android declara a las apps, y la interfaz del cable compartido nunca lo es.
+- **Compartir conexión USB + un túnel WireGuard que sea la ruta por defecto del móvil funciona**
+  (el túnel SÍ es una red declarada). PamAuthority lo automatiza: `pamauthority wire`.
+- **O `adb reverse`** de los puertos del relé y del TURN, con el TURN en el servidor de la billetera.
+
 ### Hablar con un móvil: entrega, cola y fallos
 
 La Radix Wallet muestra **una petición cada vez**, desde una cola en memoria, y nada que envíe

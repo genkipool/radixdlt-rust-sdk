@@ -80,6 +80,9 @@ Usage:
   radix-connector-mcp                 run as an MCP server over stdio (what MCP clients launch)
   radix-connector-mcp version         print the installed version
   radix-connector-mcp check-update    tell whether a newer release is published
+  radix-connector-mcp relay [--listen 127.0.0.1:8787] [--turn 127.0.0.1:3478 --turn-password <pw>]
+                                      run a local signaling relay (and a TURN server), to reach the
+                                      phone with no internet over the USB cable; see the README
   radix-connector-mcp update [--tag connector-vX.Y.Z] [--force]
                                       download the newest (or the given) release and install it
                                       in place of this binary, keeping a backup beside it
@@ -126,6 +129,52 @@ async fn command(args: &[String]) -> i32 {
                 }
             }
         }
+        Some("relay") => {
+            let listen = args
+                .iter()
+                .position(|a| a == "--listen")
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+                .unwrap_or_else(|| format!("0.0.0.0:{}", radixdlt_connect::relay::DEFAULT_RELAY_PORT));
+            let turn = args
+                .iter()
+                .position(|a| a == "--turn")
+                .and_then(|i| args.get(i + 1))
+                .cloned();
+            let turn_password = args
+                .iter()
+                .position(|a| a == "--turn-password")
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+                .or_else(|| std::env::var("RADIX_CONNECT_TURN_PASSWORD").ok());
+            if let Some(turn) = turn {
+                let Some(password) = turn_password else {
+                    eprintln!(
+                        "radix-connector-mcp: --turn needs --turn-password (or RADIX_CONNECT_TURN_PASSWORD)"
+                    );
+                    return 2;
+                };
+                let listener = match tokio::net::TcpListener::bind(&turn).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("radix-connector-mcp: cannot listen on {turn}: {e}");
+                        return 1;
+                    }
+                };
+                eprintln!("TURN (TCP) on {turn}: in the wallet's server add  stun:{turn}  and  turn:{turn}?transport=tcp  user radix");
+                tokio::task::spawn_local(async move {
+                    if let Err(e) = radixdlt_connect::turn_server::serve_turn(
+                        listener,
+                        radixdlt_connect::turn_server::TurnConfig::loopback(&password),
+                    )
+                    .await
+                    {
+                        eprintln!("radix-connector-mcp: TURN stopped: {e}");
+                    }
+                });
+            }
+            relay(&listen).await
+        }
         Some("help" | "--help" | "-h") => {
             println!("{USAGE}");
             0
@@ -136,6 +185,63 @@ async fn command(args: &[String]) -> i32 {
         }
         None => 2,
     }
+}
+
+/// Runs the local signaling relay in the foreground, saying where the wallet can reach it.
+async fn relay(listen: &str) -> i32 {
+    let listener = match tokio::net::TcpListener::bind(listen).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("radix-connector-mcp: cannot listen on {listen}: {e}");
+            return 1;
+        }
+    };
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or_default();
+    eprintln!(
+        "radix-connector-mcp {} — local signaling relay on {listen}",
+        update::CURRENT
+    );
+    eprintln!("In the Radix Wallet: Settings › Preferences › Signaling Servers › add one with URL");
+    for address in local_ipv4() {
+        eprintln!("    ws://{address}:{port}/");
+    }
+    eprintln!("(the address of THIS computer on the cable or Wi-Fi the phone is on), and make it current.");
+    eprintln!(
+        "Connectors on this computer use it when it is listed in {} or ~/.config/radix-connect/relays",
+        radixdlt_connect::RELAYS_ENV
+    );
+    match radixdlt_connect::relay::serve_relay(listener).await {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("radix-connector-mcp: relay stopped: {e}");
+            1
+        }
+    }
+}
+
+/// This computer's IPv4 addresses, best effort (Linux/macOS `ip`/`ifconfig`), loopback excluded.
+fn local_ipv4() -> Vec<String> {
+    let output = std::process::Command::new("ip")
+        .args(["-o", "-4", "addr", "show"])
+        .output()
+        .or_else(|_| std::process::Command::new("ifconfig").output());
+    let Ok(output) = output else {
+        return vec!["<this computer's IP>".to_string()];
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut found: Vec<String> = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .filter(|w| w[0] == "inet")
+        .map(|w| w[1].split('/').next().unwrap_or_default().to_string())
+        .filter(|ip| !ip.starts_with("127."))
+        .collect();
+    found.dedup();
+    if found.is_empty() {
+        found.push("<this computer's IP>".to_string());
+    }
+    found
 }
 
 /// Reads MCP messages line-by-line from stdin and writes one response line per

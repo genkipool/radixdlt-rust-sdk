@@ -217,7 +217,19 @@ pub async fn establish(
     relay_only: bool,
     turn_tcp: Option<&TurnTcpServer>,
 ) -> Result<Channel, ConnectError> {
-    let mut signaling = Signaling::connect(password, signaling_base).await?;
+    let debug = std::env::var_os("RADIX_CONNECT_DEBUG").is_some();
+    let trace = |what: &str| {
+        if debug {
+            eprintln!("[radix-connect {signaling_base}] {what}");
+        }
+    };
+    trace("connecting to signaling");
+    // Bounded like the rest: connecting to a relay whose address is gone (a cable that was
+    // unplugged) otherwise waits for the operating system's TCP timeout, minutes later.
+    let mut signaling = tokio::time::timeout(open_timeout, Signaling::connect(password, signaling_base))
+        .await
+        .map_err(|_| ConnectError::Signaling(format!("{signaling_base}: no answer")))??;
+    trace("signaling connected");
 
     // Local ICE candidates → send over signaling. The handler must exist before the peer
     // connection is built, because gathering starts as soon as it does.
@@ -368,64 +380,132 @@ pub async fn establish(
     }
 
     // Negotiation loop: consume signaling events and local candidates.
+    //
+    // The whole loop sits under ONE outer deadline as well as the `select!` one: an `.await`
+    // inside an arm (creating the offer, applying the answer) is not interrupted by the
+    // `sleep_until` branch, so a WebRTC call that never returns would otherwise hang the caller
+    // past any timeout it asked for.
     let pc_neg = pc.clone();
     let deadline = tokio::time::Instant::now() + open_timeout;
-    let mut remote_description_set = false;
-    let mut pending_remote_candidates: Vec<Value> = Vec::new();
+    let negotiation = async move {
+        let mut remote_description_set = false;
+        let mut pending_remote_candidates: Vec<Value> = Vec::new();
+        // The offer and the candidates already sent, to replay to a wallet that shows up later.
+        let mut offer_sdp: Option<String> = None;
+        let mut sent_candidates: Vec<Value> = Vec::new();
 
-    loop {
-        tokio::select! {
-            _ = open_rx.recv() => {
-                // Channel open: stop forwarding candidates and return.
-                drop(local_cand_rx);
-                return Ok(Channel { dc, incoming: incoming_rx, confirmations: conf_rx, _pc: pc });
-            }
-            _ = tokio::time::sleep_until(deadline) => {
-                return Err(ConnectError::ChannelTimeout);
-            }
-            Some(cand) = local_cand_rx.recv() => {
-                let _ = signaling.send("iceCandidate", cand);
-            }
-            ev = signaling.events.recv() => {
-                match ev {
-                    Some(SignalEvent::RemoteClientConnected(id)) => {
-                        signaling.set_target(id);
-                        // Create and send the offer.
-                        let offer = pc_neg.create_offer(None).await
-                            .map_err(|e| ConnectError::WebRtc(format!("create_offer: {e}")))?;
-                        pc_neg.set_local_description(offer).await
-                            .map_err(|e| ConnectError::WebRtc(format!("set_local: {e}")))?;
-                        if let Some(local) = pc_neg.local_description().await {
-                            let _ = signaling.send("offer", json!({ "sdp": local.sdp }));
-                        }
-                    }
-                    Some(SignalEvent::Answer(payload)) => {
-                        if let Some(sdp) = payload.get("sdp").and_then(|s| s.as_str()) {
-                            let answer = RTCSessionDescription::answer(sdp.to_string())
-                                .map_err(|e| ConnectError::WebRtc(format!("answer sdp: {e}")))?;
-                            pc_neg.set_remote_description(answer).await
-                                .map_err(|e| ConnectError::WebRtc(format!("set_remote: {e}")))?;
-                            remote_description_set = true;
-                            for c in pending_remote_candidates.drain(..) {
-                                add_remote_candidate(&pc_neg, c).await;
+        loop {
+            tokio::select! {
+                _ = open_rx.recv() => {
+                    // Channel open: stop forwarding candidates and return.
+                    drop(local_cand_rx);
+                    return Ok(Channel { dc, incoming: incoming_rx, confirmations: conf_rx, _pc: pc });
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    return Err(ConnectError::ChannelTimeout);
+                }
+                Some(cand) = local_cand_rx.recv() => {
+                    trace(&format!("local candidate {}", cand.get("candidate").and_then(|c| c.as_str()).unwrap_or("")));
+                    let _ = signaling.send("iceCandidate", cand.clone());
+                    sent_candidates.push(cand);
+                }
+                ev = signaling.events.recv() => {
+                    match ev {
+                        Some(SignalEvent::RemoteClientConnected(id)) => {
+                            signaling.set_target(id.clone());
+                            // A wallet can appear more than once on a link: the socket of an app
+                            // that was just closed may linger (an `adb reverse` tunnel keeps it
+                            // open a while) next to the new one. The offer is made ONCE and
+                            // replayed, with every candidate so far, to each wallet that appears;
+                            // the first answer wins. Creating a second offer on the same peer
+                            // connection is what used to hang here.
+                            if let Some(sdp) = &offer_sdp {
+                                trace(&format!("another wallet present ({id}), replaying the offer"));
+                                let _ = signaling.send("offer", json!({ "sdp": sdp }));
+                                for cand in &sent_candidates {
+                                    let _ = signaling.send("iceCandidate", cand.clone());
+                                }
+                                continue;
+                            }
+                            trace(&format!("wallet present ({id}), sending offer"));
+                            let offer = pc_neg.create_offer(None).await
+                                .map_err(|e| ConnectError::WebRtc(format!("create_offer: {e}")))?;
+                            pc_neg.set_local_description(offer).await
+                                .map_err(|e| ConnectError::WebRtc(format!("set_local: {e}")))?;
+                            if let Some(local) = pc_neg.local_description().await {
+                                let _ = signaling.send("offer", json!({ "sdp": local.sdp }));
+                                offer_sdp = Some(local.sdp);
                             }
                         }
-                    }
-                    Some(SignalEvent::IceCandidate(payload)) => {
-                        if remote_description_set {
-                            add_remote_candidate(&pc_neg, payload).await;
-                        } else {
-                            pending_remote_candidates.push(payload);
+                        Some(SignalEvent::Answer(payload)) => {
+                            if remote_description_set {
+                                trace("another answer received, ignored (the first one won)");
+                                continue;
+                            }
+                            trace("answer received");
+                            if let Some(sdp) = payload.get("sdp").and_then(|s| s.as_str()) {
+                                let answer = RTCSessionDescription::answer(sdp.to_string())
+                                    .map_err(|e| ConnectError::WebRtc(format!("answer sdp: {e}")))?;
+                                pc_neg.set_remote_description(answer).await
+                                    .map_err(|e| ConnectError::WebRtc(format!("set_remote: {e}")))?;
+                                remote_description_set = true;
+                                for c in pending_remote_candidates.drain(..) {
+                                    add_remote_candidate(&pc_neg, c).await;
+                                }
+                            }
                         }
+                        Some(SignalEvent::IceCandidate(payload)) => {
+                            trace(&format!("remote candidate {}", payload.get("candidate").and_then(|c| c.as_str()).unwrap_or("")));
+                            if remote_description_set {
+                                add_remote_candidate(&pc_neg, payload).await;
+                            } else {
+                                pending_remote_candidates.push(payload);
+                            }
+                        }
+                        Some(SignalEvent::RemoteClientDisconnected) => {
+                            // The wallet isn't here yet; keep waiting until the timeout.
+                        }
+                        Some(SignalEvent::Offer(_)) | Some(SignalEvent::Confirmation(_)) => {}
+                        None => return Err(ConnectError::SignalingClosed),
                     }
-                    Some(SignalEvent::RemoteClientDisconnected) => {
-                        // The wallet isn't here yet; keep waiting until the timeout.
-                    }
-                    Some(SignalEvent::Offer(_)) | Some(SignalEvent::Confirmation(_)) => {}
-                    None => return Err(ConnectError::SignalingClosed),
                 }
             }
         }
+    };
+    let result = match tokio::time::timeout(open_timeout + Duration::from_secs(1), negotiation).await {
+        Ok(result) => result,
+        Err(_) => Err(ConnectError::ChannelTimeout),
+    };
+    if debug {
+        eprintln!(
+            "[radix-connect {signaling_base}] negotiation ended: {}",
+            result
+                .as_ref()
+                .map(|_| "channel open".to_string())
+                .unwrap_or_else(|e| e.to_string())
+        );
+    }
+    result
+}
+
+/// Whether a remote candidate can never be reached from this machine: an address that only means
+/// something on the PEER (its loopback), an unspecified one, or ICE-TCP, which this stack does not
+/// dial. The Radix Wallet on Android with no Wi-Fi and no mobile data offers exactly such
+/// candidates (127.0.0.1, ::1); handing them to the ICE agent made it spin on them and starve
+/// the runtime, so a channel that could never open also never timed out.
+fn unusable_candidate(candidate: &str) -> bool {
+    let fields: Vec<&str> = candidate.split(' ').collect();
+    let transport = fields.get(2).map(|t| t.to_ascii_lowercase()).unwrap_or_default();
+    if transport == "tcp" {
+        return true;
+    }
+    // A RELAY candidate on loopback is the exception: it names a socket of a TURN server on THIS
+    // machine — the one a phone with no network reaches through `adb reverse` — so it is exactly
+    // where the peer can be reached.
+    let relay = candidate.contains(" typ relay");
+    match fields.get(4).and_then(|a| a.parse::<std::net::IpAddr>().ok()) {
+        Some(ip) => ip.is_unspecified() || (ip.is_loopback() && !relay),
+        None => false,
     }
 }
 
@@ -435,6 +515,9 @@ async fn add_remote_candidate(pc: &Arc<dyn PeerConnection>, payload: Value) {
         .and_then(|c| c.as_str())
         .unwrap_or("")
         .to_string();
+    if unusable_candidate(&candidate) {
+        return;
+    }
     let sdp_mid = payload
         .get("sdpMid")
         .and_then(|c| c.as_str())
@@ -519,6 +602,34 @@ impl Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A peer's loopback, an unspecified address and ICE-TCP are dropped; real addresses and
+    /// mDNS names (which do not parse as IPs) go through.
+    #[test]
+    fn candidates_that_cannot_be_reached_are_dropped() {
+        assert!(unusable_candidate(
+            "candidate:1 1 udp 2122194687 127.0.0.1 49087 typ host generation 0"
+        ));
+        assert!(unusable_candidate(
+            "candidate:2 1 udp 2122267903 ::1 45871 typ host"
+        ));
+        assert!(unusable_candidate(
+            "candidate:3 1 tcp 1518214911 10.0.0.5 44541 typ host tcptype passive"
+        ));
+        assert!(unusable_candidate("candidate:4 1 udp 1 0.0.0.0 1 typ host"));
+        assert!(!unusable_candidate(
+            "candidate:5 1 udp 2122194687 10.57.235.46 49087 typ host"
+        ));
+        assert!(!unusable_candidate(
+            "candidate:6 1 udp 1 4f2c-uuid.local 5000 typ host"
+        ));
+        assert!(!unusable_candidate(
+            "candidate:8 1 udp 16777215 127.0.0.1 40000 typ relay raddr 127.0.0.1 rport 5"
+        ));
+        assert!(!unusable_candidate(
+            "candidate:7 1 udp 16777215 188.245.177.56 27227 typ relay raddr 0.0.0.0 rport 1"
+        ));
+    }
 
     /// The address sits at index 4 and nothing else may move: the peer parses by position.
     #[test]
