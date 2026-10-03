@@ -7,7 +7,7 @@
 [package]
 name = "radixdlt-connector-mcp"
 description = "Local MCP (Model Context Protocol) server that lets AI agents pair a Radix Wallet and get transactions signed over Radix Connect (WebRTC). The signing runs on the user's machine; the wallet on their phone approves."
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/genkipool/radixdlt-rust-sdk"
@@ -41,8 +41,12 @@ dirs = "5"
 qrcode = { version = "0.14", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.23"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3
 lto = true
 strip = true
+
+[dev-dependencies]
+radixdlt-address = { path = "../address", version = "0.2.0" }

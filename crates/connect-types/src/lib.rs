@@ -336,13 +336,17 @@ pub fn pre_authorization_request(
 /// what a person cancelling on their phone looks like on the wire.
 pub fn check_failure(response: &Value) -> Result<(), WalletInteractionError> {
     if is_failure(response) {
-        return Err(WalletInteractionError::WalletRejected(
-            response
-                .get("error")
-                .and_then(|e| e.as_str())
-                .unwrap_or("unknown")
-                .to_string(),
-        ));
+        // The wallet's `message` says WHY (which network it is on, which website it could not
+        // verify…); the error type alone sends whoever reads it guessing.
+        let error = response
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("unknown");
+        let detail = match response.get("message").and_then(|m| m.as_str()) {
+            Some(message) if !message.is_empty() => format!("{error}: {message}"),
+            _ => error.to_string(),
+        };
+        return Err(WalletInteractionError::WalletRejected(detail));
     }
     Ok(())
 }

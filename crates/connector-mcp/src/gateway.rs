@@ -131,3 +131,148 @@ pub async fn transaction_status(network: Network, intent_hash: &str) -> Result<S
         .unwrap_or("Unknown")
         .to_string())
 }
+
+/// What the wallet will find when it checks that `origin` and `dapp_definition` vouch for each
+/// other — the check it runs on EVERY request before showing it.
+///
+/// Only some failures come back as an answer. When the dApp definition and the website disagree,
+/// the wallet answers `unknownWebsite`; but when `{origin}/.well-known/radix.json` loads and does
+/// not list the dApp definition, the Android wallet drops the request WITHOUT answering — the
+/// sender waits out its whole timeout for a prompt that never appears, which looks exactly like a
+/// stuck queue. Hence checking before sending.
+#[derive(Debug, Default)]
+pub struct DappCheck {
+    /// Problems that make the wallet refuse or drop the request.
+    pub problems: Vec<String>,
+    /// Checks that could not be run (network errors): not proof of a problem.
+    pub unchecked: Vec<String>,
+}
+
+impl DappCheck {
+    pub fn ok(&self) -> bool {
+        self.problems.is_empty()
+    }
+}
+
+/// Runs the wallet's dApp verification from here.
+pub async fn check_dapp_identity(network: Network, dapp_definition: &str, origin: &str) -> DappCheck {
+    let mut check = DappCheck::default();
+    if dapp_definition.is_empty() {
+        check.problems.push(
+            "no dapp_definition: the wallet cannot parse an empty address and answers invalidRequest. \
+             Pass dapp_definition or set RADIX_DAPP_DEFINITION_MAINNET/STOKENET."
+                .to_string(),
+        );
+        return check;
+    }
+    let prefix = match network {
+        Network::Mainnet => "account_rdx1",
+        Network::Stokenet => "account_tdx_2_1",
+    };
+    if !dapp_definition.starts_with(prefix) {
+        check.problems.push(format!(
+            "dapp_definition {dapp_definition} is not an account on {net} (expected {prefix}…): the wallet answers invalidRequest or unknownDappDefinitionAddress.",
+            net = network.label(),
+        ));
+        return check;
+    }
+    if !origin.starts_with("https://") {
+        check.problems.push(format!(
+            "origin {origin} is not https: the wallet answers unknownWebsite (unless developer mode is on in the wallet)."
+        ));
+        return check;
+    }
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => {
+            check
+                .unchecked
+                .push(format!("could not build an HTTP client: {e}"));
+            return check;
+        }
+    };
+
+    // 1) On-ledger: the account says it is a dApp definition and claims the website.
+    let body = json!({
+        "addresses": [dapp_definition],
+        "opt_ins": { "explicit_metadata": ["account_type", "claimed_websites"] }
+    });
+    match client
+        .post(format!("{}/state/entity/details", base_url(network)))
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(v) => {
+                let metadata = v
+                    .pointer("/items/0/explicit_metadata/items")
+                    .and_then(|m| m.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let typed = |key: &str| {
+                    metadata
+                        .iter()
+                        .find(|m| m.get("key").and_then(|k| k.as_str()) == Some(key))
+                        .and_then(|m| m.pointer("/value/typed").cloned())
+                };
+                let account_type = typed("account_type")
+                    .and_then(|t| t.get("value").and_then(|v| v.as_str()).map(str::to_string));
+                if account_type.as_deref() != Some("dapp definition") {
+                    check.problems.push(format!(
+                        "{dapp_definition} has no account_type = \"dapp definition\" metadata on {net}: the wallet answers wrongAccountType.",
+                        net = network.label(),
+                    ));
+                }
+                let claimed: Vec<String> = typed("claimed_websites")
+                    .and_then(|t| t.get("values").and_then(|v| v.as_array()).cloned())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.trim_end_matches('/').to_string()))
+                    .collect();
+                if !claimed.iter().any(|c| c == origin.trim_end_matches('/')) {
+                    check.problems.push(format!(
+                        "{dapp_definition} does not claim {origin} (claimed_websites: {claimed:?}): the wallet answers unknownWebsite."
+                    ));
+                }
+            }
+            Err(e) => check.unchecked.push(format!("Gateway answer unreadable: {e}")),
+        },
+        Ok(resp) => check
+            .unchecked
+            .push(format!("Gateway entity details: HTTP {}", resp.status())),
+        Err(e) => check.unchecked.push(format!("Gateway unreachable: {e}")),
+    }
+
+    // 2) Off-ledger: the website lists the dApp definition.
+    let url = format!("{}/.well-known/radix.json", origin.trim_end_matches('/'));
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(v) => {
+                let listed = v.get("dApps").and_then(|d| d.as_array()).is_some_and(|dapps| {
+                    dapps.iter().any(|d| {
+                        d.get("dAppDefinitionAddress").and_then(|a| a.as_str()) == Some(dapp_definition)
+                    })
+                });
+                if !listed {
+                    check.problems.push(format!(
+                        "{url} does not list {dapp_definition}: the wallet DROPS the request without answering (the call would wait out its whole timeout)."
+                    ));
+                }
+            }
+            Err(_) => check.problems.push(format!(
+                "{url} is not valid JSON: the wallet answers radixJsonNotFound."
+            )),
+        },
+        Ok(resp) => check.problems.push(format!(
+            "{url} answered HTTP {}: the wallet answers radixJsonNotFound.",
+            resp.status()
+        )),
+        Err(e) => check.unchecked.push(format!("{url} unreachable from here: {e}")),
+    }
+    check
+}

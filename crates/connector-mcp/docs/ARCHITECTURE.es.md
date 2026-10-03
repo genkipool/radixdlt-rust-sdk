@@ -101,7 +101,30 @@ sequenceDiagram
 | `send_transaction` | Envía un manifiesto para que el usuario firme + envíe. |
 | `deploy_package` | Publica un paquete (blobs WASM + RPD), con dry-run previo. |
 | `request_pre_authorization` | Hace firmar un subintent (sin enviar). |
+| `request_login` | Inicia sesión con una persona (petición autorizada); la prueba de la persona se verifica en local. |
+| `request_ownership_proof` | Demuestra cuentas exactas / la persona como una persona ya identificada. |
+| `request_authorized` | Cualquier petición autorizada: auth, reset, prueba de propiedad, datos puntuales / continuos. |
+| `request_data` | Petición no autorizada: cuentas exactas/mínimas (con prueba), nombre, correos, teléfonos. |
+| `pending_requests` | Peticiones que pueden seguir esperando en la cola de la wallet. |
+| `await_response` | Recoge una respuesta tardía sin reenviar. |
+| `cancel_request` | Detiene una petición aquí y deja de bloquear. |
+| `check_wallet_connection` | ¿Se llega a la wallet? (abre un canal, no envía nada). |
+| `check_dapp_identity` | La verificación de la dApp que hace la wallet, en local. |
+| `connector_log` | La traza paso a paso (`connector.log`). |
 | `transaction_status` | Lee el estado de commit de una transacción desde el Gateway. |
+
+Toda petición al móvil va por un único camino, `exchange::interact`: freno
+anti-inundación (`outbox.rs`, `requests.json`) → comprobación de la identidad de
+la dApp (`gateway.rs`) → registro + log (`diag.rs`, `connector.log`) →
+`Connector::exchange` de la librería, cuyos pasos `Progress` (turno, espera de
+asentado, canal abierto, **entregada**, reenvío, reconexión, otro mensaje)
+actualizan el registro según ocurren. Los fallos son `diag::Failure`: código,
+etapa, `retry_safe`, pista e id de la interacción, en texto y en
+`structuredContent`.
+
+Cada `tools/call` se ejecuta como tarea propia: una llamada que espera al móvil no
+bloquea `pending_requests` ni `cancel_request`, y `notifications/cancelled` aborta
+la llamada que nombra.
 
 El dispatch es un único `match` en `tools::call`; una herramienta desconocida
 devuelve un resultado `isError` en vez de un error JSON-RPC, para que el agente
@@ -167,6 +190,21 @@ blobs adjuntos; `request_pre_authorization` devuelve un
 `signedPartialTransaction` y **no** envía.
 
 ---
+
+### 5.3 Entrega, la cola de la wallet y respuestas tardías
+
+La wallet muestra una petición cada vez desde una cola en memoria y no permite
+retirarlas a distancia. El conector: se niega a enviar mientras haya una petición
+entregada sin respuesta (`PENDING_IN_WALLET`); comprueba la identidad de la dApp
+(`DAPP_NOT_VERIFIED`, porque una dApp que `radix.json` no lista se descarta sin
+respuesta); espera 8 s desde el cierre del último canal del enlace (la wallet
+guarda un canal por enlace y unos 5 s después de cerrarse una conexión cierra el
+que tenga en ese momento); espera 0,6 s tras abrir el canal antes de enviar;
+reenvía con el mismo id por un canal nuevo si la wallet no confirma la recepción
+en 6 s (hasta 3 intentos, si no `NOT_DELIVERED`); tras la entrega, reabre el canal
+si se pierde y sigue escuchando; con `NO_ANSWER`, `await_response` recoge la
+respuesta sin reenviar; y las respuestas a peticiones anteriores que llegan por
+el canal se informan como respuestas tardías.
 
 ## 6. Estado y configuración (`store.rs`)
 

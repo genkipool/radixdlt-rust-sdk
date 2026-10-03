@@ -212,6 +212,27 @@ Interacciones soportadas (esquema en
 
 ---
 
+### 6.1 Entrega, asentado y reintentos (`Connector::exchange`)
+
+Todos los `request_*` son `exchange` con una petición construida; `exchange` (y
+`await_response`, que solo escucha un `interactionId` anterior) informa cada paso a
+un observador `Progress`: `TurnTaken`, `Settling`, `ChannelOpen`, **`Delivered`**
+(la `receiveMessageConfirmation` de la wallet: la petición ya está en su cola),
+`Resending`, `Reconnecting` y `OtherMessage` (respuesta a una interacción
+ANTERIOR, nunca descartada en silencio).
+
+Comportamiento observado en una wallet Android real, y lo que hace el conector:
+
+| Comportamiento de la wallet | Consecuencia | Conector |
+| --- | --- | --- |
+| Un canal de datos por ENLACE; ~5 s después de cerrarse una conexión cierra el canal que tenga el enlace *en ese momento*. | Un canal abierto justo después de otro muere a los pocos segundos; la petición llega pero su respuesta se pierde. | Espera `WALLET_SETTLE` (8 s) desde el cierre del último canal del enlace. |
+| Solo lee un canal nuevo cuando ve la conexión levantada en su lado. | Un mensaje enviado en ese hueco se pierde sin error. | Espera 0,6 s tras `on_open`; reenvía (mismo id, canal nuevo, hasta `SEND_ATTEMPTS` = 3) si no llega la confirmación en 6 s. |
+| La respuesta va al canal que tenga el enlace cuando la persona decide. | Un canal perdido tras la entrega dejaría la respuesta sin destino. | Reabre (tras asentar) y sigue escuchando; nunca reenvía una petición entregada. |
+| Las peticiones esperan en una cola en memoria hasta que se aprueban/rechazan o se cierra la app; una dApp no puede retirarlas. | Una sin responder bloquea las de detrás. | (Tarea del llamante: el MCP no envía mientras haya una pendiente.) |
+
+Los canales se cierran explícitamente al soltarse, así que cancelar una petición
+cierra la conexión en vez de dejar una medio abierta.
+
 ## 7. Estado persistente del enlace (`state.rs`, `connector.json`)
 
 Los emparejamientos se guardan en un `connector.json` compatible con el

@@ -59,7 +59,12 @@ flowchart LR
 
 - **Framing (`main.rs`):** read stdin line by line; each request line yields at
   most one response line on stdout; notifications yield none; blank lines are
-  skipped.
+  skipped. One writer task owns stdout, so concurrent answers never interleave.
+- **Concurrency (`rpc.rs`):** every `tools/call` runs as its own task, so a call
+  waiting minutes for the phone does not block `pending_requests`,
+  `cancel_request` or anything else. `notifications/cancelled` aborts the call it
+  names (dropping its channel to the wallet). When stdin closes, calls already
+  started still finish and answer.
 - **MCP (`rpc.rs`):** JSON-RPC 2.0. Handles `initialize` (negotiates a protocol
   version — newest `2025-06-18`, also accepts `2025-03-26` / `2024-11-05`),
   `ping`, `tools/list`, `tools/call`. `notifications/*` get no response. Errors
@@ -100,7 +105,25 @@ sequenceDiagram
 | `send_transaction` | Send a manifest for the user to sign + submit. |
 | `deploy_package` | Publish a package (WASM + RPD blobs), with a pre-deploy dry-run. |
 | `request_pre_authorization` | Have a subintent signed (no submit). |
+| `request_login` | Log in with a persona (authorized request), persona proof verified locally. |
+| `request_ownership_proof` | Prove exact accounts / the persona as a persona already logged in. |
+| `request_authorized` | Any authorized request: auth, reset, proof of ownership, one-time / ongoing data. |
+| `request_data` | Unauthorized request: exact/minimum accounts (with proofs), name, emails, phones. |
+| `pending_requests` | Requests that may still be waiting in the wallet's queue. |
+| `await_response` | Collect a late answer without resending. |
+| `cancel_request` | Stop a request here and stop it blocking. |
+| `check_wallet_connection` | Is the wallet reachable (opens a channel, sends nothing). |
+| `check_dapp_identity` | The wallet's dApp verification, run locally. |
+| `connector_log` | The step-by-step trace (`connector.log`). |
 | `transaction_status` | Read a transaction's commit status from the Gateway. |
+
+Every request to the phone goes through one road, `exchange::interact`:
+flood guard (`outbox.rs`, `requests.json`) → dApp-identity preflight
+(`gateway.rs`) → record + log (`diag.rs`, `connector.log`) → the library's
+`Connector::exchange`, whose `Progress` steps (turn taken, settling, channel open,
+**delivered**, resending, reconnecting, other message) update the record as they
+happen. Failures are `diag::Failure`: code, stage, `retry_safe`, hint, interaction
+id, returned as text and `structuredContent`.
 
 Dispatch is a single `match` in `tools::call`; an unknown tool returns an
 `isError` result rather than a JSON-RPC error, so the agent sees a tool failure.
@@ -165,6 +188,36 @@ attached; `request_pre_authorization` returns a `signedPartialTransaction` and
 does **not** submit.
 
 ---
+
+### 5.3 Delivery, the wallet's queue, and late answers
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Agent
+    participant C as connector-mcp
+    participant W as Wallet (phone)
+
+    A->>C: send_transaction
+    C->>C: open request for this wallet? → PENDING_IN_WALLET (nothing sent)
+    C->>C: dApp identity check → DAPP_NOT_VERIFIED (nothing sent)
+    C->>C: last channel on this link closed < 8 s ago? wait (settle)
+    C->>W: open channel, wait 0.6 s, send request
+    alt no receipt confirmation in 6 s
+        C->>W: fresh channel, same interaction id (up to 3 attempts) → else NOT_DELIVERED
+    end
+    W-->>C: receiveMessageConfirmation → state "delivered" (it is on the phone)
+    alt nobody answers in time
+        C-->>A: NO_ANSWER (retry_safe = NO); new requests refused
+        A->>C: await_response → reopen (after settle), listen for the same id
+    end
+    W-->>C: answer (or an answer to an EARLIER request → reported as a late answer)
+```
+
+The wallet keeps one data channel per link and, about five seconds after a
+connection closes, tears down whatever channel the link has then. Hence the
+settle (in-process in the library, across processes via `requests.json`), and the
+reconnect when a channel is lost after delivery.
 
 ## 6. State & config (`store.rs`)
 

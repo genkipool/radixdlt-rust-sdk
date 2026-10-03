@@ -54,10 +54,10 @@ use serde_json::{json, Value};
 pub use connector::{probe_relay_candidates, radix_default_ice_servers, Channel, IceServer};
 pub use error::ConnectError;
 pub use radixdlt_connect_types::{
-    account_proof_request, account_proof_request_sharing, account_request, extract_accounts, extract_login,
-    extract_persona_email, extract_persona_name, extract_proofs, extract_signed_partial_transaction,
-    extract_transaction_intent_hash, login_request, pre_authorization_request, transaction_request,
-    DappContext, PersonaRequest, WalletInteractionError,
+    account_proof_request, account_proof_request_sharing, account_request, check_failure, extract_accounts,
+    extract_login, extract_persona_email, extract_persona_name, extract_proofs,
+    extract_signed_partial_transaction, extract_transaction_intent_hash, login_request,
+    pre_authorization_request, transaction_request, DappContext, PersonaRequest, WalletInteractionError,
 };
 pub use radixdlt_connect_types::{
     authorized_request, extract_ongoing_accounts, extract_ownership_proofs, extract_persona_phones,
@@ -90,26 +90,86 @@ pub async fn await_link_client(
     }
 }
 
-/// Sends a wallet interaction and waits for the response whose `interactionId`
-/// matches it, discarding everything else until `overall_timeout` elapses.
+/// One step in the life of a request, reported as it happens to [`Connector::exchange`]'s observer.
+///
+/// The steps tell apart failures that otherwise look identical from the sending side. A request
+/// that never reached [`Progress::Delivered`] is NOT in the wallet: sending it again is safe. One
+/// that did is in the wallet's queue until the person approves or rejects it (or the wallet app is
+/// closed, which empties that queue), and sending more only stacks them behind it.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum Progress {
+    /// The link's turn was taken, after waiting this long behind another request on it.
+    TurnTaken {
+        /// Time spent queued behind another request on the same link.
+        waited: Duration,
+    },
+    /// The data channel to the wallet is open: the wallet app is running and reachable.
+    ChannelOpen {
+        /// Time since the turn was taken.
+        elapsed: Duration,
+    },
+    /// The wallet confirmed it RECEIVED the request. From here on it sits in the wallet's queue.
+    Delivered {
+        /// Time since the turn was taken.
+        elapsed: Duration,
+    },
+    /// A message that answers ANOTHER interaction — typically an earlier request that timed out
+    /// here and that the person approved or rejected later on the phone.
+    OtherMessage(Value),
+    /// The channel was lost AFTER delivery, so the request is still on the phone: a new channel
+    /// is being opened to keep waiting for its answer (nothing is sent again).
+    Reconnecting {
+        /// Why the previous channel ended.
+        reason: String,
+    },
+    /// The wallet never confirmed receiving the request, so it is NOT on the phone: it is being
+    /// sent again, with the same interaction id, on a fresh channel.
+    Resending {
+        /// Which attempt this is (2 = the first resend).
+        attempt: u32,
+        /// Why the previous attempt did not get through.
+        reason: String,
+    },
+    /// Waiting for the wallet to finish tearing down the link's previous channel before opening
+    /// a new one (see [`WALLET_SETTLE`]).
+    Settling {
+        /// How long.
+        wait: Duration,
+    },
+}
+
+/// How long the wallet takes to notice that a channel closed — and why a new one must wait.
+///
+/// The Radix Wallet keeps ONE data channel per paired link, keyed by the link, not by the
+/// connection. When it notices that a previous connection went away (about five seconds after it
+/// did), it tears down whatever channel the link has AT THAT MOMENT. A channel opened sooner than
+/// that is the one torn down: the request on it reaches the phone, but its answer has nowhere to
+/// go and is lost, and the sender sees a channel that died a few seconds in. Observed on a real
+/// phone: a channel opened 0.6 s after the previous one closed died 5.4 s later.
+pub const WALLET_SETTLE: Duration = Duration::from_secs(8);
+
+/// How long after a channel opens before sending on it — see [`Connector::exchange`].
+const SEND_GRACE: Duration = Duration::from_millis(600);
+/// How long the wallet has to confirm it received a request before it is sent again.
+const CONFIRM_TIMEOUT: Duration = Duration::from_secs(6);
+/// How many times a request the wallet never confirmed is sent, in all.
+pub const SEND_ATTEMPTS: u32 = 3;
+
+/// Waits on `channel` for the message whose `interactionId` is `want_id`, until `deadline`.
 ///
 /// The wallet's dAppRequestQueue can hold stale requests from earlier attempts;
 /// their responses arrive first and would otherwise be mistaken for ours (e.g. a
 /// "response without oneTimeAccounts" on an account-proof request). Requiring an
-/// EXACT id match keeps us waiting for the user's actual approval. Only if our
-/// request somehow had no id (should never happen) is the first message accepted.
-async fn send_and_await_response(
+/// EXACT id match keeps us waiting for the user's actual approval. Those other answers
+/// are not thrown away silently: each one goes to `on` as [`Progress::OtherMessage`],
+/// because an earlier transaction approved late WAS submitted, and the caller has to know.
+async fn listen(
     channel: &mut Channel,
-    interaction: &Value,
-    overall_timeout: Duration,
+    want_id: &str,
+    deadline: Instant,
+    on: &mut (dyn FnMut(Progress) + Send),
 ) -> Result<Value, ConnectError> {
-    let want_id = interaction
-        .get("interactionId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    channel.send_message(interaction, Duration::from_secs(15)).await?;
-    let deadline = Instant::now() + overall_timeout;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let resp = channel.recv_message(remaining).await?;
@@ -117,7 +177,48 @@ async fn send_and_await_response(
         if want_id.is_empty() || got == want_id {
             return Ok(resp);
         }
+        on(Progress::OtherMessage(resp));
     }
+}
+
+/// A channel that ended under us (the wallet closed it, or its transport failed), as opposed
+/// to a timeout or an answer.
+fn channel_lost(error: &ConnectError) -> bool {
+    matches!(error, ConnectError::SignalingClosed | ConnectError::WebRtc(_))
+}
+
+/// When each link's last channel closed, keyed like [`link_turn`].
+fn last_closed() -> &'static std::sync::Mutex<std::collections::HashMap<u64, Instant>> {
+    static CLOSED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u64, Instant>>> =
+        std::sync::OnceLock::new();
+    CLOSED.get_or_init(Default::default)
+}
+
+/// Records, when dropped, that a channel on this link just closed.
+struct ClosesLink(u64);
+
+impl Drop for ClosesLink {
+    fn drop(&mut self) {
+        let mut closed = last_closed().lock().unwrap_or_else(|e| e.into_inner());
+        closed.insert(self.0, Instant::now());
+    }
+}
+
+/// How long to wait before opening a channel on this link: what is left of [`WALLET_SETTLE`]
+/// since its last channel closed.
+fn settle_wait(password: &[u8]) -> Duration {
+    let closed = last_closed().lock().unwrap_or_else(|e| e.into_inner());
+    closed
+        .get(&link_key(password))
+        .map(|at| WALLET_SETTLE.saturating_sub(at.elapsed()))
+        .unwrap_or_default()
+}
+
+fn link_key(password: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    password.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The turn-taking mutex for one paired link, created on first use and shared process-wide.
@@ -128,13 +229,10 @@ async fn send_and_await_response(
 /// wrong — which is the safe direction for the mistake to fall.
 fn link_turn(password: &[u8]) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     use std::collections::HashMap;
-    use std::hash::{Hash, Hasher};
     use std::sync::{Arc, Mutex, OnceLock};
 
     static LINKS: OnceLock<Mutex<HashMap<u64, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    password.hash(&mut hasher);
-    let key = hasher.finish();
+    let key = link_key(password);
     let links = LINKS.get_or_init(|| Mutex::new(HashMap::new()));
     // A poisoned registry only means some other thread panicked while holding it; the map
     // itself is still sound, so recover rather than propagate an unrelated panic.
@@ -249,6 +347,173 @@ impl Connector {
         Ok((guard, left))
     }
 
+    /// Sends ANY wallet interaction and returns the wallet's answer to it, reporting each step to
+    /// `on` as it happens ([`Progress`]). Every `request_*` method is this with a built request.
+    ///
+    /// Use it when the caller must know HOW FAR a request got — above all whether the wallet
+    /// received it ([`Progress::Delivered`]) — or must not lose the late answers to earlier
+    /// requests that arrive on the same channel ([`Progress::OtherMessage`]). Dropping the future
+    /// (a cancelled task, a `select!`) closes the channel to the wallet.
+    ///
+    /// # Errors
+    /// As [`request_account_proof_sharing`](Self::request_account_proof_sharing). The answer may
+    /// still be a wallet `failure`: read it with the `extract_*` functions or
+    /// [`check_failure`].
+    pub async fn exchange(
+        &self,
+        password: &[u8],
+        interaction: &Value,
+        overall_timeout: Duration,
+        on: &mut (dyn FnMut(Progress) + Send),
+    ) -> Result<Value, ConnectError> {
+        let want_id = interaction
+            .get("interactionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        self.converse(password, Some(interaction), &want_id, overall_timeout, on)
+            .await
+    }
+
+    /// Listens for the answer to a request sent EARLIER (by `interaction_id`) without sending
+    /// anything: the request is already in the wallet's queue, and sending it again would only
+    /// queue a second copy behind it. The wallet answers on whatever channel the link has open
+    /// when the person decides, so this opens one and waits.
+    ///
+    /// # Errors
+    /// As [`exchange`](Self::exchange); [`ConnectError::ResponseTimeout`] when nobody answered.
+    pub async fn await_response(
+        &self,
+        password: &[u8],
+        interaction_id: &str,
+        overall_timeout: Duration,
+        on: &mut (dyn FnMut(Progress) + Send),
+    ) -> Result<Value, ConnectError> {
+        self.converse(password, None, interaction_id, overall_timeout, on)
+            .await
+    }
+
+    /// One conversation on the link: take the turn, let the wallet settle, open a channel, send
+    /// (unless only listening), and wait for the answer.
+    ///
+    /// Two things are retried, because both are the wallet's transport and not the person:
+    /// a request the wallet never CONFIRMED receiving is sent again (same interaction id) on a
+    /// fresh channel, up to [`SEND_ATTEMPTS`] times; and a channel lost AFTER delivery is reopened
+    /// to keep listening, since the request is then on the phone and its answer will go to
+    /// whatever channel the link has when the person decides. Nothing confirmed is ever resent.
+    async fn converse(
+        &self,
+        password: &[u8],
+        interaction: Option<&Value>,
+        want_id: &str,
+        overall_timeout: Duration,
+        on: &mut (dyn FnMut(Progress) + Send),
+    ) -> Result<Value, ConnectError> {
+        let queued = Instant::now();
+        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
+        on(Progress::TurnTaken {
+            waited: queued.elapsed(),
+        });
+        let started = Instant::now();
+        let deadline = started + budget;
+        let _closes = ClosesLink(link_key(password));
+        let mut delivered = interaction.is_none();
+        let mut attempt = 1u32;
+        loop {
+            self.settle(password, deadline, on).await?;
+            let mut channel = self
+                .establish(password, deadline.saturating_duration_since(Instant::now()))
+                .await?;
+            on(Progress::ChannelOpen {
+                elapsed: started.elapsed(),
+            });
+            if let (Some(interaction), false) = (interaction, delivered) {
+                // The wallet starts reading a new channel only once it has seen the connection
+                // come up on ITS side, a moment after ours: a message sent into that gap is lost
+                // without a trace. A short grace closes the gap.
+                tokio::time::sleep(SEND_GRACE).await;
+                match channel.send_message(interaction, CONFIRM_TIMEOUT).await {
+                    Ok(()) => {
+                        delivered = true;
+                        on(Progress::Delivered {
+                            elapsed: started.elapsed(),
+                        });
+                    }
+                    Err(error)
+                        if (matches!(error, ConnectError::ConfirmationTimeout) || channel_lost(&error))
+                            && attempt < SEND_ATTEMPTS
+                            && deadline.saturating_duration_since(Instant::now())
+                                > WALLET_SETTLE + Duration::from_secs(10) =>
+                    {
+                        attempt += 1;
+                        on(Progress::Resending {
+                            attempt,
+                            reason: error.to_string(),
+                        });
+                        drop(channel);
+                        drop(ClosesLink(link_key(password)));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            match listen(&mut channel, want_id, deadline, on).await {
+                Err(error)
+                    if channel_lost(&error)
+                        && deadline.saturating_duration_since(Instant::now())
+                            > WALLET_SETTLE + Duration::from_secs(10) =>
+                {
+                    on(Progress::Reconnecting {
+                        reason: error.to_string(),
+                    });
+                    drop(channel);
+                    drop(ClosesLink(link_key(password)));
+                }
+                other => return other,
+            }
+        }
+    }
+
+    /// Waits out what is left of [`WALLET_SETTLE`] since the link's last channel closed.
+    async fn settle(
+        &self,
+        password: &[u8],
+        deadline: Instant,
+        on: &mut (dyn FnMut(Progress) + Send),
+    ) -> Result<(), ConnectError> {
+        let wait = settle_wait(password);
+        if wait.is_zero() {
+            return Ok(());
+        }
+        if Instant::now() + wait >= deadline {
+            return Err(ConnectError::LinkBusy);
+        }
+        on(Progress::Settling { wait });
+        tokio::time::sleep(wait).await;
+        Ok(())
+    }
+
+    /// Opens a channel to the wallet and closes it again, sending nothing: whether the wallet app
+    /// is reachable right now, and how long the channel took. Nothing appears on the phone.
+    ///
+    /// # Errors
+    /// [`ConnectError::ChannelTimeout`] when the wallet did not connect in time (app closed, no
+    /// network, or this connector no longer linked), plus the transport errors of
+    /// [`exchange`](Self::exchange).
+    pub async fn probe(&self, password: &[u8], overall_timeout: Duration) -> Result<Duration, ConnectError> {
+        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
+        let deadline = Instant::now() + budget;
+        let _closes = ClosesLink(link_key(password));
+        self.settle(password, deadline, &mut |_| {}).await?;
+        let started = Instant::now();
+        let channel = self
+            .establish(password, deadline.saturating_duration_since(Instant::now()))
+            .await?;
+        let took = started.elapsed();
+        drop(channel);
+        Ok(took)
+    }
+
     /// With an already-paired link password, asks the wallet to sign a ROLA account
     /// proof and returns the wallet's response (containing `proofs`).
     pub async fn request_account_proof(
@@ -279,10 +544,9 @@ impl Connector {
         share: PersonaRequest,
         overall_timeout: Duration,
     ) -> Result<Value, ConnectError> {
-        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
-        let mut channel = self.establish(password, budget).await?;
         let interaction = account_proof_request_sharing(challenge_hex, ctx, share);
-        send_and_await_response(&mut channel, &interaction, budget).await
+        self.exchange(password, &interaction, overall_timeout, &mut |_| {})
+            .await
     }
 
     /// Asks the wallet to LOG IN: the persona signs the challenge too, so the person is proven.
@@ -304,10 +568,9 @@ impl Connector {
         share: PersonaRequest,
         overall_timeout: Duration,
     ) -> Result<Value, ConnectError> {
-        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
-        let mut channel = self.establish(password, budget).await?;
         let interaction = login_request(challenge_hex, ctx, share);
-        send_and_await_response(&mut channel, &interaction, budget).await
+        self.exchange(password, &interaction, overall_timeout, &mut |_| {})
+            .await
     }
 
     /// Sends any AUTHORIZED request ([`AuthorizedRequest`]): a persona — logging in, or one already
@@ -324,10 +587,9 @@ impl Connector {
         ctx: &DappContext,
         overall_timeout: Duration,
     ) -> Result<Value, ConnectError> {
-        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
-        let mut channel = self.establish(password, budget).await?;
         let interaction = authorized_request(request, ctx);
-        send_and_await_response(&mut channel, &interaction, budget).await
+        self.exchange(password, &interaction, overall_timeout, &mut |_| {})
+            .await
     }
 
     /// Asks the wallet to prove EXACT accounts (and the persona, with `own.identity`) as a persona
@@ -365,10 +627,9 @@ impl Connector {
         ctx: &DappContext,
         overall_timeout: Duration,
     ) -> Result<Value, ConnectError> {
-        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
-        let mut channel = self.establish(password, budget).await?;
         let interaction = unauthorized_request(accounts, persona_data, ctx);
-        send_and_await_response(&mut channel, &interaction, budget).await
+        self.exchange(password, &interaction, overall_timeout, &mut |_| {})
+            .await
     }
 
     /// Asks the wallet to SHARE its account(s) without a ROLA proof (the
@@ -380,10 +641,9 @@ impl Connector {
         ctx: &DappContext,
         overall_timeout: Duration,
     ) -> Result<Value, ConnectError> {
-        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
-        let mut channel = self.establish(password, budget).await?;
         let interaction = account_request(ctx);
-        send_and_await_response(&mut channel, &interaction, budget).await
+        self.exchange(password, &interaction, overall_timeout, &mut |_| {})
+            .await
     }
 
     /// Sends a TRANSACTION MANIFEST to the wallet for the owner to sign and submit.
@@ -397,10 +657,10 @@ impl Connector {
         ctx: &DappContext,
         overall_timeout: Duration,
     ) -> Result<String, ConnectError> {
-        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
-        let mut channel = self.establish(password, budget).await?;
         let interaction = transaction_request(manifest, message, blobs, ctx);
-        let response = send_and_await_response(&mut channel, &interaction, budget).await?;
+        let response = self
+            .exchange(password, &interaction, overall_timeout, &mut |_| {})
+            .await?;
         Ok(extract_transaction_intent_hash(&response)?)
     }
 
@@ -416,10 +676,10 @@ impl Connector {
         ctx: &DappContext,
         overall_timeout: Duration,
     ) -> Result<String, ConnectError> {
-        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
-        let mut channel = self.establish(password, budget).await?;
         let interaction = pre_authorization_request(subintent_manifest, message, expire_after_seconds, ctx);
-        let response = send_and_await_response(&mut channel, &interaction, budget).await?;
+        let response = self
+            .exchange(password, &interaction, overall_timeout, &mut |_| {})
+            .await?;
         Ok(extract_signed_partial_transaction(&response)?)
     }
 
@@ -554,6 +814,35 @@ mod tests {
             left < Duration::from_secs(2),
             "the wait must come out of the budget"
         );
+    }
+
+    /// A link whose channel just closed must wait for the wallet to let go of it; one that has
+    /// never had a channel, or closed long ago, must not wait at all.
+    #[test]
+    fn a_new_channel_waits_for_the_wallet_to_settle() {
+        assert_eq!(settle_wait(b"never-used-link"), Duration::ZERO);
+        drop(ClosesLink(link_key(b"just-closed-link")));
+        let wait = settle_wait(b"just-closed-link");
+        assert!(
+            wait > WALLET_SETTLE - Duration::from_secs(1) && wait <= WALLET_SETTLE,
+            "{wait:?}"
+        );
+        assert_eq!(
+            settle_wait(b"another-link"),
+            Duration::ZERO,
+            "links settle independently"
+        );
+    }
+
+    /// Only a channel that ENDED is worth reopening; a timeout or an answer is final.
+    #[test]
+    fn only_a_lost_channel_is_reopened() {
+        assert!(channel_lost(&ConnectError::WebRtc("closed".into())));
+        assert!(channel_lost(&ConnectError::SignalingClosed));
+        assert!(!channel_lost(&ConnectError::ResponseTimeout));
+        assert!(!channel_lost(&ConnectError::WalletRejected(
+            "rejectedByUser".into()
+        )));
     }
 
     #[test]

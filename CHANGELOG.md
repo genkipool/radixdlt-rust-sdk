@@ -9,6 +9,40 @@ minor versions may contain breaking changes.
 
 ### Added
 
+- `radixdlt-connector-mcp` — `check-update` and `update` subcommands (and the
+  `check_update` / `update_connector` tools): the newest `connector-v*` release is
+  downloaded, checked against its published SHA-256 (released from 0.4.0 on), run
+  once to prove it works, backed up and swapped in. The pairing is untouched.
+- `radixdlt-connector-mcp` 0.4.0 — **the rest of the wallet protocol, and a
+  connector that knows what reached the phone.** New tools: `request_login`
+  (persona login, proof verified locally), `request_ownership_proof` (exact
+  accounts / persona, nothing to pick), `request_authorized` (login / login without
+  challenge / use persona, reset, proof of ownership, one-time and ONGOING accounts
+  and persona data), `request_data` (exact or minimum quantities, phone numbers),
+  plus `pending_requests`, `await_response`, `cancel_request`,
+  `check_wallet_connection`, `check_dapp_identity` and `connector_log`. Every
+  request is recorded (`requests.json`) and traced step by step
+  (`connector.log`); a new request is refused while an earlier one is waiting in
+  the wallet's queue (`PENDING_IN_WALLET`), because the wallet shows one at a time
+  and cannot withdraw one. Failures carry a code, a stage, `retry_safe`, a hint and
+  the interaction id, as text and `structuredContent`. Late answers to earlier
+  requests are reported. Tool calls run concurrently and honour
+  `notifications/cancelled`. The dApp identity is checked before sending, because
+  a dApp its website's `radix.json` does not list is DROPPED by the wallet without
+  an answer.
+- `radixdlt-connect` — `Connector::exchange` / `await_response` / `probe` with a
+  `Progress` observer (`Delivered` = the wallet confirmed receipt). Verified on a
+  real phone, two wallet behaviours that lost requests are now handled: the wallet
+  tears down the link's CURRENT channel ~5 s after an older connection closes (so
+  the connector waits `WALLET_SETTLE` = 8 s between channels on a link), and it can
+  miss a message sent the instant a channel opens (a 0.6 s grace, and a resend with
+  the same interaction id when no receipt is confirmed, up to `SEND_ATTEMPTS`). A
+  channel lost after delivery is reopened to keep waiting; channels close when
+  dropped.
+- `radixdlt-rola` / `radixdlt-address` — `verify_persona_proof` and
+  `virtual_identity_address`: a persona's proof is checked against the identity its
+  key derives to.
+
 - `radixdlt-connect-types` / `radixdlt-connect` — **authorized LOGIN requests**, so the
   PERSON behind a wallet can be proven and not merely claimed: `login_request`,
   `extract_login` and `Connector::request_login`. An `unauthorizedRequest` can ask
@@ -54,6 +88,10 @@ minor versions may contain breaking changes.
 
 ### Fixed
 
+- `radixdlt-connect-types` — a wallet `failure` keeps its `message` (which network
+  it is on, which website it could not verify), not only the error type.
+- `radixdlt-connect` — a data channel that closes is reported as such, not as
+  «the signaling closed before the WebRTC channel opened».
 - `radixdlt-connect` — requests sharing a paired link are now serialized. A link
   carries one conversation at a time, so two in flight at once raced on the same
   signaling rendezvous: the second failed within seconds and the wallet never

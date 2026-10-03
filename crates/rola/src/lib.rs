@@ -25,7 +25,7 @@
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
 use ed25519_dalek::{Signature, VerifyingKey};
-use radixdlt_address::{virtual_account_address, AddressError};
+use radixdlt_address::{virtual_account_address, virtual_identity_address, AddressError};
 use radixdlt_i18n::{tr, Lang};
 
 type Blake2b256 = Blake2b<U32>;
@@ -172,6 +172,47 @@ pub fn verify_account_proof(
     origin: &str,
     network_id: u8,
 ) -> Result<(), RolaError> {
+    verify_proof(
+        proof,
+        challenge_hex,
+        dapp_definition,
+        origin,
+        network_id,
+        virtual_account_address,
+    )
+}
+
+/// Verifies a ROLA PERSONA proof: `proof.address` is the persona's `identity_…` address, and the
+/// public key must derive to it as a virtual identity. Same message, same signature check as an
+/// account proof — only the address the key must own differs.
+///
+/// # Errors
+/// As [`verify_account_proof`].
+pub fn verify_persona_proof(
+    proof: &AccountProof,
+    challenge_hex: &str,
+    dapp_definition: &str,
+    origin: &str,
+    network_id: u8,
+) -> Result<(), RolaError> {
+    verify_proof(
+        proof,
+        challenge_hex,
+        dapp_definition,
+        origin,
+        network_id,
+        virtual_identity_address,
+    )
+}
+
+fn verify_proof(
+    proof: &AccountProof,
+    challenge_hex: &str,
+    dapp_definition: &str,
+    origin: &str,
+    network_id: u8,
+    derive: fn(&str, u8) -> Result<String, AddressError>,
+) -> Result<(), RolaError> {
     let message = signature_message(challenge_hex, dapp_definition, origin)?;
 
     // 1) Signature valid for the public key.
@@ -195,8 +236,8 @@ pub fn verify_account_proof(
         .verify_strict(&message, &signature)
         .map_err(|_| RolaError::SignatureMismatch)?;
 
-    // 2) The public key derives to the claimed address (virtual account).
-    let derived = virtual_account_address(&proof.public_key_hex, network_id)?;
+    // 2) The public key derives to the claimed address (virtual account or identity).
+    let derived = derive(&proof.public_key_hex, network_id)?;
     if derived != proof.address {
         return Err(RolaError::AddressMismatch {
             derived,
@@ -244,6 +285,22 @@ mod tests {
     fn a_genuine_proof_verifies() {
         let (_, proof) = signed_proof();
         assert!(verify_account_proof(&proof, &CHALLENGE.repeat(32), DAPP, ORIGIN, NETWORK).is_ok());
+    }
+
+    /// A persona proof verifies against the IDENTITY the key derives to, and an account proof
+    /// from the same key does not pass as one.
+    #[test]
+    fn a_persona_proof_verifies_against_its_identity() {
+        let (sk, account_proof) = signed_proof();
+        let identity = virtual_identity_address(&account_proof.public_key_hex, NETWORK).unwrap();
+        let msg = signature_message(&CHALLENGE.repeat(32), DAPP, ORIGIN).unwrap();
+        let persona = AccountProof {
+            address: identity,
+            public_key_hex: account_proof.public_key_hex.clone(),
+            signature_hex: hex::encode(sk.sign(&msg).to_bytes()),
+        };
+        assert!(verify_persona_proof(&persona, &CHALLENGE.repeat(32), DAPP, ORIGIN, NETWORK).is_ok());
+        assert!(verify_persona_proof(&account_proof, &CHALLENGE.repeat(32), DAPP, ORIGIN, NETWORK).is_err());
     }
 
     /// The one that matters most. If verification ever became a no-op — a refactor gone wrong, a
