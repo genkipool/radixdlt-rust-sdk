@@ -785,6 +785,28 @@ mod tests {
         DappContext::new(2, "account_tdx_2_dapp", "https://example.com")
     }
 
+    /// A failure keeps the wallet's own words: the error type alone («wrongNetwork») does not
+    /// say which network the wallet is on, and its message does.
+    #[test]
+    fn a_wallet_failure_keeps_its_message() {
+        let with = json!({ "discriminator": "failure", "error": "wrongNetwork", "message": "wallet is on 1" });
+        assert_eq!(
+            check_failure(&with),
+            Err(WalletInteractionError::WalletRejected("wrongNetwork: wallet is on 1".into()))
+        );
+        let empty = json!({ "discriminator": "failure", "error": "rejectedByUser", "message": "" });
+        assert_eq!(
+            check_failure(&empty),
+            Err(WalletInteractionError::WalletRejected("rejectedByUser".into()))
+        );
+        let bare = json!({ "discriminator": "failure", "error": "rejectedByUser" });
+        assert_eq!(
+            check_failure(&bare),
+            Err(WalletInteractionError::WalletRejected("rejectedByUser".into()))
+        );
+        assert_eq!(check_failure(&json!({ "discriminator": "success" })), Ok(()));
+    }
+
     #[test]
     fn account_proof_round_trips() {
         let req = account_proof_request("aa", &ctx(), true);
