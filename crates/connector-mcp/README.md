@@ -97,6 +97,22 @@ If the binary is not on your `PATH`, use its absolute path as `command`.
 | `connector_log` | The connector's trace of every request, step by step. |
 | `transaction_status` | Reads a transaction's commit status from the Gateway. |
 
+### With no internet: a local relay over the USB cable
+
+`radix-connector-mcp relay --listen <addr> [--turn <addr> --turn-password <pw>]` runs a
+Radix Connect signaling relay (and optionally a TURN server) on this computer. Add it as a
+signaling server in the Radix Wallet (Settings › Preferences › Signaling Servers) and list it in
+`RADIX_CONNECT_RELAYS` or `/etc/radix-connect/relays`: connectors try the public relay and it at
+once. What was learned on a real phone:
+
+- **The STUN list in the wallet must not be empty** — Android's WebRTC throws on it and the wallet
+  crashes when a channel opens. TURN may be empty.
+- **USB tethering alone is not enough**: the wallet reaches the relay, but its WebRTC only uses
+  networks Android declares to apps, and a tethering interface never is one.
+- **USB tethering + a WireGuard tunnel that is the phone's default route works** (the tunnel IS a
+  declared network). PamAuthority automates this: `pamauthority wire`.
+- **Or `adb reverse`** of the relay and TURN ports, with the TURN in the wallet's server.
+
 ### Talking to a phone: delivery, the queue, and failures
 
 The Radix Wallet shows **one request at a time** from an in-memory queue, and nothing a dApp

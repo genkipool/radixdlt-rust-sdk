@@ -9,6 +9,18 @@ minor versions may contain breaking changes.
 
 ### Added
 
+- `radixdlt-connect` — **reaching the phone with no internet.** A local signaling
+  relay (`relay`, the public relay's protocol) and a minimal TURN-over-TCP server
+  (`turn_server`); `Connector` tries the public relay and every configured one at
+  once (`with_extra_signaling`, `RADIX_CONNECT_RELAYS`,
+  `~/.config/radix-connect/relays`, `/etc/radix-connect/relays`) and keeps the one
+  the wallet answers on. Verified on a real Android phone with no network: over
+  USB tethering plus a WireGuard tunnel that is the phone's default route (the
+  wallet's WebRTC ignores the tethering interface itself — Android never declares
+  it to apps), and over `adb reverse` plus the local TURN. `RADIX_CONNECT_DEBUG=1`
+  traces the negotiation.
+- `radixdlt-connector-mcp` 0.5.0 — `relay [--listen] [--turn --turn-password]`.
+
 - `radixdlt-connector-mcp` — `check-update` and `update` subcommands (and the
   `check_update` / `update_connector` tools): the newest `connector-v*` release is
   downloaded, checked against its published SHA-256 (released from 0.4.0 on), run
@@ -88,6 +100,14 @@ minor versions may contain breaking changes.
 
 ### Fixed
 
+- `radixdlt-connect` — negotiation could hang past its timeout: the wallet's
+  loopback candidates (offered when it has no network) made the ICE agent spin, a
+  second wallet socket on the link (an app just closed) made it create a second
+  offer that never returned, and connecting to a relay whose address was gone
+  waited for the OS. Unusable remote candidates are dropped (a loopback RELAY
+  candidate — a local TURN — is kept), a late wallet gets the same offer
+  replayed, signaling connects are bounded, and the whole negotiation sits under
+  one outer deadline.
 - `radixdlt-connect-types` — a wallet `failure` keeps its `message` (which network
   it is on, which website it could not verify), not only the error type.
 - `radixdlt-connect` — a data channel that closes is reported as such, not as

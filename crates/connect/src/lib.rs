@@ -42,8 +42,12 @@ pub mod chunking;
 mod connector;
 pub mod crypto;
 mod error;
+/// A local signaling relay, for reaching the phone with no internet (over a cable or a local Wi-Fi).
+pub mod relay;
 mod signaling;
 pub mod state;
+/// A minimal TURN-over-TCP server, for a phone whose only network is the USB cable (`adb reverse`).
+pub mod turn_server;
 /// A TURN allocation reached over TCP/TLS, presented to WebRTC as a UDP socket.
 pub mod turn_tcp;
 
@@ -240,10 +244,85 @@ fn link_turn(password: &[u8]) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     links.entry(key).or_default().clone()
 }
 
+/// Where extra signaling relays are configured, besides [`Connector::with_extra_signaling`]:
+/// the `RADIX_CONNECT_RELAYS` environment variable (URLs separated by commas or spaces), and
+/// the files `~/.config/radix-connect/relays` and `/etc/radix-connect/relays` (one URL per
+/// line, `#` for comments). Read when a [`Connector`] is created, so every program built on this
+/// crate — and every user on the machine, through the `/etc` file — reaches a local relay with no
+/// code of its own.
+pub const RELAYS_ENV: &str = "RADIX_CONNECT_RELAYS";
+
+/// The extra signaling relays configured on this machine (see [`RELAYS_ENV`]).
+#[must_use]
+pub fn configured_relays() -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    let mut add = |text: &str| {
+        for item in text
+            .lines()
+            .map(|line| line.split('#').next().unwrap_or_default())
+            .flat_map(|line| line.split([',', ' ', '\t']))
+            .map(str::trim)
+            .filter(|item| item.starts_with("ws://") || item.starts_with("wss://"))
+        {
+            let base = normalize_base(item);
+            if !found.contains(&base) {
+                found.push(base);
+            }
+        }
+    };
+    if let Ok(env) = std::env::var(RELAYS_ENV) {
+        add(&env);
+    }
+    let user_config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")));
+    let files = [
+        user_config.map(|dir| dir.join("radix-connect").join("relays")),
+        Some(std::path::PathBuf::from("/etc/radix-connect/relays")),
+    ];
+    for file in files.into_iter().flatten() {
+        if let Ok(text) = std::fs::read_to_string(file) {
+            add(&text);
+        }
+    }
+    found
+}
+
+/// The public Radix signaling server, then every configured relay.
+fn default_signaling_bases() -> Vec<String> {
+    let mut bases = vec![SIGNALING_BASE.to_string()];
+    for relay in configured_relays() {
+        if !bases.contains(&relay) {
+            bases.push(relay);
+        }
+    }
+    bases
+}
+
+/// A base URL without the trailing slash the wallet's settings want (`ws://h:8787/`): the
+/// connection id is appended after a `/` of our own.
+fn normalize_base(base: &str) -> String {
+    base.trim().trim_end_matches('/').to_string()
+}
+
+/// Of the reasons every signaling server failed, the one that says most. A server that could
+/// not be reached at all (no internet) explains nothing when another one WAS reached and the
+/// wallet simply never came.
+fn most_telling(errors: Vec<ConnectError>) -> ConnectError {
+    let unreachable =
+        |e: &ConnectError| matches!(e, ConnectError::Signaling(_) | ConnectError::SignalingClosed);
+    let mut errors = errors.into_iter();
+    let first = errors.next().unwrap_or(ConnectError::SignalingClosed);
+    if !unreachable(&first) {
+        return first;
+    }
+    errors.find(|e| !unreachable(e)).unwrap_or(first)
+}
+
 /// A Radix Connect client carrying the ICE/signaling configuration.
 pub struct Connector {
     ice_servers: Vec<IceServer>,
-    signaling_base: String,
+    signaling_bases: Vec<String>,
     relay_only: bool,
     turn_tcp: Option<TurnTcpServer>,
 }
@@ -252,7 +331,7 @@ impl Default for Connector {
     fn default() -> Self {
         Connector {
             ice_servers: radix_default_ice_servers(),
-            signaling_base: SIGNALING_BASE.to_string(),
+            signaling_bases: default_signaling_bases(),
             relay_only: false,
             turn_tcp: None,
         }
@@ -271,10 +350,27 @@ impl Connector {
         self
     }
 
-    /// Overrides the signaling server base URL.
+    /// Uses ONLY this signaling server (instead of the public one and any configured relays).
     pub fn with_signaling_base(mut self, base: impl Into<String>) -> Self {
-        self.signaling_base = base.into();
+        self.signaling_bases = vec![normalize_base(&base.into())];
         self
+    }
+
+    /// Also tries this signaling server — e.g. a local [`relay`] the wallet reaches over a cable.
+    /// Every channel is attempted through all of them at once, and the first the wallet answers
+    /// on wins: the wallet only listens on the ONE server its current profile names, so the same
+    /// connector works whether the phone is online or on a cable with no internet.
+    pub fn with_extra_signaling(mut self, base: impl Into<String>) -> Self {
+        let base = normalize_base(&base.into());
+        if !self.signaling_bases.contains(&base) {
+            self.signaling_bases.push(base);
+        }
+        self
+    }
+
+    /// The signaling servers this connector tries, in order.
+    pub fn signaling_bases(&self) -> &[String] {
+        &self.signaling_bases
     }
 
     /// Restricts ICE to relay candidates only.
@@ -306,15 +402,34 @@ impl Connector {
     }
 
     async fn establish(&self, password: &[u8], open_timeout: Duration) -> Result<Channel, ConnectError> {
-        connector::establish(
-            &self.ice_servers,
-            &self.signaling_base,
-            password,
-            open_timeout,
-            self.relay_only,
-            self.turn_tcp.as_ref(),
-        )
-        .await
+        use futures_util::stream::{FuturesUnordered, StreamExt};
+
+        let attempt = |base: &str| {
+            let base = base.to_string();
+            async move {
+                connector::establish(
+                    &self.ice_servers,
+                    &base,
+                    password,
+                    open_timeout,
+                    self.relay_only,
+                    self.turn_tcp.as_ref(),
+                )
+                .await
+            }
+        };
+        if let [only] = self.signaling_bases.as_slice() {
+            return attempt(only).await;
+        }
+        let mut attempts: FuturesUnordered<_> = self.signaling_bases.iter().map(|b| attempt(b)).collect();
+        let mut errors = Vec::new();
+        while let Some(result) = attempts.next().await {
+            match result {
+                Ok(channel) => return Ok(channel),
+                Err(error) => errors.push(error),
+            }
+        }
+        Err(most_telling(errors))
     }
 
     /// Takes this link's turn, so only ONE conversation runs on it at a time.
@@ -831,6 +946,35 @@ mod tests {
             settle_wait(b"another-link"),
             Duration::ZERO,
             "links settle independently"
+        );
+    }
+
+    /// A relay is added once, with or without the trailing slash the wallet's settings use, and
+    /// the public server stays first.
+    #[test]
+    fn extra_signaling_servers_are_added_once() {
+        let c = Connector::new()
+            .with_signaling_base(SIGNALING_BASE)
+            .with_extra_signaling("ws://172.20.10.10:8787/")
+            .with_extra_signaling("ws://172.20.10.10:8787");
+        assert_eq!(c.signaling_bases(), [SIGNALING_BASE, "ws://172.20.10.10:8787"]);
+        let only = Connector::new().with_signaling_base("ws://127.0.0.1:8787/");
+        assert_eq!(only.signaling_bases(), ["ws://127.0.0.1:8787"]);
+    }
+
+    /// When the public server is unreachable (no internet) but the relay answered, the failure
+    /// to report is the relay's: that is where the wallet was expected.
+    #[test]
+    fn the_failure_that_says_most_is_reported() {
+        let offline = ConnectError::Signaling("dns".into());
+        assert_eq!(
+            most_telling(vec![offline.clone(), ConnectError::ChannelTimeout]),
+            ConnectError::ChannelTimeout
+        );
+        assert_eq!(most_telling(vec![offline.clone()]), offline);
+        assert_eq!(
+            most_telling(vec![ConnectError::ChannelTimeout, offline]),
+            ConnectError::ChannelTimeout
         );
     }
 
