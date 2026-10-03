@@ -63,10 +63,14 @@ jobs:
         run: |
           cp "crates/connector-mcp/target/${{ matrix.target }}/release/radix-connector-mcp" \
              "radix-connector-mcp-${{ matrix.target }}"
+          # `radix-connector-mcp update` refuses a download that does not match this.
+          shasum -a 256 "radix-connector-mcp-${{ matrix.target }}" > "radix-connector-mcp-${{ matrix.target }}.sha256"
       - name: Package (Windows)
         if: runner.os == 'Windows'
         run: |
           copy "crates\connector-mcp\target\${{ matrix.target }}\release\radix-connector-mcp.exe" "radix-connector-mcp-${{ matrix.target }}.exe"
+          $hash = (Get-FileHash "radix-connector-mcp-${{ matrix.target }}.exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  radix-connector-mcp-${{ matrix.target }}.exe" | Out-File -Encoding ascii "radix-connector-mcp-${{ matrix.target }}.exe.sha256"
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
@@ -74,4 +78,6 @@ jobs:
           files: |
             radix-connector-mcp-${{ matrix.target }}
             radix-connector-mcp-${{ matrix.target }}.exe
+            radix-connector-mcp-${{ matrix.target }}.sha256
+            radix-connector-mcp-${{ matrix.target }}.exe.sha256
           fail_on_unmatched_files: false

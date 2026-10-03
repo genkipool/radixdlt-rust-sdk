@@ -1,0 +1,344 @@
+
+*** crates/rola/src/lib.rs:175:5: replace verify_account_proof -> Result<(), RolaError> with Ok(())
+
+*** mutation diff:
+--- crates/rola/src/lib.rs
++++ replace verify_account_proof -> Result<(), RolaError> with Ok(())
+@@ -167,24 +167,17 @@
+ /// about an account its key does not control.
+ pub fn verify_account_proof(
+     proof: &AccountProof,
+     challenge_hex: &str,
+     dapp_definition: &str,
+     origin: &str,
+     network_id: u8,
+ ) -> Result<(), RolaError> {
+-    verify_proof(
+-        proof,
+-        challenge_hex,
+-        dapp_definition,
+-        origin,
+-        network_id,
+-        virtual_account_address,
+-    )
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Verifies a ROLA PERSONA proof: `proof.address` is the persona's `identity_…` address, and the
+ /// public key must derive to it as a virtual identity. Same message, same signature check as an
+ /// account proof — only the address the key must own differs.
+ ///
+ /// # Errors
+ /// As [`verify_account_proof`].
+
+
+*** /home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=radixdlt-rola@0.2.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.107
+       Fresh quote v1.0.47
+       Fresh typenum v1.20.1
+       Fresh syn v2.0.119
+       Fresh version_check v0.9.5
+       Fresh semver v1.0.28
+       Fresh subtle v2.6.1
+       Fresh hashbrown v0.17.1
+       Fresh rustc_version v0.4.1
+       Fresh equivalent v1.0.2
+       Fresh zeroize_derive v1.5.0
+       Fresh cfg-if v1.0.4
+       Fresh autocfg v1.5.1
+       Fresh either v1.17.0
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh hybrid-array v0.4.14
+       Fresh find-msvc-tools v0.1.9
+       Fresh const-sha1 v0.3.0
+       Fresh shlex v2.0.1
+       Fresh cpufeatures v0.2.17
+       Fresh syn v1.0.109
+       Fresh zeroize v1.9.0
+       Fresh itertools v0.10.5
+       Fresh cc v1.4.0
+       Fresh indexmap v2.14.0
+       Fresh block-buffer v0.12.1
+       Fresh crypto-common v0.2.2
+       Fresh preinterpret v0.2.1
+       Fresh heck v0.4.1
+       Fresh signature v2.2.0
+       Fresh generic-array v0.14.7
+       Fresh libc v0.2.189
+       Fresh sbor-derive-common v1.3.1
+       Fresh rustversion v1.0.23
+       Fresh radix-rust v1.3.1
+       Fresh ed25519 v2.2.3
+       Fresh digest v0.11.3
+       Fresh paste v1.0.15
+       Fresh keccak v0.1.6
+       Fresh lazy_static v1.5.0
+       Fresh cpufeatures v0.3.0
+       Fresh hex v0.4.3
+       Fresh bech32 v0.9.1
+       Fresh crypto-common v0.1.7
+       Fresh block-buffer v0.10.4
+       Fresh num-traits v0.2.19
+       Fresh num_cpus v1.17.0
+       Fresh strum_macros v0.24.3
+       Fresh sbor-derive v1.3.1
+       Fresh radix-sbor-derive v1.3.1
+       Fresh signature v3.0.0
+       Fresh sha2 v0.11.0
+       Fresh radixdlt-i18n v0.2.0 (/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/crates/i18n)
+       Fresh digest v0.10.7
+       Fresh num-integer v0.1.46
+       Fresh threadpool v1.8.1
+       Fresh strum v0.24.1
+       Fresh sbor v1.3.1
+       Fresh curve25519-dalek v5.0.0
+       Fresh ed25519 v3.0.0
+       Fresh curve25519-dalek v4.1.3
+       Fresh sha2 v0.10.9
+       Fresh bnum v0.11.0
+       Fresh num-bigint v0.4.8
+       Fresh blake2 v0.10.6
+       Fresh sha3 v0.10.9
+       Fresh blst v0.3.17
+       Fresh ed25519-dalek v3.0.0
+       Fresh ed25519-dalek v2.2.0
+       Fresh radix-common v1.3.1
+       Dirty radixdlt-address v0.2.0 (/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/crates/address): the file `crates/address/src/lib.rs` has changed (1790987430.763529133s, 7s after last build at 1790987423.449654375s)
+   Compiling radixdlt-address v0.2.0 (/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/crates/address)
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name radixdlt_address --edition=2021 crates/address/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--deny=clippy::unwrap_used' --deny=unsafe_code --warn=unreachable_pub '--deny=clippy::unimplemented' '--warn=clippy::too_many_lines' '--warn=clippy::todo' '--warn=clippy::redundant_clone' '--warn=clippy::panic' '--deny=clippy::missing_safety_doc' '--warn=clippy::missing_panics_doc' '--warn=clippy::missing_errors_doc' --warn=missing_docs --warn=missing_debug_implementations '--deny=clippy::mem_forget' '--deny=clippy::lossy_float_literal' '--warn=clippy::indexing_slicing' '--deny=clippy::float_cmp' '--warn=clippy::expect_used' '--deny=clippy::dbg_macro' '--warn=clippy::cognitive_complexity' '--warn=clippy::cast_sign_loss' '--warn=clippy::cast_precision_loss' '--warn=clippy::cast_possible_truncation' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=5f1769d745fbf540 -C extra-filename=-9425cdf238266060 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -C incremental=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/incremental -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern hex=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libhex-a08e3650e8671746.rmeta --extern radix_common=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradix_common-48673893da3bb9dc.rmeta --extern radixdlt_i18n=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradixdlt_i18n-0f60364935d988ae.rmeta -L native=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/build/blst-47bdd72d9c37312b/out`
+       Dirty radixdlt-rola v0.2.0 (/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/crates/rola): the dependency `radixdlt-address` was rebuilt
+   Compiling radixdlt-rola v0.2.0 (/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/crates/rola)
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name radixdlt_rola --edition=2021 crates/rola/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--deny=clippy::unwrap_used' --deny=unsafe_code --warn=unreachable_pub '--deny=clippy::unimplemented' '--warn=clippy::too_many_lines' '--warn=clippy::todo' '--warn=clippy::redundant_clone' '--warn=clippy::panic' '--deny=clippy::missing_safety_doc' '--warn=clippy::missing_panics_doc' '--warn=clippy::missing_errors_doc' --warn=missing_docs --warn=missing_debug_implementations '--deny=clippy::mem_forget' '--deny=clippy::lossy_float_literal' '--warn=clippy::indexing_slicing' '--deny=clippy::float_cmp' '--warn=clippy::expect_used' '--deny=clippy::dbg_macro' '--warn=clippy::cognitive_complexity' '--warn=clippy::cast_sign_loss' '--warn=clippy::cast_precision_loss' '--warn=clippy::cast_possible_truncation' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=2e886091dc9c4928 -C extra-filename=-5691f84501561acd --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -C incremental=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/incremental -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern blake2=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libblake2-70b20c890b11d3b4.rmeta --extern ed25519_dalek=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libed25519_dalek-92bff1e6d2b246b3.rmeta --extern hex=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libhex-a08e3650e8671746.rmeta --extern radixdlt_address=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradixdlt_address-9425cdf238266060.rmeta --extern radixdlt_i18n=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradixdlt_i18n-0f60364935d988ae.rmeta -L native=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/build/blst-47bdd72d9c37312b/out`
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name radixdlt_rola --edition=2021 crates/rola/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--deny=clippy::unwrap_used' --deny=unsafe_code --warn=unreachable_pub '--deny=clippy::unimplemented' '--warn=clippy::too_many_lines' '--warn=clippy::todo' '--warn=clippy::redundant_clone' '--warn=clippy::panic' '--deny=clippy::missing_safety_doc' '--warn=clippy::missing_panics_doc' '--warn=clippy::missing_errors_doc' --warn=missing_docs --warn=missing_debug_implementations '--deny=clippy::mem_forget' '--deny=clippy::lossy_float_literal' '--warn=clippy::indexing_slicing' '--deny=clippy::float_cmp' '--warn=clippy::expect_used' '--deny=clippy::dbg_macro' '--warn=clippy::cognitive_complexity' '--warn=clippy::cast_sign_loss' '--warn=clippy::cast_precision_loss' '--warn=clippy::cast_possible_truncation' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=3fac8ac879d5d51b -C extra-filename=-e873b3e04b337bbf --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -C incremental=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/incremental -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern blake2=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libblake2-70b20c890b11d3b4.rlib --extern ed25519_dalek=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libed25519_dalek-92bff1e6d2b246b3.rlib --extern hex=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libhex-a08e3650e8671746.rlib --extern radixdlt_address=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradixdlt_address-9425cdf238266060.rlib --extern radixdlt_i18n=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradixdlt_i18n-0f60364935d988ae.rlib -L native=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/build/blst-47bdd72d9c37312b/out`
+warning: unused import: `virtual_account_address`
+  --> crates/rola/src/lib.rs:28:24
+   |
+28 | use radixdlt_address::{virtual_account_address, virtual_identity_address, AddressError};
+   |                        ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `proof`
+   --> crates/rola/src/lib.rs:169:5
+    |
+169 |     proof: &AccountProof,
+    |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_proof`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `challenge_hex`
+   --> crates/rola/src/lib.rs:170:5
+    |
+170 |     challenge_hex: &str,
+    |     ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_challenge_hex`
+
+warning: unused variable: `dapp_definition`
+   --> crates/rola/src/lib.rs:171:5
+    |
+171 |     dapp_definition: &str,
+    |     ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_dapp_definition`
+
+warning: unused variable: `origin`
+   --> crates/rola/src/lib.rs:172:5
+    |
+172 |     origin: &str,
+    |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_origin`
+
+warning: unused variable: `network_id`
+   --> crates/rola/src/lib.rs:173:5
+    |
+173 |     network_id: u8,
+    |     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_network_id`
+
+warning: `radixdlt-rola` (lib) generated 6 warnings (run `cargo fix --lib -p radixdlt-rola` to apply 6 suggestions)
+warning: `radixdlt-rola` (lib test) generated 5 warnings (5 duplicates)
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name verify --edition=2021 crates/rola/examples/verify.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--deny=clippy::unwrap_used' --deny=unsafe_code --warn=unreachable_pub '--deny=clippy::unimplemented' '--warn=clippy::too_many_lines' '--warn=clippy::todo' '--warn=clippy::redundant_clone' '--warn=clippy::panic' '--deny=clippy::missing_safety_doc' '--warn=clippy::missing_panics_doc' '--warn=clippy::missing_errors_doc' --warn=missing_docs --warn=missing_debug_implementations '--deny=clippy::mem_forget' '--deny=clippy::lossy_float_literal' '--warn=clippy::indexing_slicing' '--deny=clippy::float_cmp' '--warn=clippy::expect_used' '--deny=clippy::dbg_macro' '--warn=clippy::cognitive_complexity' '--warn=clippy::cast_sign_loss' '--warn=clippy::cast_precision_loss' '--warn=clippy::cast_possible_truncation' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=926996b76ae7f977 -C extra-filename=-b16445f6aa8d2ce6 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/examples -C incremental=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/incremental -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern blake2=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libblake2-70b20c890b11d3b4.rlib --extern ed25519_dalek=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libed25519_dalek-92bff1e6d2b246b3.rlib --extern hex=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libhex-a08e3650e8671746.rlib --extern radixdlt_address=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradixdlt_address-9425cdf238266060.rlib --extern radixdlt_i18n=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradixdlt_i18n-0f60364935d988ae.rlib --extern radixdlt_rola=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradixdlt_rola-5691f84501561acd.rlib -L native=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/build/blst-47bdd72d9c37312b/out`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s
+  Executable `/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/radixdlt_rola-e873b3e04b337bbf`
+
+*** result: Success
+
+*** /home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=radixdlt-rola@0.2.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.107
+       Fresh quote v1.0.47
+       Fresh typenum v1.20.1
+       Fresh version_check v0.9.5
+       Fresh semver v1.0.28
+       Fresh syn v2.0.119
+       Fresh rustc_version v0.4.1
+       Fresh subtle v2.6.1
+       Fresh equivalent v1.0.2
+       Fresh hashbrown v0.17.1
+       Fresh cfg-if v1.0.4
+       Fresh autocfg v1.5.1
+       Fresh either v1.17.0
+       Fresh hybrid-array v0.4.14
+       Fresh find-msvc-tools v0.1.9
+       Fresh const-sha1 v0.3.0
+       Fresh shlex v2.0.1
+       Fresh syn v1.0.109
+       Fresh zeroize_derive v1.5.0
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh itertools v0.10.5
+       Fresh cc v1.4.0
+       Fresh cpufeatures v0.2.17
+       Fresh block-buffer v0.12.1
+       Fresh crypto-common v0.2.2
+       Fresh indexmap v2.14.0
+       Fresh preinterpret v0.2.1
+       Fresh generic-array v0.14.7
+       Fresh zeroize v1.9.0
+       Fresh libc v0.2.189
+       Fresh sbor-derive-common v1.3.1
+       Fresh rustversion v1.0.23
+       Fresh heck v0.4.1
+       Fresh signature v2.2.0
+       Fresh digest v0.11.3
+       Fresh radix-rust v1.3.1
+       Fresh paste v1.0.15
+       Fresh cpufeatures v0.3.0
+       Fresh lazy_static v1.5.0
+       Fresh hex v0.4.3
+       Fresh crypto-common v0.1.7
+       Fresh block-buffer v0.10.4
+       Fresh num-traits v0.2.19
+       Fresh num_cpus v1.17.0
+       Fresh ed25519 v2.2.3
+       Fresh strum_macros v0.24.3
+       Fresh sbor-derive v1.3.1
+       Fresh keccak v0.1.6
+       Fresh radix-sbor-derive v1.3.1
+       Fresh bech32 v0.9.1
+       Fresh signature v3.0.0
+       Fresh sha2 v0.11.0
+       Fresh radixdlt-i18n v0.2.0 (/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/crates/i18n)
+       Fresh digest v0.10.7
+       Fresh num-integer v0.1.46
+       Fresh threadpool v1.8.1
+       Fresh strum v0.24.1
+       Fresh sbor v1.3.1
+       Fresh curve25519-dalek v5.0.0
+       Fresh ed25519 v3.0.0
+       Fresh curve25519-dalek v4.1.3
+       Fresh sha2 v0.10.9
+       Fresh blake2 v0.10.6
+       Fresh sha3 v0.10.9
+       Fresh blst v0.3.17
+       Fresh bnum v0.11.0
+       Fresh num-bigint v0.4.8
+       Fresh ed25519-dalek v3.0.0
+       Fresh ed25519-dalek v2.2.0
+       Fresh radix-common v1.3.1
+       Fresh radixdlt-address v0.2.0 (/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/crates/address)
+warning: unused import: `virtual_account_address`
+  --> crates/rola/src/lib.rs:28:24
+   |
+28 | use radixdlt_address::{virtual_account_address, virtual_identity_address, AddressError};
+   |                        ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `proof`
+   --> crates/rola/src/lib.rs:169:5
+    |
+169 |     proof: &AccountProof,
+    |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_proof`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `challenge_hex`
+   --> crates/rola/src/lib.rs:170:5
+    |
+170 |     challenge_hex: &str,
+    |     ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_challenge_hex`
+
+warning: unused variable: `dapp_definition`
+   --> crates/rola/src/lib.rs:171:5
+    |
+171 |     dapp_definition: &str,
+    |     ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_dapp_definition`
+
+warning: unused variable: `origin`
+   --> crates/rola/src/lib.rs:172:5
+    |
+172 |     origin: &str,
+    |     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_origin`
+
+warning: unused variable: `network_id`
+   --> crates/rola/src/lib.rs:173:5
+    |
+173 |     network_id: u8,
+    |     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_network_id`
+
+warning: `radixdlt-rola` (lib) generated 6 warnings (run `cargo fix --lib -p radixdlt-rola` to apply 6 suggestions)
+warning: `radixdlt-rola` (lib test) generated 5 warnings (5 duplicates)
+       Fresh radixdlt-rola v0.2.0 (/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/crates/rola)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running `/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/radixdlt_rola-e873b3e04b337bbf`
+
+running 9 tests
+test tests::rola_message_is_blake2b_256 ... ok
+test tests::malformed_input_is_an_error_not_a_panic ... FAILED
+test tests::a_genuine_proof_verifies ... ok
+test tests::a_forged_signature_is_rejected ... FAILED
+test tests::a_proof_does_not_transfer_to_another_dapp_or_origin ... FAILED
+test tests::the_network_is_part_of_the_identity ... FAILED
+test tests::a_signature_over_another_challenge_is_rejected ... FAILED
+test tests::a_valid_signature_for_the_wrong_account_is_rejected ... FAILED
+test tests::a_persona_proof_verifies_against_its_identity ... ok
+
+failures:
+
+---- tests::malformed_input_is_an_error_not_a_panic stdout ----
+
+thread 'tests::malformed_input_is_an_error_not_a_panic' (4065284) panicked at crates/rola/src/lib.rs:362:9:
+assertion failed: matches!(verify_account_proof(&p, &CHALLENGE.repeat(32), DAPP, ORIGIN,
+    NETWORK), Err(RolaError::InvalidPublicKeyHex(_)))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tests::a_forged_signature_is_rejected stdout ----
+
+thread 'tests::a_forged_signature_is_rejected' (4065278) panicked at crates/rola/src/lib.rs:306:9:
+assertion `left == right` failed
+  left: Ok(())
+ right: Err(SignatureMismatch)
+
+---- tests::a_proof_does_not_transfer_to_another_dapp_or_origin stdout ----
+
+thread 'tests::a_proof_does_not_transfer_to_another_dapp_or_origin' (4065281) panicked at crates/rola/src/lib.rs:330:9:
+assertion failed: verify_account_proof(&proof, &CHALLENGE.repeat(32), other_dapp, ORIGIN,
+        NETWORK).is_err()
+
+---- tests::the_network_is_part_of_the_identity stdout ----
+
+thread 'tests::the_network_is_part_of_the_identity' (4065286) panicked at crates/rola/src/lib.rs:353:9:
+assertion failed: verify_account_proof(&proof, &CHALLENGE.repeat(32), DAPP, ORIGIN, 1).is_err()
+
+---- tests::a_signature_over_another_challenge_is_rejected stdout ----
+
+thread 'tests::a_signature_over_another_challenge_is_rejected' (4065282) panicked at crates/rola/src/lib.rs:318:9:
+assertion `left == right` failed
+  left: Ok(())
+ right: Err(SignatureMismatch)
+
+---- tests::a_valid_signature_for_the_wrong_account_is_rejected stdout ----
+
+thread 'tests::a_valid_signature_for_the_wrong_account_is_rejected' (4065283) panicked at crates/rola/src/lib.rs:344:22:
+expected AddressMismatch, got Ok(())
+
+
+failures:
+    tests::a_forged_signature_is_rejected
+    tests::a_proof_does_not_transfer_to_another_dapp_or_origin
+    tests::a_signature_over_another_challenge_is_rejected
+    tests::a_valid_signature_for_the_wrong_account_is_rejected
+    tests::malformed_input_is_an_error_not_a_panic
+    tests::the_network_is_part_of_the_identity
+
+test result: FAILED. 3 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p radixdlt-rola --lib`
+
+*** result: Failure(101)

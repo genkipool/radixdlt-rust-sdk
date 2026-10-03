@@ -1,0 +1,241 @@
+
+*** crates/address/src/lib.rs:102:5: replace virtual_identity_address -> Result<String, AddressError> with Ok(String::new())
+
+*** mutation diff:
+--- crates/address/src/lib.rs
++++ replace virtual_identity_address -> Result<String, AddressError> with Ok(String::new())
+@@ -94,25 +94,17 @@
+ }
+ 
+ /// Derives the `identity_...` (bech32m) address of an Ed25519 virtual identity — a persona's
+ /// address — the same way [`virtual_account_address`] does an account's.
+ ///
+ /// # Errors
+ /// As [`virtual_account_address`].
+ pub fn virtual_identity_address(public_key_hex: &str, network_id: u8) -> Result<String, AddressError> {
+-    let bytes = hex::decode(public_key_hex).map_err(|e| AddressError::InvalidHex(e.to_string()))?;
+-    let pk = Ed25519PublicKey::try_from(bytes.as_slice()).map_err(|_| AddressError::InvalidKeyLength)?;
+-    let network = network_by_id(network_id).ok_or(AddressError::UnknownNetwork(network_id))?;
+-
+-    let identity = ComponentAddress::preallocated_identity_from_public_key(&pk);
+-    let encoder = AddressBech32Encoder::new(&network);
+-    encoder
+-        .encode(identity.as_bytes())
+-        .map_err(|e| AddressError::Encode(format!("{e:?}")))
++    Ok(String::new()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn derives_known_address() {
+
+
+*** /home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=radixdlt-address@0.2.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.107
+       Fresh quote v1.0.47
+       Fresh version_check v0.9.5
+       Fresh syn v2.0.119
+   Compiling typenum v1.20.1
+       Fresh equivalent v1.0.2
+       Fresh hashbrown v0.17.1
+       Fresh autocfg v1.5.1
+   Compiling subtle v2.6.1
+       Fresh either v1.17.0
+       Fresh semver v1.0.28
+       Fresh const-sha1 v0.3.0
+       Fresh shlex v2.0.1
+       Fresh find-msvc-tools v0.1.9
+       Fresh cfg-if v1.0.4
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name typenum --edition=2018 /home/lrb85/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/typenum-1.20.1/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("const-generics", "i128", "scale-info", "scale_info", "strict"))' -C metadata=29f4ce3bd4e27d4e -C extra-filename=-d6cec8a876ae5341 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --cap-lints allow`
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name subtle --edition=2018 /home/lrb85/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/subtle-2.6.1/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("const-generics", "core_hint_black_box", "default", "i128", "nightly", "std"))' -C metadata=f617224ce486a33a -C extra-filename=-237dbccc590c228e --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --cap-lints allow`
+       Fresh rustc_version v0.4.1
+       Fresh itertools v0.10.5
+       Fresh zeroize_derive v1.5.0
+       Fresh cc v1.4.0
+       Fresh cpufeatures v0.2.17
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh preinterpret v0.2.1
+       Fresh indexmap v2.14.0
+       Fresh syn v1.0.109
+       Fresh libc v0.2.189
+       Fresh zeroize v1.9.0
+       Fresh rustversion v1.0.23
+       Fresh signature v2.2.0
+       Fresh heck v0.4.1
+       Fresh radix-rust v1.3.1
+       Fresh paste v1.0.15
+       Fresh keccak v0.1.6
+       Fresh hex v0.4.3
+       Fresh lazy_static v1.5.0
+       Fresh bech32 v0.9.1
+       Fresh num-traits v0.2.19
+       Fresh sbor-derive-common v1.3.1
+       Fresh num_cpus v1.17.0
+       Fresh strum_macros v0.24.3
+       Fresh ed25519 v2.2.3
+       Fresh radixdlt-i18n v0.2.0 (/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/crates/i18n)
+       Fresh num-integer v0.1.46
+       Fresh threadpool v1.8.1
+       Fresh sbor-derive v1.3.1
+       Fresh strum v0.24.1
+       Fresh radix-sbor-derive v1.3.1
+       Fresh sbor v1.3.1
+       Fresh num-bigint v0.4.8
+       Fresh bnum v0.11.0
+       Fresh blst v0.3.17
+   Compiling generic-array v0.14.7
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name generic_array --edition=2015 /home/lrb85/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/generic-array-0.14.7/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="more_lengths"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("more_lengths", "serde", "zeroize"))' -C metadata=bc31416cd2f17c42 -C extra-filename=-a406cea2a811baf1 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern typenum=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libtypenum-d6cec8a876ae5341.rmeta --cap-lints allow --cfg relaxed_coherence`
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name crypto_common --edition=2018 /home/lrb85/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto-common-0.1.7/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("getrandom", "rand_core", "std"))' -C metadata=6b7ded94bd7b47f9 -C extra-filename=-ae4e6bd92e3384c5 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern generic_array=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libgeneric_array-a406cea2a811baf1.rmeta --extern typenum=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libtypenum-d6cec8a876ae5341.rmeta --cap-lints allow`
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name block_buffer --edition=2018 /home/lrb85/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/block-buffer-0.10.4/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=080c49a2126a3fd6 -C extra-filename=-94558df45ae67a09 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern generic_array=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libgeneric_array-a406cea2a811baf1.rmeta --cap-lints allow`
+   Compiling digest v0.10.7
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name digest --edition=2018 /home/lrb85/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/digest-0.10.7/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="alloc"' --cfg 'feature="block-buffer"' --cfg 'feature="core-api"' --cfg 'feature="default"' --cfg 'feature="mac"' --cfg 'feature="std"' --cfg 'feature="subtle"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "blobby", "block-buffer", "const-oid", "core-api", "default", "dev", "mac", "oid", "rand_core", "std", "subtle"))' -C metadata=1080b29475b42585 -C extra-filename=-28d52c1a6615d7d6 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern block_buffer=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libblock_buffer-94558df45ae67a09.rmeta --extern crypto_common=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libcrypto_common-ae4e6bd92e3384c5.rmeta --extern subtle=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libsubtle-237dbccc590c228e.rmeta --cap-lints allow`
+   Compiling curve25519-dalek v4.1.3
+   Compiling sha2 v0.10.9
+   Compiling blake2 v0.10.6
+   Compiling sha3 v0.10.9
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name curve25519_dalek --edition=2021 /home/lrb85/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/curve25519-dalek-4.1.3/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="alloc"' --cfg 'feature="digest"' --cfg 'feature="precomputed-tables"' --cfg 'feature="zeroize"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "default", "digest", "ff", "group", "group-bits", "legacy_compatibility", "precomputed-tables", "rand_core", "serde", "zeroize"))' -C metadata=d7924201064b0a2d -C extra-filename=-083d960f4317cf2f --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern cfg_if=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libcfg_if-9d8e838b3d041728.rmeta --extern cpufeatures=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libcpufeatures-0682f7078379b6b3.rmeta --extern curve25519_dalek_derive=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libcurve25519_dalek_derive-0c7a558007500674.so --extern digest=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libdigest-28d52c1a6615d7d6.rmeta --extern subtle=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libsubtle-237dbccc590c228e.rmeta --extern zeroize=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libzeroize-eabb2cfdfb434c13.rmeta --cap-lints allow --cfg 'curve25519_dalek_bits="64"' --cfg 'curve25519_dalek_backend="simd"'`
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name sha2 --edition=2018 /home/lrb85/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("asm", "asm-aarch64", "compress", "default", "force-soft", "force-soft-compact", "loongarch64_asm", "oid", "sha2-asm", "std"))' -C metadata=ac2d5507e1ea28b4 -C extra-filename=-34e9ed80dc5db8db --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern cfg_if=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libcfg_if-9d8e838b3d041728.rmeta --extern cpufeatures=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libcpufeatures-0682f7078379b6b3.rmeta --extern digest=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libdigest-28d52c1a6615d7d6.rmeta --cap-lints allow`
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name blake2 --edition=2018 /home/lrb85/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blake2-0.10.6/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "reset", "simd", "simd_asm", "simd_opt", "size_opt", "std"))' -C metadata=13878a250ba1214c -C extra-filename=-28c57fc9ccd3fa96 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern digest=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libdigest-28d52c1a6615d7d6.rmeta --cap-lints allow`
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name sha3 --edition=2018 /home/lrb85/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha3-0.10.9/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("asm", "default", "oid", "reset", "std", "zeroize"))' -C metadata=04be65905627df32 -C extra-filename=-73184c79df9d87a5 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern digest=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libdigest-28d52c1a6615d7d6.rmeta --extern keccak=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libkeccak-c8685102af7ceb61.rmeta --cap-lints allow`
+   Compiling ed25519-dalek v2.2.0
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name ed25519_dalek --edition=2021 /home/lrb85/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ed25519-dalek-2.2.0/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="alloc"' --cfg 'feature="fast"' --cfg 'feature="std"' --cfg 'feature="zeroize"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "asm", "batch", "default", "digest", "fast", "hazmat", "legacy_compatibility", "merlin", "pem", "pkcs8", "rand_core", "serde", "signature", "std", "zeroize"))' -C metadata=6c2d3e673f62c120 -C extra-filename=-7c4c09107981b283 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern curve25519_dalek=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libcurve25519_dalek-083d960f4317cf2f.rmeta --extern ed25519=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libed25519-34b3d63931425e7b.rmeta --extern sha2=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libsha2-34e9ed80dc5db8db.rmeta --extern subtle=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libsubtle-237dbccc590c228e.rmeta --extern zeroize=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libzeroize-eabb2cfdfb434c13.rmeta --cap-lints allow`
+   Compiling radix-common v1.3.1
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name radix_common --edition=2021 /home/lrb85/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/radix-common-1.3.1/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "arbitrary", "coverage", "default", "full_math_benches", "fuzzing", "resource_tracker", "secp256k1", "secp256k1_sign_and_validate", "serde", "std"))' -C metadata=f755d96f9b8865b1 -C extra-filename=-b38156f13891d2d9 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern bech32=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libbech32-2e08ec9a22fc08e0.rmeta --extern blake2=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libblake2-28c57fc9ccd3fa96.rmeta --extern blst=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libblst-41579ba4e27122e1.rmeta --extern bnum=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libbnum-b4c9557e854577ab.rmeta --extern ed25519_dalek=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libed25519_dalek-7c4c09107981b283.rmeta --extern hex=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libhex-a08e3650e8671746.rmeta --extern lazy_static=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/liblazy_static-a0a87489f2e1a5ba.rmeta --extern num_bigint=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libnum_bigint-b2f010e61414a1b5.rmeta --extern num_integer=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libnum_integer-c57539d8f4199b87.rmeta --extern num_traits=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libnum_traits-853ab8e56055b96f.rmeta --extern paste=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libpaste-0b8faf43a869db8d.so --extern radix_rust=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradix_rust-687a9198c4b03f1a.rmeta --extern radix_sbor_derive=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradix_sbor_derive-44ddb09b0ff774e1.so --extern sbor=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libsbor-efae1a4f92f76664.rmeta --extern sha3=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libsha3-73184c79df9d87a5.rmeta --extern strum=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libstrum-884a600e7ee34d67.rmeta --extern zeroize=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libzeroize-eabb2cfdfb434c13.rmeta --cap-lints allow -L native=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/build/blst-47bdd72d9c37312b/out`
+   Compiling radixdlt-address v0.2.0 (/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/crates/address)
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name radixdlt_address --edition=2021 crates/address/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--deny=clippy::unwrap_used' --deny=unsafe_code --warn=unreachable_pub '--deny=clippy::unimplemented' '--warn=clippy::too_many_lines' '--warn=clippy::todo' '--warn=clippy::redundant_clone' '--warn=clippy::panic' '--deny=clippy::missing_safety_doc' '--warn=clippy::missing_panics_doc' '--warn=clippy::missing_errors_doc' --warn=missing_docs --warn=missing_debug_implementations '--deny=clippy::mem_forget' '--deny=clippy::lossy_float_literal' '--warn=clippy::indexing_slicing' '--deny=clippy::float_cmp' '--warn=clippy::expect_used' '--deny=clippy::dbg_macro' '--warn=clippy::cognitive_complexity' '--warn=clippy::cast_sign_loss' '--warn=clippy::cast_precision_loss' '--warn=clippy::cast_possible_truncation' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=52a43e013b2963c8 -C extra-filename=-3f4e5105c7f0af67 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -C incremental=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/incremental -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern hex=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libhex-a08e3650e8671746.rmeta --extern radix_common=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradix_common-b38156f13891d2d9.rmeta --extern radixdlt_i18n=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradixdlt_i18n-0f60364935d988ae.rmeta -L native=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/build/blst-47bdd72d9c37312b/out`
+warning: unused variable: `public_key_hex`
+   --> crates/address/src/lib.rs:101:33
+    |
+101 | pub fn virtual_identity_address(public_key_hex: &str, network_id: u8) -> Result<String, AddressError> {
+    |                                 ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_public_key_hex`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `network_id`
+   --> crates/address/src/lib.rs:101:55
+    |
+101 | pub fn virtual_identity_address(public_key_hex: &str, network_id: u8) -> Result<String, AddressError> {
+    |                                                       ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_network_id`
+
+warning: `radixdlt-address` (lib) generated 2 warnings (run `cargo fix --lib -p radixdlt-address` to apply 2 suggestions)
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name radixdlt_address --edition=2021 crates/address/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--deny=clippy::unwrap_used' --deny=unsafe_code --warn=unreachable_pub '--deny=clippy::unimplemented' '--warn=clippy::too_many_lines' '--warn=clippy::todo' '--warn=clippy::redundant_clone' '--warn=clippy::panic' '--deny=clippy::missing_safety_doc' '--warn=clippy::missing_panics_doc' '--warn=clippy::missing_errors_doc' --warn=missing_docs --warn=missing_debug_implementations '--deny=clippy::mem_forget' '--deny=clippy::lossy_float_literal' '--warn=clippy::indexing_slicing' '--deny=clippy::float_cmp' '--warn=clippy::expect_used' '--deny=clippy::dbg_macro' '--warn=clippy::cognitive_complexity' '--warn=clippy::cast_sign_loss' '--warn=clippy::cast_precision_loss' '--warn=clippy::cast_possible_truncation' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=e51278f649db24bb -C extra-filename=-7e89119fa8c97120 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps -C incremental=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/incremental -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern hex=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libhex-a08e3650e8671746.rlib --extern radix_common=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradix_common-b38156f13891d2d9.rlib --extern radixdlt_i18n=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradixdlt_i18n-0f60364935d988ae.rlib -L native=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/build/blst-47bdd72d9c37312b/out`
+     Running `/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name derive --edition=2021 crates/address/examples/derive.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--deny=clippy::unwrap_used' --deny=unsafe_code --warn=unreachable_pub '--deny=clippy::unimplemented' '--warn=clippy::too_many_lines' '--warn=clippy::todo' '--warn=clippy::redundant_clone' '--warn=clippy::panic' '--deny=clippy::missing_safety_doc' '--warn=clippy::missing_panics_doc' '--warn=clippy::missing_errors_doc' --warn=missing_docs --warn=missing_debug_implementations '--deny=clippy::mem_forget' '--deny=clippy::lossy_float_literal' '--warn=clippy::indexing_slicing' '--deny=clippy::float_cmp' '--warn=clippy::expect_used' '--deny=clippy::dbg_macro' '--warn=clippy::cognitive_complexity' '--warn=clippy::cast_sign_loss' '--warn=clippy::cast_precision_loss' '--warn=clippy::cast_possible_truncation' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=2102c624e83020c5 -C extra-filename=-d18937b9cd1eeee5 --out-dir /home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/examples -C incremental=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/incremental -L dependency=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps --extern hex=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libhex-a08e3650e8671746.rlib --extern radix_common=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradix_common-b38156f13891d2d9.rlib --extern radixdlt_address=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradixdlt_address-3f4e5105c7f0af67.rlib --extern radixdlt_i18n=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/libradixdlt_i18n-0f60364935d988ae.rlib -L native=/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/build/blst-47bdd72d9c37312b/out`
+warning: `radixdlt-address` (lib test) generated 2 warnings (2 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.61s
+  Executable `/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/radixdlt_address-7e89119fa8c97120`
+
+*** result: Success
+
+*** /home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=radixdlt-address@0.2.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.107
+       Fresh version_check v0.9.5
+       Fresh typenum v1.20.1
+       Fresh hashbrown v0.17.1
+       Fresh equivalent v1.0.2
+       Fresh quote v1.0.47
+       Fresh autocfg v1.5.1
+       Fresh subtle v2.6.1
+       Fresh either v1.17.0
+       Fresh semver v1.0.28
+       Fresh shlex v2.0.1
+       Fresh const-sha1 v0.3.0
+       Fresh find-msvc-tools v0.1.9
+       Fresh cpufeatures v0.2.17
+       Fresh cfg-if v1.0.4
+       Fresh indexmap v2.14.0
+       Fresh syn v2.0.119
+       Fresh syn v1.0.109
+       Fresh rustc_version v0.4.1
+       Fresh itertools v0.10.5
+       Fresh cc v1.4.0
+       Fresh signature v2.2.0
+       Fresh heck v0.4.1
+       Fresh hex v0.4.3
+       Fresh keccak v0.1.6
+       Fresh lazy_static v1.5.0
+       Fresh bech32 v0.9.1
+       Fresh radixdlt-i18n v0.2.0 (/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/crates/i18n)
+       Fresh generic-array v0.14.7
+       Fresh zeroize_derive v1.5.0
+       Fresh sbor-derive-common v1.3.1
+       Fresh libc v0.2.189
+       Fresh preinterpret v0.2.1
+       Fresh rustversion v1.0.23
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh ed25519 v2.2.3
+       Fresh paste v1.0.15
+       Fresh crypto-common v0.1.7
+       Fresh block-buffer v0.10.4
+       Fresh num-traits v0.2.19
+       Fresh zeroize v1.9.0
+       Fresh num_cpus v1.17.0
+       Fresh radix-rust v1.3.1
+       Fresh strum_macros v0.24.3
+       Fresh sbor-derive v1.3.1
+       Fresh radix-sbor-derive v1.3.1
+       Fresh digest v0.10.7
+       Fresh num-integer v0.1.46
+       Fresh threadpool v1.8.1
+       Fresh sbor v1.3.1
+       Fresh strum v0.24.1
+       Fresh sha2 v0.10.9
+       Fresh curve25519-dalek v4.1.3
+       Fresh sha3 v0.10.9
+       Fresh num-bigint v0.4.8
+       Fresh blst v0.3.17
+       Fresh bnum v0.11.0
+       Fresh blake2 v0.10.6
+       Fresh ed25519-dalek v2.2.0
+       Fresh radix-common v1.3.1
+warning: unused variable: `public_key_hex`
+   --> crates/address/src/lib.rs:101:33
+    |
+101 | pub fn virtual_identity_address(public_key_hex: &str, network_id: u8) -> Result<String, AddressError> {
+    |                                 ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_public_key_hex`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `network_id`
+   --> crates/address/src/lib.rs:101:55
+    |
+101 | pub fn virtual_identity_address(public_key_hex: &str, network_id: u8) -> Result<String, AddressError> {
+    |                                                       ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_network_id`
+
+warning: `radixdlt-address` (lib) generated 2 warnings (run `cargo fix --lib -p radixdlt-address` to apply 2 suggestions)
+warning: `radixdlt-address` (lib test) generated 2 warnings (2 duplicates)
+       Fresh radixdlt-address v0.2.0 (/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/crates/address)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running `/home/lrb85/Documentos/radix/radixdlt-rust-sdk/target/qa/mutants-scratch/cargo-mutants-radixdlt-rust-sdk-NSESwP.tmp/target/debug/deps/radixdlt_address-7e89119fa8c97120`
+
+running 6 tests
+test tests::an_identity_is_not_the_account_of_the_same_key ... FAILED
+test tests::an_unknown_network_id_has_no_network ... ok
+test tests::unknown_network_errors ... ok
+test tests::every_network_id_maps_to_its_own_network ... ok
+test tests::derives_known_address ... ok
+test tests::the_same_key_derives_a_different_address_per_network ... ok
+
+failures:
+
+---- tests::an_identity_is_not_the_account_of_the_same_key stdout ----
+
+thread 'tests::an_identity_is_not_the_account_of_the_same_key' (4064938) panicked at crates/address/src/lib.rs:124:9:
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::an_identity_is_not_the_account_of_the_same_key
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p radixdlt-address --lib`
+
+*** result: Failure(101)

@@ -1,0 +1,371 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 10.969564377,
+          "process_status": "Success",
+          "argv": [
+            "/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=radixdlt-address@0.2.0",
+            "--package=radixdlt-rola@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.502429408,
+          "process_status": "Success",
+          "argv": [
+            "/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=radixdlt-address@0.2.0",
+            "--package=radixdlt-rola@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/address/src/lib.rs:102:5: replace virtual_identity_address -> Result<String, AddressError> with Ok(String::new())",
+          "package": "radixdlt-address",
+          "file": "crates/address/src/lib.rs",
+          "function": {
+            "function_name": "virtual_identity_address",
+            "return_type": "-> Result<String, AddressError>",
+            "span": {
+              "start": {
+                "line": 96,
+                "column": 1
+              },
+              "end": {
+                "line": 111,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 102,
+              "column": 5
+            },
+            "end": {
+              "line": 110,
+              "column": 61
+            }
+          },
+          "replacement": "Ok(String::new())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__address__src__lib.rs_line_102_col_5.log",
+      "diff_path": "diff/crates__address__src__lib.rs_line_102_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 4.9100619,
+          "process_status": "Success",
+          "argv": [
+            "/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=radixdlt-address@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101405931,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=radixdlt-address@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/address/src/lib.rs:102:5: replace virtual_identity_address -> Result<String, AddressError> with Ok(\"xyzzy\".into())",
+          "package": "radixdlt-address",
+          "file": "crates/address/src/lib.rs",
+          "function": {
+            "function_name": "virtual_identity_address",
+            "return_type": "-> Result<String, AddressError>",
+            "span": {
+              "start": {
+                "line": 96,
+                "column": 1
+              },
+              "end": {
+                "line": 111,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 102,
+              "column": 5
+            },
+            "end": {
+              "line": 110,
+              "column": 61
+            }
+          },
+          "replacement": "Ok(\"xyzzy\".into())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__address__src__lib.rs_line_102_col_5_001.log",
+      "diff_path": "diff/crates__address__src__lib.rs_line_102_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.602212881,
+          "process_status": "Success",
+          "argv": [
+            "/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=radixdlt-address@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101126439,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=radixdlt-address@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/rola/src/lib.rs:175:5: replace verify_account_proof -> Result<(), RolaError> with Ok(())",
+          "package": "radixdlt-rola",
+          "file": "crates/rola/src/lib.rs",
+          "function": {
+            "function_name": "verify_account_proof",
+            "return_type": "-> Result<(), RolaError>",
+            "span": {
+              "start": {
+                "line": 160,
+                "column": 1
+              },
+              "end": {
+                "line": 183,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 175,
+              "column": 5
+            },
+            "end": {
+              "line": 182,
+              "column": 6
+            }
+          },
+          "replacement": "Ok(())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__rola__src__lib.rs_line_175_col_5.log",
+      "diff_path": "diff/crates__rola__src__lib.rs_line_175_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.602760563,
+          "process_status": "Success",
+          "argv": [
+            "/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=radixdlt-rola@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101246874,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=radixdlt-rola@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/rola/src/lib.rs:198:5: replace verify_persona_proof -> Result<(), RolaError> with Ok(())",
+          "package": "radixdlt-rola",
+          "file": "crates/rola/src/lib.rs",
+          "function": {
+            "function_name": "verify_persona_proof",
+            "return_type": "-> Result<(), RolaError>",
+            "span": {
+              "start": {
+                "line": 185,
+                "column": 1
+              },
+              "end": {
+                "line": 206,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 198,
+              "column": 5
+            },
+            "end": {
+              "line": 205,
+              "column": 6
+            }
+          },
+          "replacement": "Ok(())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__rola__src__lib.rs_line_198_col_5.log",
+      "diff_path": "diff/crates__rola__src__lib.rs_line_198_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.3535937169999999,
+          "process_status": "Success",
+          "argv": [
+            "/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=radixdlt-rola@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101125997,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=radixdlt-rola@0.2.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/rola/src/lib.rs:216:5: replace verify_proof -> Result<(), RolaError> with Ok(())",
+          "package": "radixdlt-rola",
+          "file": "crates/rola/src/lib.rs",
+          "function": {
+            "function_name": "verify_proof",
+            "return_type": "-> Result<(), RolaError>",
+            "span": {
+              "start": {
+                "line": 208,
+                "column": 1
+              },
+              "end": {
+                "line": 248,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 216,
+              "column": 5
+            },
+            "end": {
+              "line": 247,
+              "column": 11
+            }
+          },
+          "replacement": "Ok(())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__rola__src__lib.rs_line_216_col_5.log",
+      "diff_path": "diff/crates__rola__src__lib.rs_line_216_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.554104683,
+          "process_status": "Success",
+          "argv": [
+            "/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=radixdlt-rola@0.2.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101487173,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/lrb85/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=radixdlt-rola@0.2.0"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 5,
+  "missed": 0,
+  "caught": 5,
+  "timeout": 0,
+  "unviable": 0,
+  "success": 0,
+  "start_time": "2026-10-03T00:27:08.301580118Z",
+  "end_time": "2026-10-03T00:30:56.009521554Z",
+  "cargo_mutants_version": "27.1.0"
+}

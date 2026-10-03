@@ -1,0 +1,5 @@
+crates/address/src/lib.rs:102:5: replace virtual_identity_address -> Result<String, AddressError> with Ok(String::new())
+crates/address/src/lib.rs:102:5: replace virtual_identity_address -> Result<String, AddressError> with Ok("xyzzy".into())
+crates/rola/src/lib.rs:175:5: replace verify_account_proof -> Result<(), RolaError> with Ok(())
+crates/rola/src/lib.rs:198:5: replace verify_persona_proof -> Result<(), RolaError> with Ok(())
+crates/rola/src/lib.rs:216:5: replace verify_proof -> Result<(), RolaError> with Ok(())

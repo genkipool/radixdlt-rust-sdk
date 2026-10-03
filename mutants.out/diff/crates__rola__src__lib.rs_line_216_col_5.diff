@@ -1,0 +1,52 @@
+--- crates/rola/src/lib.rs
++++ replace verify_proof -> Result<(), RolaError> with Ok(())
+@@ -208,48 +208,17 @@
+ fn verify_proof(
+     proof: &AccountProof,
+     challenge_hex: &str,
+     dapp_definition: &str,
+     origin: &str,
+     network_id: u8,
+     derive: fn(&str, u8) -> Result<String, AddressError>,
+ ) -> Result<(), RolaError> {
+-    let message = signature_message(challenge_hex, dapp_definition, origin)?;
+-
+-    // 1) Signature valid for the public key.
+-    let pk_bytes =
+-        hex::decode(&proof.public_key_hex).map_err(|e| RolaError::InvalidPublicKeyHex(e.to_string()))?;
+-    let pk_arr: [u8; 32] = pk_bytes
+-        .as_slice()
+-        .try_into()
+-        .map_err(|_| RolaError::InvalidPublicKey)?;
+-    let verifying_key = VerifyingKey::from_bytes(&pk_arr).map_err(|_| RolaError::InvalidPublicKey)?;
+-
+-    let sig_bytes =
+-        hex::decode(&proof.signature_hex).map_err(|e| RolaError::InvalidSignatureHex(e.to_string()))?;
+-    let sig_arr: [u8; 64] = sig_bytes
+-        .as_slice()
+-        .try_into()
+-        .map_err(|_| RolaError::InvalidSignatureLength)?;
+-    let signature = Signature::from_bytes(&sig_arr);
+-
+-    verifying_key
+-        .verify_strict(&message, &signature)
+-        .map_err(|_| RolaError::SignatureMismatch)?;
+-
+-    // 2) The public key derives to the claimed address (virtual account or identity).
+-    let derived = derive(&proof.public_key_hex, network_id)?;
+-    if derived != proof.address {
+-        return Err(RolaError::AddressMismatch {
+-            derived,
+-            claimed: proof.address.clone(),
+-        });
+-    }
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn rola_message_is_blake2b_256() {

@@ -40,6 +40,19 @@ curl -fsSL https://raw.githubusercontent.com/genkipool/radixdlt-rust-sdk/main/sc
 irm https://raw.githubusercontent.com/genkipool/radixdlt-rust-sdk/main/scripts/install-connector.ps1 | iex
 ```
 
+## Update
+
+```sh
+radix-connector-mcp check-update   # exit code 10 when a newer release exists, 0 when up to date
+radix-connector-mcp update         # download, verify (SHA-256 + it runs), back up, replace
+radix-connector-mcp update --tag connector-v0.4.0   # a specific release (also to roll back)
+```
+
+An agent can do the same with the `check_update` / `update_connector` tools. **Updating never
+requires pairing the phone again**: the pairing lives in `connector.json` in the config
+directory, and an update only replaces the binary. Restart the MCP client afterwards so it
+launches the new version.
+
 ## Register with an MCP client
 
 Claude Code:
@@ -71,8 +84,48 @@ If the binary is not on your `PATH`, use its absolute path as `command`.
 | `send_transaction` | Sends a manifest to sign **and submit**; returns the intent hash. Supports `blobs` (inline hex) and `blob_files` (local paths). |
 | `deploy_package` | Publishes a Scrypto package: reads the `.wasm` from a local path, **dry-runs it on the Gateway first** (aborts if it would fail), attaches it as a blob, signs and submits. |
 | `request_pre_authorization` | Signs a subintent (V2 pre-authorization) without submitting. |
-| `request_account_proof` | ROLA "log in with Radix"; verifies the proof locally. |
+| `request_account_proof` | ROLA "log in with Radix" with an account; verifies the proof locally. |
+| `request_login` | Logs in with a **persona** (authorized request): with a challenge the persona signs it and the proof is verified here; `without_challenge` only names it. Can ask for accounts (with proofs) and persona data in the same approval. |
+| `request_ownership_proof` | Proves **exact** accounts (and the persona) as a persona already logged in — nothing to pick, one confirmation. |
+| `request_authorized` | The whole authorized vocabulary: `login` / `login_without_challenge` / `use_persona`, `reset`, proof of ownership, accounts and persona data **one-time or ongoing**. |
+| `request_data` | Unauthorized request: accounts with **exact or minimum** quantity (optionally with proofs) and persona data — name, emails, **phone numbers**. |
+| `pending_requests` | What may still be waiting in the wallet's queue, and what to do about it. |
+| `await_response` | Collects the answer to an earlier request **without sending it again**. |
+| `cancel_request` | Stops a request here and stops it blocking new ones (the wallet itself has no remote cancel — the result says whether it is still on the phone). |
+| `check_wallet_connection` | Opens and closes a channel, sending nothing: is the wallet app reachable right now? |
+| `check_dapp_identity` | Runs the wallet's own dApp verification (dApp definition ↔ origin ↔ `radix.json`). |
+| `connector_log` | The connector's trace of every request, step by step. |
 | `transaction_status` | Reads a transaction's commit status from the Gateway. |
+
+### Talking to a phone: delivery, the queue, and failures
+
+The Radix Wallet shows **one request at a time** from an in-memory queue, and nothing a dApp
+sends can withdraw one: a request leaves the queue when the person approves or rejects it, or
+when the app is closed. The connector is built around that:
+
+- **It knows whether the wallet got it.** Every request is logged step by step (channel open →
+  *delivered*, i.e. the wallet confirmed receipt → answered). A request the wallet never
+  confirmed is sent again, with the same interaction id, on a fresh channel (up to 3 attempts);
+  a confirmed one is never sent twice.
+- **It does not flood the queue.** While a delivered request is unanswered, new requests to
+  that wallet are refused with `PENDING_IN_WALLET` (pass `ignore_pending: true` to override).
+  `await_response` collects a late answer, `cancel_request` clears one.
+- **It waits for the wallet to let go of a channel.** The wallet keeps one channel per link and,
+  ~5 s after a connection closes, tears down whatever channel the link has then — so a request
+  sent right after another could reach the phone and lose its answer. The connector waits 8 s
+  after a channel closes before opening the next one on the same link (across processes too),
+  and reopens a channel lost after delivery to keep waiting for the answer.
+- **It checks the dApp identity first.** When `{origin}/.well-known/radix.json` does not list the
+  dApp definition, the wallet drops the request *without answering*; the connector refuses to
+  send it (`DAPP_NOT_VERIFIED`) instead of waiting out the timeout.
+- **Failures say what to do.** Each carries a `code` (`WALLET_UNREACHABLE`, `NOT_DELIVERED`,
+  `NO_ANSWER`, `REJECTED_BY_USER`, `WRONG_NETWORK`, `INVALID_REQUEST`, …), a `stage`, whether
+  resending is safe (`retry_safe`), a hint, and the interaction id — as text and as
+  `structuredContent`. Late answers to earlier requests (e.g. a transaction approved after its
+  call timed out) are reported, not dropped. `connector_log` traces any request.
+
+Tool calls run concurrently, so `cancel_request` and `pending_requests` answer while another
+call is waiting for the phone, and a client's `notifications/cancelled` stops the call it names.
 
 Every signing tool requires an explicit `network` (`"mainnet"` or `"stokenet"`)
 — there is no default, on purpose.
@@ -81,8 +134,11 @@ Every signing tool requires an explicit `network` (`"mainnet"` or `"stokenet"`)
 
 When the wallet signs, it shows **which dApp** is asking. That identity is a pair
 of values — the dApp definition address and the origin — that must match the
-`claimed_websites` / dApp definition registered on-chain, or the wallet marks the
-request as *unverified* (and ROLA verification fails outright).
+`claimed_websites` / dApp definition registered on-chain, and the origin's
+`/.well-known/radix.json` must list it. Otherwise the wallet (without developer mode)
+refuses the request — or, when `radix.json` loads but does not list the dApp, drops
+it without answering. The connector checks all of this before sending
+(`check_dapp_identity`; `skip_dapp_check: true` for a wallet in developer mode).
 
 You can pass them per call (`dapp_definition`, `origin` on the signing tools), but
 it is more robust to configure them **once** so the connector fills them in when a
@@ -91,9 +147,10 @@ default**.
 
 | Variable | Used by | Default |
 |---|---|---|
-| `RADIX_DAPP_DEFINITION_MAINNET` | mainnet signing / ROLA | *(empty → unverified)* |
-| `RADIX_DAPP_DEFINITION_STOKENET` | stokenet signing / ROLA | *(empty → unverified)* |
+| `RADIX_DAPP_DEFINITION_MAINNET` | mainnet signing / ROLA | *(empty → refused: the wallet answers `invalidRequest`)* |
+| `RADIX_DAPP_DEFINITION_STOKENET` | stokenet signing / ROLA | *(empty → refused: the wallet answers `invalidRequest`)* |
 | `RADIX_DAPP_ORIGIN` | all signing / ROLA | `https://radix-community.genkipool.com` |
+| `RADIX_CONNECTOR_PENDING_TTL_SECONDS` | the flood guard | `900` — after this a delivered, unanswered request stops blocking |
 
 Notes:
 
@@ -102,8 +159,7 @@ Notes:
 - `request_account_proof` (ROLA) **requires** a non-empty dApp definition: if
   neither the call nor the env var provides one, the tool returns an error rather
   than signing a meaningless proof.
-- Leave these unset only if you intend the requests to appear as an unverified
-  dApp.
+- Without a dApp definition the wallet answers `invalidRequest`: set one.
 
 Example (`claude mcp add` with env, or your client's JSON config):
 

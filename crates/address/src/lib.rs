@@ -93,6 +93,23 @@ pub fn virtual_account_address(public_key_hex: &str, network_id: u8) -> Result<S
         .map_err(|e| AddressError::Encode(format!("{e:?}")))
 }
 
+/// Derives the `identity_...` (bech32m) address of an Ed25519 virtual identity — a persona's
+/// address — the same way [`virtual_account_address`] does an account's.
+///
+/// # Errors
+/// As [`virtual_account_address`].
+pub fn virtual_identity_address(public_key_hex: &str, network_id: u8) -> Result<String, AddressError> {
+    let bytes = hex::decode(public_key_hex).map_err(|e| AddressError::InvalidHex(e.to_string()))?;
+    let pk = Ed25519PublicKey::try_from(bytes.as_slice()).map_err(|_| AddressError::InvalidKeyLength)?;
+    let network = network_by_id(network_id).ok_or(AddressError::UnknownNetwork(network_id))?;
+
+    let identity = ComponentAddress::preallocated_identity_from_public_key(&pk);
+    let encoder = AddressBech32Encoder::new(&network);
+    encoder
+        .encode(identity.as_bytes())
+        .map_err(|e| AddressError::Encode(format!("{e:?}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +121,16 @@ mod tests {
         let expected = "account_tdx_2_129uh80n80uc4dxr3qt8gyj5tfdsm27dle2sapu5yn55j0e73megq4x";
         let derived = virtual_account_address(pubkey, 2).expect("derivation");
         assert_eq!(derived, expected);
+    }
+
+    /// A persona's address comes from the same key by a DIFFERENT derivation: it must never come
+    /// out equal to the account's, or a persona proof would pass as an account proof.
+    #[test]
+    fn an_identity_is_not_the_account_of_the_same_key() {
+        let pubkey = "fb92c06213fa5d789d90eafb919f2705fc2d665e918ffe69ceaf35a22531f32c";
+        let identity = virtual_identity_address(pubkey, 2).expect("derivation");
+        assert!(identity.starts_with("identity_tdx_2_1"), "{identity}");
+        assert_ne!(identity, virtual_account_address(pubkey, 2).expect("derivation"));
     }
 
     #[test]

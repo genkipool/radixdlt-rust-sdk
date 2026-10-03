@@ -1,0 +1,28 @@
+--- crates/rola/src/lib.rs
++++ replace verify_persona_proof -> Result<(), RolaError> with Ok(())
+@@ -190,24 +190,17 @@
+ /// As [`verify_account_proof`].
+ pub fn verify_persona_proof(
+     proof: &AccountProof,
+     challenge_hex: &str,
+     dapp_definition: &str,
+     origin: &str,
+     network_id: u8,
+ ) -> Result<(), RolaError> {
+-    verify_proof(
+-        proof,
+-        challenge_hex,
+-        dapp_definition,
+-        origin,
+-        network_id,
+-        virtual_identity_address,
+-    )
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn verify_proof(
+     proof: &AccountProof,
+     challenge_hex: &str,
+     dapp_definition: &str,
+     origin: &str,
+     network_id: u8,

@@ -13,14 +13,21 @@ use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use radixdlt_connect::crypto::blake2b_256;
-use radixdlt_connect::state::{Link, LinkState};
+use radixdlt_connect::state::Link;
 use radixdlt_connect::{
-    extract_accounts, extract_persona_email, extract_persona_name, extract_proofs, Connector, DappContext,
-    PersonaRequest,
+    account_proof_request_sharing, account_request, authorized_request, extract_accounts,
+    extract_persona_email, extract_persona_name, extract_proofs, extract_signed_partial_transaction,
+    extract_transaction_intent_hash, pre_authorization_request, transaction_request, unauthorized_request,
+    Auth, AuthorizedRequest, Connector, OwnershipWanted, PersonaRequest,
 };
 use radixdlt_rola::{verify_account_proof, AccountProof};
 
+use crate::diag::Failure;
+use crate::exchange::{self, failed, interact, manifest_summary, target, Ask, Target};
 use crate::gateway;
+use crate::requests::{
+    check_challenge, parse_accounts, parse_persona_data, random_challenge, render_answer, Verifier,
+};
 use crate::rpc::{App, PairOutcome, Pending};
 use crate::store::{now_unix_seconds, Store};
 
@@ -43,7 +50,7 @@ pub enum Network {
 }
 
 impl Network {
-    fn parse(s: &str) -> Result<Network, String> {
+    pub fn parse(s: &str) -> Result<Network, String> {
         match s {
             "mainnet" => Ok(Network::Mainnet),
             "stokenet" => Ok(Network::Stokenet),
@@ -53,14 +60,14 @@ impl Network {
         }
     }
 
-    fn id(self) -> u8 {
+    pub fn id(self) -> u8 {
         match self {
             Network::Mainnet => 1,
             Network::Stokenet => 2,
         }
     }
 
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Network::Mainnet => "mainnet",
             Network::Stokenet => "stokenet",
@@ -79,20 +86,42 @@ enum Content {
 pub struct ToolResult {
     content: Vec<Content>,
     is_error: bool,
+    /// Machine-readable form of a failure (`code`, `stage`, `retry_safe`, `hint`, …).
+    structured: Option<Value>,
 }
 
 impl ToolResult {
-    fn text(text: impl Into<String>) -> Self {
+    pub fn text(text: impl Into<String>) -> Self {
         ToolResult {
             content: vec![Content::Text(text.into())],
             is_error: false,
+            structured: None,
         }
     }
 
-    fn error(text: impl Into<String>) -> Self {
+    pub fn error(text: impl Into<String>) -> Self {
         ToolResult {
             content: vec![Content::Text(text.into())],
             is_error: true,
+            structured: None,
+        }
+    }
+
+    /// A failure with its machine-readable form.
+    pub fn failure(text: impl Into<String>, structured: Value) -> Self {
+        ToolResult {
+            content: vec![Content::Text(text.into())],
+            is_error: true,
+            structured: Some(structured),
+        }
+    }
+
+    /// Appends to the first text block.
+    pub fn push_text(&mut self, more: impl AsRef<str>) {
+        if let Some(Content::Text(text)) = self.content.first_mut() {
+            text.push_str(more.as_ref());
+        } else {
+            self.content.push(Content::Text(more.as_ref().to_string()));
         }
     }
 
@@ -115,13 +144,45 @@ impl ToolResult {
                 }
             })
             .collect();
-        json!({ "content": content, "isError": self.is_error })
+        let mut result = json!({ "content": content, "isError": self.is_error });
+        if let Some(structured) = &self.structured {
+            result["structuredContent"] = structured.clone();
+        }
+        result
     }
 }
 
 /* ─────────────────────────────── registry ──────────────────────────────── */
 
 const NETWORK_PROP: &str = "Radix network: \"mainnet\" (real funds) or \"stokenet\" (testnet). Required — there is no default, on purpose.";
+
+/// Properties every request to the wallet takes.
+fn wallet_request_props() -> Value {
+    json!({
+        "network": { "type": "string", "enum": ["mainnet", "stokenet"], "description": NETWORK_PROP },
+        "dapp_definition": { "type": "string", "description": "dApp definition address shown to the wallet (falls back to the RADIX_DAPP_DEFINITION_MAINNET/STOKENET env var). The wallet REFUSES a request without one, and DROPS one whose origin does not vouch for it — checked before sending." },
+        "origin": { "type": "string", "description": "Origin URL shown to the wallet (default: RADIX_DAPP_ORIGIN env var, else https://radix-community.genkipool.com). Must be claimed by the dApp definition and list it in /.well-known/radix.json." },
+        "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the first paired wallet)." },
+        "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." },
+        "ignore_pending": { "type": "boolean", "description": "Send even though an earlier request may still be waiting in the wallet (default false). The wallet shows one request at a time: only use it when you are sure nothing is waiting." },
+        "skip_dapp_check": { "type": "boolean", "description": "Skip checking the dApp identity before sending (default false) — e.g. when the wallet has developer mode on." }
+    })
+}
+
+/// A schema of `own` properties plus the common wallet-request ones.
+fn request_schema(own: Value, required: &[&str]) -> Value {
+    let mut properties = wallet_request_props();
+    if let (Some(all), Value::Object(own)) = (properties.as_object_mut(), own) {
+        all.extend(own);
+    }
+    let mut required: Vec<&str> = required.to_vec();
+    required.push("network");
+    json!({ "type": "object", "properties": properties, "required": required })
+}
+
+const ACCOUNTS_PROP: &str = "Accounts to ask for: a number (at least N), or { \"quantity\": N, \"exactly\": true|false, \"with_proof\": true|false }. With with_proof each account signs the challenge (ROLA), verified here.";
+const PERSONA_DATA_PROP: &str = "Persona data to ask for: { \"name\": true, \"emails\": N | {quantity, exactly}, \"phones\": N | {quantity, exactly} }. One-time data is MANDATORY for whoever answers: the wallet will not let them approve without it, so ask only for what is needed.";
+const CHALLENGE_PROP: &str = "ROLA challenge, 32 bytes as hex. Omit it and the connector makes a fresh one and verifies the proofs itself; pass yours when a server will verify them.";
 
 /// The `tools/list` payload, hand-built as JSON Schema so the whole binary stays
 /// dependency-light.
@@ -174,99 +235,234 @@ pub fn list_json() -> Vec<Value> {
         tool(
             "send_transaction",
             "Send a transaction to sign",
-            "Sends a transaction manifest to the paired wallet to sign AND submit. The user approves on their phone. Returns the transaction intent hash; confirm the commit with transaction_status. Build and preview the manifest with the radix-community HTTP MCP server first.",
+            "Sends a transaction manifest to the paired wallet to sign AND submit. The user approves on their phone. Returns the transaction intent hash; confirm the commit with transaction_status. Build and preview the manifest with the radix-community HTTP MCP server first. Refuses to send while an earlier request may still be waiting in the wallet (see pending_requests).",
             false,
-            json!({
-                "type": "object",
-                "properties": {
-                    "manifest": { "type": "string", "description": "The transaction manifest (RTM text) to sign and submit." },
-                    "network": { "type": "string", "enum": ["mainnet", "stokenet"], "description": NETWORK_PROP },
+            request_schema(
+                json!({
+                    "manifest": { "type": "string", "description": "The transaction manifest (RTM text) to sign and submit. Never include lock_fee: the wallet adds its own." },
                     "message": { "type": "string", "description": "Optional transaction message shown to the user in the wallet." },
-                    "dapp_definition": { "type": "string", "description": "dApp definition address shown to the wallet (optional; falls back to the RADIX_DAPP_DEFINITION_MAINNET/STOKENET env var; if none, the request shows as unverified)." },
-                    "origin": { "type": "string", "description": "Origin URL shown to the wallet (default: RADIX_DAPP_ORIGIN env var, else https://radix-community.genkipool.com)." },
                     "blobs": { "type": "array", "items": { "type": "string" }, "description": "Hex-encoded blobs referenced by the manifest via Blob(\"<hash>\") (optional)." },
-                    "blob_files": { "type": "array", "items": { "type": "string" }, "description": "Paths to binary files read locally and attached as blobs — use for large payloads like package WASM (optional)." },
-                    "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the first paired wallet)." },
-                    "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." }
-                },
-                "required": ["manifest", "network"]
-            }),
+                    "blob_files": { "type": "array", "items": { "type": "string" }, "description": "Paths to binary files read locally and attached as blobs — use for large payloads like package WASM (optional)." }
+                }),
+                &["manifest"],
+            ),
         ),
         tool(
             "deploy_package",
             "Deploy a Scrypto package",
-            "Publishes a Scrypto package to the network. Reads the compiled .wasm from a LOCAL file path (it never travels through the agent), attaches it as a blob, and signs+submits via the paired wallet. Get `package_definition` by decoding the .rpd with the radix-community HTTP MCP server's build_deploy_package_manifest tool first.",
+            "Publishes a Scrypto package to the network. Reads the compiled .wasm from a LOCAL file path (it never travels through the agent), dry-runs it on the Gateway, attaches it as a blob, and signs+submits via the paired wallet. Get `package_definition` by decoding the .rpd with the radix-community HTTP MCP server's build_deploy_package_manifest tool first.",
             false,
-            json!({
-                "type": "object",
-                "properties": {
+            request_schema(
+                json!({
                     "wasm_path": { "type": "string", "description": "Local filesystem path to the compiled package .wasm." },
                     "package_definition": { "type": "string", "description": "Package definition in manifest (SBOR) syntax — the decoded .rpd, from build_deploy_package_manifest." },
-                    "network": { "type": "string", "enum": ["mainnet", "stokenet"], "description": NETWORK_PROP },
-                    "owner_role": { "type": "string", "description": "OwnerRole in manifest syntax (default \"None\" — no owner). Supply a richer value for badge-controlled packages." },
-                    "dapp_definition": { "type": "string", "description": "dApp definition address (optional; falls back to the RADIX_DAPP_DEFINITION_MAINNET/STOKENET env var)." },
-                    "origin": { "type": "string", "description": "Origin URL (default: RADIX_DAPP_ORIGIN env var, else https://radix-community.genkipool.com)." },
-                    "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the first paired wallet)." },
-                    "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." }
-                },
-                "required": ["wasm_path", "package_definition", "network"]
-            }),
+                    "owner_role": { "type": "string", "description": "OwnerRole in manifest syntax (default \"None\" — no owner). Supply a richer value for badge-controlled packages." }
+                }),
+                &["wasm_path", "package_definition"],
+            ),
         ),
         tool(
             "request_pre_authorization",
             "Request a pre-authorization (subintent)",
             "Asks the wallet to sign a subintent (pre-authorization, transaction V2) WITHOUT submitting it. Returns the signed partial transaction as hex, to be combined into a larger transaction later.",
             false,
-            json!({
-                "type": "object",
-                "properties": {
+            request_schema(
+                json!({
                     "subintent_manifest": { "type": "string", "description": "The subintent manifest to pre-authorize." },
                     "expire_after_seconds": { "type": "integer", "description": "How long the pre-authorization stays valid, in seconds." },
-                    "network": { "type": "string", "enum": ["mainnet", "stokenet"], "description": NETWORK_PROP },
-                    "message": { "type": "string", "description": "Optional message shown to the user in the wallet." },
-                    "dapp_definition": { "type": "string", "description": "dApp definition address shown to the wallet (optional; falls back to the RADIX_DAPP_DEFINITION_MAINNET/STOKENET env var)." },
-                    "origin": { "type": "string", "description": "Origin URL shown to the wallet (default: RADIX_DAPP_ORIGIN env var, else https://radix-community.genkipool.com)." },
-                    "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the first paired wallet)." },
-                    "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." }
-                },
-                "required": ["subintent_manifest", "expire_after_seconds", "network"]
-            }),
+                    "message": { "type": "string", "description": "Optional message shown to the user in the wallet." }
+                }),
+                &["subintent_manifest", "expire_after_seconds"],
+            ),
         ),
         tool(
             "request_accounts",
             "Get the user's account address(es)",
-            "Asks the wallet to SHARE its account address(es) WITHOUT a signature (lightweight, no ROLA proof). Use it to learn which account to fund, transfer from, or set as fee payer before building a manifest. The user approves the share on their phone.",
+            "Asks the wallet to SHARE its account address(es) WITHOUT a signature (lightweight, no ROLA proof). Use it to learn which account to fund, transfer from, or set as fee payer before building a manifest. The user approves the share on their phone. For exact quantities, proofs or persona data use request_data.",
+            false,
+            request_schema(json!({}), &[]),
+        ),
+        tool(
+            "request_account_proof",
+            "Request a ROLA account proof (log in with Radix)",
+            "Asks the wallet to sign a ROLA challenge with an account. Returns the account address and whether the proof verified locally. `dapp_definition` and `origin` MUST match the values the verifier expects, because they are part of the signed message. To prove WHO the person is (their persona), use request_login.",
+            false,
+            request_schema(
+                json!({
+                    "challenge": { "type": "string", "description": "ROLA challenge as hex (32 bytes)." },
+                    "request_persona": { "type": "boolean", "description": "Also ask for the persona name (default false)." },
+                    "request_email": { "type": "boolean", "description": "Also ask for the persona name and email address (default false). The wallet will not let the person approve until they provide what is asked for, so ask only when the answer needs it." }
+                }),
+                &["challenge"],
+            ),
+        ),
+        tool(
+            "request_login",
+            "Log in with a persona",
+            "Asks the wallet to LOG IN to the dApp with a persona (authorized request). With a challenge (default) the persona signs it, so the person is PROVEN — the answer carries the identity address and a proof, verified here; with without_challenge: true the persona is only named. Can ask in the same approval for accounts (optionally with proofs) and persona data (name, emails, phones). Use the identity it returns with request_ownership_proof / request_authorized (use_persona).",
+            false,
+            request_schema(
+                json!({
+                    "challenge": { "type": "string", "description": CHALLENGE_PROP },
+                    "without_challenge": { "type": "boolean", "description": "Log in without a proof: the persona is named, not proven (default false)." },
+                    "accounts": { "description": ACCOUNTS_PROP },
+                    "persona_data": { "type": "object", "description": PERSONA_DATA_PROP }
+                }),
+                &[],
+            ),
+        ),
+        tool(
+            "request_ownership_proof",
+            "Prove exact accounts / persona",
+            "Asks the wallet to prove ownership of EXACT accounts (and optionally the persona) as a persona already logged in to this dApp: one confirmation, nothing for the person to pick. Each proof signs the challenge and is verified here. Requires the persona's identity address (from request_login).",
+            false,
+            request_schema(
+                json!({
+                    "identity_address": { "type": "string", "description": "The persona (identity_…) already logged in to this dApp." },
+                    "accounts": { "type": "array", "items": { "type": "string" }, "description": "Account addresses to prove (may be empty when prove_persona is true)." },
+                    "prove_persona": { "type": "boolean", "description": "Also prove the persona itself (default false)." },
+                    "challenge": { "type": "string", "description": CHALLENGE_PROP }
+                }),
+                &["identity_address"],
+            ),
+        ),
+        tool(
+            "request_authorized",
+            "Authorized request (full)",
+            "The whole authorized-request vocabulary in one approval: auth = \"login\" (persona signs the challenge), \"login_without_challenge\", or \"use_persona\" (act as identity_address, already logged in — no new login); reset of what was shared before; proof of ownership of exact accounts / the persona; accounts and persona data ONE-TIME (this request only) or ONGOING (the wallet remembers them for this dApp and stops asking). Every proof is verified here.",
+            false,
+            request_schema(
+                json!({
+                    "auth": { "type": "string", "enum": ["login", "login_without_challenge", "use_persona"], "description": "Which persona: log in (with proof), log in without proof, or use one already logged in (needs identity_address)." },
+                    "identity_address": { "type": "string", "description": "The persona for auth = use_persona (and for prove_persona)." },
+                    "challenge": { "type": "string", "description": CHALLENGE_PROP },
+                    "reset_accounts": { "type": "boolean", "description": "Forget the accounts shared ongoing before, so the person picks again (default false)." },
+                    "reset_persona_data": { "type": "boolean", "description": "Forget the persona data shared ongoing before (default false)." },
+                    "prove_accounts": { "type": "array", "items": { "type": "string" }, "description": "Exact accounts to prove ownership of." },
+                    "prove_persona": { "type": "boolean", "description": "Prove the persona too (needs auth = use_persona)." },
+                    "one_time_accounts": { "description": ACCOUNTS_PROP },
+                    "ongoing_accounts": { "description": ACCOUNTS_PROP },
+                    "one_time_persona_data": { "type": "object", "description": PERSONA_DATA_PROP },
+                    "ongoing_persona_data": { "type": "object", "description": "Persona data shared ongoing, same shape as one_time_persona_data." }
+                }),
+                &["auth"],
+            ),
+        ),
+        tool(
+            "request_data",
+            "Ask for accounts / persona data (no login)",
+            "An unauthorized request (no persona login): accounts with an exact or minimum quantity, optionally each proving ownership (ROLA, verified here), and/or one-time persona data — name, email addresses, PHONE NUMBERS.",
+            false,
+            request_schema(
+                json!({
+                    "accounts": { "description": ACCOUNTS_PROP },
+                    "persona_data": { "type": "object", "description": PERSONA_DATA_PROP },
+                    "challenge": { "type": "string", "description": CHALLENGE_PROP }
+                }),
+                &[],
+            ),
+        ),
+        tool(
+            "pending_requests",
+            "Requests waiting in the wallet",
+            "Lists the requests this connector sent that may still be waiting in the wallet's queue (delivered, nobody answered), with what each was and what to do. The wallet shows ONE request at a time and nothing withdraws one remotely, so check this before sending more; history: true also lists recent answered ones.",
+            true,
+            json!({
+                "type": "object",
+                "properties": {
+                    "wallet_public_key": { "type": "string", "description": "Only this wallet (default: all)." },
+                    "history": { "type": "boolean", "description": "Also list recent requests and their outcomes (default false)." },
+                    "limit": { "type": "integer", "description": "How many recent requests with history (default 10)." }
+                }
+            }),
+        ),
+        tool(
+            "await_response",
+            "Collect a late answer",
+            "Waits for the answer to a request sent EARLIER (one that timed out with NO_ANSWER, or was delivered and is still pending), WITHOUT sending it again — re-sending would queue a second copy. Ask the person to answer it on the phone, then call this. Default: the most recent pending request.",
+            true,
+            json!({
+                "type": "object",
+                "properties": {
+                    "interaction_id": { "type": "string", "description": "The request to wait for (from the failure or pending_requests)." },
+                    "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the request's)." },
+                    "timeout_seconds": { "type": "integer", "description": "How long to wait (default 120, max 900)." }
+                }
+            }),
+        ),
+        tool(
+            "cancel_request",
+            "Cancel a request",
+            "Stops a request: if its call is still waiting here it is stopped (closing the channel), and it no longer blocks new requests. The wallet offers NO remote cancel — a request it already received stays on the phone until the person rejects it (or force-closes the app); the result says which case applies.",
             false,
             json!({
                 "type": "object",
                 "properties": {
-                    "network": { "type": "string", "enum": ["mainnet", "stokenet"], "description": NETWORK_PROP },
-                    "dapp_definition": { "type": "string", "description": "dApp definition address shown to the wallet (optional; falls back to the RADIX_DAPP_DEFINITION_MAINNET/STOKENET env var)." },
-                    "origin": { "type": "string", "description": "Origin URL shown to the wallet (default: RADIX_DAPP_ORIGIN env var, else https://radix-community.genkipool.com)." },
+                    "interaction_id": { "type": "string", "description": "The request to cancel." },
+                    "all": { "type": "boolean", "description": "Cancel every pending request (of wallet_public_key, or all wallets)." },
+                    "wallet_public_key": { "type": "string", "description": "With all: only this wallet." }
+                }
+            }),
+        ),
+        tool(
+            "check_wallet_connection",
+            "Is the wallet reachable?",
+            "Opens a channel to the paired wallet and closes it, sending nothing (nothing appears on the phone): says whether the Radix Wallet app is reachable right now and how long the channel took. Use it to tell «phone offline / app closed» apart from «request not answered».",
+            true,
+            json!({
+                "type": "object",
+                "properties": {
                     "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the first paired wallet)." },
-                    "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." }
+                    "timeout_seconds": { "type": "integer", "description": "How long to wait for the wallet (default 30)." }
+                }
+            }),
+        ),
+        tool(
+            "check_dapp_identity",
+            "Check the dApp identity",
+            "Runs the check the wallet runs on every request: the dApp definition is a 'dapp definition' account on this network, claims the origin, and {origin}/.well-known/radix.json lists it. When the last link is missing the wallet DROPS requests without answering — they look stuck. Sending tools run this automatically.",
+            true,
+            json!({
+                "type": "object",
+                "properties": {
+                    "network": { "type": "string", "enum": ["mainnet", "stokenet"], "description": NETWORK_PROP },
+                    "dapp_definition": { "type": "string", "description": "dApp definition address (default: the env var for the network)." },
+                    "origin": { "type": "string", "description": "Origin URL (default: RADIX_DAPP_ORIGIN, else https://radix-community.genkipool.com)." }
                 },
                 "required": ["network"]
             }),
         ),
         tool(
-            "request_account_proof",
-            "Request a ROLA account proof (log in with Radix)",
-            "Asks the wallet to sign a ROLA challenge (\"log in with Radix\"). Returns the account address and whether the proof verified locally. `dapp_definition` and `origin` MUST match the values the verifier expects, because they are part of the signed message; pass them, or configure the RADIX_DAPP_DEFINITION_MAINNET/STOKENET and RADIX_DAPP_ORIGIN env vars.",
+            "connector_log",
+            "Read the connector log",
+            "The connector's own trace: every step of every request (sent, delivered, answered, failed with code/stage, late answers, cancellations), oldest first. Filter by interaction_id to follow one request end to end.",
+            true,
+            json!({
+                "type": "object",
+                "properties": {
+                    "interaction_id": { "type": "string", "description": "Only events about this request." },
+                    "limit": { "type": "integer", "description": "How many of the latest events (default 40, max 500)." }
+                }
+            }),
+        ),
+        tool(
+            "check_update",
+            "Is there a newer connector?",
+            "Checks GitHub for the newest radix-connector-mcp release and compares it with this one. Read-only. Updating never requires pairing the phone again.",
+            true,
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "update_connector",
+            "Update the connector",
+            "Downloads the newest radix-connector-mcp release for this platform, verifies its SHA-256 and that it runs, keeps a backup, and installs it in place of this binary. The pairing with the phone is kept. The MCP client must be restarted to launch the new version.",
             false,
             json!({
                 "type": "object",
                 "properties": {
-                    "challenge": { "type": "string", "description": "ROLA challenge as hex (32 bytes)." },
-                    "network": { "type": "string", "enum": ["mainnet", "stokenet"], "description": NETWORK_PROP },
-                    "dapp_definition": { "type": "string", "description": "dApp definition address (part of the signed ROLA message; falls back to the RADIX_DAPP_DEFINITION_MAINNET/STOKENET env var, and is required — cannot be empty)." },
-                    "origin": { "type": "string", "description": "Origin URL (part of the signed ROLA message; falls back to RADIX_DAPP_ORIGIN env var, else https://radix-community.genkipool.com)." },
-                    "request_persona": { "type": "boolean", "description": "Also ask for the persona name (default false)." },
-                    "request_email": { "type": "boolean", "description": "Also ask for the persona name and email address (default false). The wallet will not let the person approve until they provide what is asked for, so ask only when the answer needs it." },
-                    "wallet_public_key": { "type": "string", "description": "Target a specific paired device (default: the first paired wallet)." },
-                    "timeout_seconds": { "type": "integer", "description": "How long to wait for approval (default 300, max 900)." }
-                },
-                "required": ["challenge", "network"]
+                    "tag": { "type": "string", "description": "A specific release (connector-vX.Y.Z) instead of the newest." },
+                    "force": { "type": "boolean", "description": "Reinstall even when already up to date (default false)." }
+                }
             }),
         ),
         tool(
@@ -314,7 +510,30 @@ pub async fn call(app: &Rc<App>, name: &str, args: Value) -> Value {
         "deploy_package" => deploy_package(app, &args).await,
         "request_pre_authorization" => request_pre_authorization(app, &args).await,
         "request_account_proof" => request_account_proof(app, &args).await,
+        "request_login" => request_login(app, &args).await,
+        "request_ownership_proof" => request_ownership_proof(app, &args).await,
+        "request_authorized" => request_authorized_tool(app, &args).await,
+        "request_data" => request_data(app, &args).await,
+        "pending_requests" => exchange::pending_requests(app, &args),
+        "await_response" => exchange::await_response(app, &args).await,
+        "cancel_request" => exchange::cancel_request(app, &args),
+        "check_wallet_connection" => exchange::check_wallet_connection(app, &args).await,
+        "check_dapp_identity" => exchange::check_dapp_identity(&args).await,
+        "connector_log" => exchange::connector_log(app, &args),
         "transaction_status" => transaction_status(&args).await,
+        "check_update" => match crate::update::check().await {
+            Ok(found) => ToolResult::text(found.describe()),
+            Err(e) => ToolResult::error(format!("could not check for updates: {e}")),
+        },
+        "update_connector" => match crate::update::update(
+            opt_str(&args, "tag").as_deref(),
+            opt_bool(&args, "force").unwrap_or(false),
+        )
+        .await
+        {
+            Ok(report) => ToolResult::text(report),
+            Err(e) => ToolResult::error(format!("update failed: {e}")),
+        },
         other => ToolResult::error(format!(
             "Unknown tool \"{other}\". Call tools/list to see the available tools."
         )),
@@ -501,34 +720,39 @@ fn remove_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
 }
 
 async fn request_accounts(app: &Rc<App>, args: &Value) -> ToolResult {
-    let network = match req_network(args) {
-        Ok(n) => n,
-        Err(e) => return ToolResult::error(e),
+    const TOOL: &str = "request_accounts";
+    let target = match target(app, args, DEFAULT_SIGN_TIMEOUT) {
+        Ok(t) => t,
+        Err(f) => return failed(app, TOOL, &f, None),
     };
-    let ctx = match dapp_context(args, network) {
-        Ok(ctx) => ctx,
-        Err(e) => return ToolResult::error(e),
+    let ask = Ask {
+        tool: TOOL,
+        kind: "accounts",
+        summary: "share account address(es), no proof".to_string(),
+        interaction: account_request(&target.ctx),
     };
-    let password = match load_password(app, args) {
-        Ok(p) => p,
-        Err(e) => return ToolResult::error(e),
-    };
-    let timeout = signing_timeout(args);
-
-    let connector = Connector::new();
-    let response = match connector.request_accounts(&password, &ctx, timeout).await {
+    let (reply, result) = interact(app, args, &target, ask).await;
+    let response = match result {
         Ok(v) => v,
-        Err(e) => return ToolResult::error(format!("account request failed: {e}")),
+        Err(f) => return failed(app, TOOL, &f, Some(&reply)),
     };
     let accounts = match extract_accounts(&response) {
-        Ok(a) => a,
-        Err(e) => return ToolResult::error(format!("wallet returned no accounts: {e}")),
+        Ok(a) if !a.is_empty() => a,
+        Ok(_) => {
+            return failed(
+                app,
+                TOOL,
+                &no_content("the wallet shared no accounts", &reply),
+                Some(&reply),
+            )
+        }
+        Err(e) => return failed(app, TOOL, &no_content(&e.to_string(), &reply), Some(&reply)),
     };
-    if accounts.is_empty() {
-        return ToolResult::error("the wallet shared no accounts.".to_string());
-    }
 
-    let mut out = format!("ACCOUNTS SHARED ✓ (network: {net})\n", net = network.label());
+    let mut out = format!(
+        "ACCOUNTS SHARED ✓ (network: {net})\n",
+        net = target.network.label()
+    );
     for (i, (address, label)) in accounts.iter().enumerate() {
         out.push_str(&format!(
             "{n}. {address}  [{label}]\n",
@@ -536,76 +760,97 @@ async fn request_accounts(app: &Rc<App>, args: &Value) -> ToolResult {
             label = label.as_deref().unwrap_or("no label"),
         ));
     }
-    ToolResult::text(out)
+    out.push_str(&format!("Interaction: {}", reply.interaction_id));
+    reply.annotate(ToolResult::text(out))
+}
+
+/// An answer that came back without what was asked for.
+fn no_content(detail: &str, reply: &exchange::Reply) -> Failure {
+    Failure::new(
+        "UNEXPECTED_ANSWER",
+        "wallet",
+        true,
+        detail.to_string(),
+        "The wallet answered, but not with what was asked. Read the detail; trace it with connector_log.",
+    )
+    .with_interaction(&reply.interaction_id)
 }
 
 /// Signs + submits a manifest (with optional blobs) via the paired wallet.
-/// Shared by `send_transaction` and `deploy_package`. Reads dApp context,
-/// password and timeout from `args`.
+/// Shared by `send_transaction` and `deploy_package`.
 async fn submit_transaction(
     app: &Rc<App>,
+    tool_name: &str,
     args: &Value,
-    network: Network,
+    target: &Target,
     manifest: &str,
     message: &str,
     blobs: &[String],
 ) -> ToolResult {
-    let ctx = match dapp_context(args, network) {
-        Ok(ctx) => ctx,
-        Err(e) => return ToolResult::error(e),
+    let ask = Ask {
+        tool: tool_name,
+        kind: "transaction",
+        summary: manifest_summary(manifest, message),
+        interaction: transaction_request(manifest, message, blobs, &target.ctx),
     };
-    let password = match load_password(app, args) {
-        Ok(p) => p,
-        Err(e) => return ToolResult::error(e),
+    let (reply, result) = interact(app, args, target, ask).await;
+    let response = match result {
+        Ok(v) => v,
+        Err(f) => return failed(app, tool_name, &f, Some(&reply)),
     };
-    let timeout = signing_timeout(args);
-
-    let connector = Connector::new();
-    match connector
-        .request_transaction(&password, manifest, message, blobs, &ctx, timeout)
-        .await
-    {
-        Ok(txid) => ToolResult::text(format!(
+    match extract_transaction_intent_hash(&response) {
+        Ok(txid) => reply.annotate(ToolResult::text(format!(
             "TRANSACTION SUBMITTED ✓ (network: {net})\n\
-             Intent hash: {txid}\n\n\
+             Intent hash: {txid}\n\
+             Interaction: {id}\n\n\
              The wallet signed and submitted it. Confirm the commit with:\n\
              transaction_status {{ \"intent_hash\": \"{txid}\", \"network\": \"{net}\" }}",
-            net = network.label(),
-            txid = txid,
-        )),
-        Err(e) => ToolResult::error(format!("transaction not signed: {e}")),
+            net = target.network.label(),
+            id = reply.interaction_id,
+        ))),
+        Err(e) => failed(app, tool_name, &no_content(&e.to_string(), &reply), Some(&reply)),
     }
 }
 
 async fn send_transaction(app: &Rc<App>, args: &Value) -> ToolResult {
+    const TOOL: &str = "send_transaction";
     let manifest = match req_str(args, "manifest") {
         Ok(v) => v,
-        Err(e) => return ToolResult::error(e),
+        Err(e) => return failed(app, TOOL, &Failure::input(e), None),
     };
-    let network = match req_network(args) {
-        Ok(n) => n,
-        Err(e) => return ToolResult::error(e),
+    if manifest.contains("\"lock_fee\"") || manifest.contains("\"lock_contingent_fee\"") {
+        return failed(
+            app,
+            TOOL,
+            &Failure::input("the manifest locks a fee (lock_fee / lock_contingent_fee): the wallet adds its own fee lock and answers invalidRequest to a manifest that already has one. Remove it."),
+            None,
+        );
+    }
+    let target = match target(app, args, DEFAULT_SIGN_TIMEOUT) {
+        Ok(t) => t,
+        Err(f) => return failed(app, TOOL, &f, None),
     };
     let message = opt_str(args, "message").unwrap_or_default();
     let blobs = match resolve_blobs(args) {
         Ok(b) => b,
-        Err(e) => return ToolResult::error(e),
+        Err(e) => return failed(app, TOOL, &Failure::input(e), None),
     };
-    submit_transaction(app, args, network, &manifest, &message, &blobs).await
+    submit_transaction(app, TOOL, args, &target, &manifest, &message, &blobs).await
 }
 
 async fn deploy_package(app: &Rc<App>, args: &Value) -> ToolResult {
+    const TOOL: &str = "deploy_package";
     let wasm_path = match req_str(args, "wasm_path") {
         Ok(v) => v,
-        Err(e) => return ToolResult::error(e),
+        Err(e) => return failed(app, TOOL, &Failure::input(e), None),
     };
     let package_definition = match req_str(args, "package_definition") {
         Ok(v) => v,
-        Err(e) => return ToolResult::error(e),
+        Err(e) => return failed(app, TOOL, &Failure::input(e), None),
     };
-    let network = match req_network(args) {
-        Ok(n) => n,
-        Err(e) => return ToolResult::error(e),
+    let target = match target(app, args, DEFAULT_SIGN_TIMEOUT) {
+        Ok(t) => t,
+        Err(f) => return failed(app, TOOL, &f, None),
     };
     // OwnerRole in manifest syntax; default "None" (no owner). The HTTP MCP can
     // supply a richer value (e.g. a badge rule) for advanced setups.
@@ -613,10 +858,22 @@ async fn deploy_package(app: &Rc<App>, args: &Value) -> ToolResult {
 
     let wasm = match std::fs::read(&wasm_path) {
         Ok(bytes) => bytes,
-        Err(e) => return ToolResult::error(format!("could not read wasm file '{wasm_path}': {e}")),
+        Err(e) => {
+            return failed(
+                app,
+                TOOL,
+                &Failure::input(format!("could not read wasm file '{wasm_path}': {e}")),
+                None,
+            )
+        }
     };
     if wasm.is_empty() {
-        return ToolResult::error(format!("wasm file '{wasm_path}' is empty"));
+        return failed(
+            app,
+            TOOL,
+            &Failure::input(format!("wasm file '{wasm_path}' is empty")),
+            None,
+        );
     }
     let wasm_hex = hex::encode(&wasm);
     let blob_hash = hex::encode(blake2b_256(&wasm));
@@ -633,18 +890,22 @@ async fn deploy_package(app: &Rc<App>, args: &Value) -> ToolResult {
     // Dry-run on the Gateway (with the WASM blob) before asking the user to
     // approve — a package deploy is costly, so never sign one that would fail.
     // Only a definitive simulated failure blocks; a preview infra error does not.
-    if let Ok(outcome) = gateway::preview(network, &manifest, std::slice::from_ref(&wasm_hex)).await {
+    if let Ok(outcome) = gateway::preview(target.network, &manifest, std::slice::from_ref(&wasm_hex)).await {
         if !outcome.success {
-            return ToolResult::error(format!(
-                "Deploy preview FAILED — not signing (a deploy costs the fee even when it fails):\n{}",
+            let failure = Failure::new(
+                "PREVIEW_FAILED",
+                "preflight",
+                true,
                 outcome
                     .message
                     .unwrap_or_else(|| "the simulation did not succeed".to_string()),
-            ));
+                "Not signed: a deploy costs the fee even when it fails. Fix the package or the owner role, and preview again.",
+            );
+            return failed(app, TOOL, &failure, None);
         }
     }
 
-    submit_transaction(app, args, network, &manifest, "", &[wasm_hex]).await
+    submit_transaction(app, TOOL, args, &target, &manifest, "", &[wasm_hex]).await
 }
 
 /// Collects transaction blobs from `blobs` (inline hex strings) and `blob_files`
@@ -679,64 +940,75 @@ fn resolve_blobs(args: &Value) -> Result<Vec<String>, String> {
 }
 
 async fn request_pre_authorization(app: &Rc<App>, args: &Value) -> ToolResult {
+    const TOOL: &str = "request_pre_authorization";
     let subintent = match req_str(args, "subintent_manifest") {
         Ok(v) => v,
-        Err(e) => return ToolResult::error(e),
+        Err(e) => return failed(app, TOOL, &Failure::input(e), None),
     };
-    let expire = match args.get("expire_after_seconds").and_then(Value::as_u64) {
-        Some(v) => v,
-        None => return ToolResult::error("missing required parameter 'expire_after_seconds'"),
+    let Some(expire) = opt_u64(args, "expire_after_seconds") else {
+        return failed(
+            app,
+            TOOL,
+            &Failure::input("missing required parameter 'expire_after_seconds'"),
+            None,
+        );
     };
-    let network = match req_network(args) {
-        Ok(n) => n,
-        Err(e) => return ToolResult::error(e),
+    let target = match target(app, args, DEFAULT_SIGN_TIMEOUT) {
+        Ok(t) => t,
+        Err(f) => return failed(app, TOOL, &f, None),
     };
     let message = opt_str(args, "message").unwrap_or_default();
-    let ctx = match dapp_context(args, network) {
-        Ok(ctx) => ctx,
-        Err(e) => return ToolResult::error(e),
+    let ask = Ask {
+        tool: TOOL,
+        kind: "pre_authorization",
+        summary: format!(
+            "{} (expires after {expire} s)",
+            manifest_summary(&subintent, &message)
+        ),
+        interaction: pre_authorization_request(&subintent, &message, expire, &target.ctx),
     };
-    let password = match load_password(app, args) {
-        Ok(p) => p,
-        Err(e) => return ToolResult::error(e),
+    let (reply, result) = interact(app, args, &target, ask).await;
+    let response = match result {
+        Ok(v) => v,
+        Err(f) => return failed(app, TOOL, &f, Some(&reply)),
     };
-    let timeout = signing_timeout(args);
-
-    let connector = Connector::new();
-    match connector
-        .request_pre_authorization(&password, &subintent, &message, expire, &ctx, timeout)
-        .await
-    {
-        Ok(signed_hex) => ToolResult::text(format!(
+    match extract_signed_partial_transaction(&response) {
+        Ok(signed_hex) => reply.annotate(ToolResult::text(format!(
             "PRE-AUTHORIZATION SIGNED ✓ (network: {net})\n\
+             Interaction: {id}\n\
              Signed partial transaction (hex):\n{signed_hex}\n\n\
              It was NOT submitted. Combine it into a parent transaction to use it.",
-            net = network.label(),
-            signed_hex = signed_hex,
-        )),
-        Err(e) => ToolResult::error(format!("pre-authorization not signed: {e}")),
+            net = target.network.label(),
+            id = reply.interaction_id,
+        ))),
+        Err(e) => failed(app, TOOL, &no_content(&e.to_string(), &reply), Some(&reply)),
     }
 }
 
+/// A dApp definition is part of every signed ROLA message: without one a proof proves nothing.
+fn require_dapp(target: &Target) -> Result<(), Failure> {
+    if target.dapp_definition().is_empty() {
+        return Err(Failure::input(
+            "missing 'dapp_definition' — pass it, or set the RADIX_DAPP_DEFINITION_MAINNET / \
+             RADIX_DAPP_DEFINITION_STOKENET env var. It is part of the signed ROLA message, so it cannot be empty.",
+        ));
+    }
+    Ok(())
+}
+
 async fn request_account_proof(app: &Rc<App>, args: &Value) -> ToolResult {
+    const TOOL: &str = "request_account_proof";
     let challenge = match req_str(args, "challenge") {
         Ok(v) => v,
-        Err(e) => return ToolResult::error(e),
+        Err(e) => return failed(app, TOOL, &Failure::input(e), None),
     };
-    let network = match req_network(args) {
-        Ok(n) => n,
-        Err(e) => return ToolResult::error(e),
+    let target = match target(app, args, DEFAULT_SIGN_TIMEOUT) {
+        Ok(t) => t,
+        Err(f) => return failed(app, TOOL, &f, None),
     };
-    let dapp_definition = resolve_dapp_definition(args, network);
-    if dapp_definition.is_empty() {
-        return ToolResult::error(
-            "missing 'dapp_definition' — pass it, or set the \
-             RADIX_DAPP_DEFINITION_MAINNET / RADIX_DAPP_DEFINITION_STOKENET env var. \
-             It is part of the signed ROLA message, so it cannot be empty."
-                .to_string(),
-        );
+    if let Err(f) = require_dapp(&target) {
+        return failed(app, TOOL, &f, None);
     }
-    let origin = resolve_origin(args);
     // What the person is asked to share besides the signature. Nothing by default: a one-time
     // data request is one the wallet will not let them skip, so asking for an email they do not
     // have turns "log in" into "first write one down".
@@ -745,47 +1017,51 @@ async fn request_account_proof(app: &Rc<App>, args: &Value) -> ToolResult {
             || opt_bool(args, "request_email").unwrap_or(false),
         email: opt_bool(args, "request_email").unwrap_or(false),
     };
-    let password = match load_password(app, args) {
-        Ok(p) => p,
-        Err(e) => return ToolResult::error(e),
+    let ask = Ask {
+        tool: TOOL,
+        kind: "account_proof",
+        summary: "sign a ROLA challenge with an account".to_string(),
+        interaction: account_proof_request_sharing(&challenge, &target.ctx, share),
     };
-    let timeout = signing_timeout(args);
-    let ctx = DappContext::new(network.id(), dapp_definition.clone(), origin.clone());
-
-    let connector = Connector::new();
-    let response = match connector
-        .request_account_proof_sharing(&password, &challenge, &ctx, share, timeout)
-        .await
-    {
+    let (reply, result) = interact(app, args, &target, ask).await;
+    let response = match result {
         Ok(v) => v,
-        Err(e) => return ToolResult::error(format!("account proof not signed: {e}")),
+        Err(f) => return failed(app, TOOL, &f, Some(&reply)),
     };
 
     let proofs = match extract_proofs(&response) {
         Ok(proofs) => proofs,
-        Err(e) => return ToolResult::error(format!("wallet returned no usable proof: {e}")),
+        Err(e) => return failed(app, TOOL, &no_content(&e.to_string(), &reply), Some(&reply)),
     };
     let Some((address, proof)) = proofs.into_iter().next() else {
-        return ToolResult::error("the wallet returned an empty proof set.");
+        return failed(
+            app,
+            TOOL,
+            &no_content("the wallet returned an empty proof set", &reply),
+            Some(&reply),
+        );
     };
-
-    let public_key_hex = proof
-        .get("publicKey")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let signature_hex = proof
-        .get("signature")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
 
     let ap = AccountProof {
         address: address.clone(),
-        public_key_hex,
-        signature_hex,
+        public_key_hex: proof
+            .get("publicKey")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        signature_hex: proof
+            .get("signature")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
     };
-    let verification = verify_account_proof(&ap, &challenge, &dapp_definition, &origin, network.id());
+    let verification = verify_account_proof(
+        &ap,
+        &challenge,
+        target.dapp_definition(),
+        target.origin(),
+        target.network.id(),
+    );
     let persona = extract_persona_name(&response);
     let email = extract_persona_email(&response);
 
@@ -794,20 +1070,389 @@ async fn request_account_proof(app: &Rc<App>, args: &Value) -> ToolResult {
         Err(e) => ("NOT VERIFIED ✗", format!("\nVerification error: {e}")),
     };
 
-    ToolResult::text(format!(
+    reply.annotate(ToolResult::text(format!(
         "ACCOUNT PROOF {verdict} (network: {net})\n\
-         Address:    {address}\n\
-         Public key: {pk}\n\
-         Persona:    {persona}\n\
-         Email:      {email}{extra}",
-        verdict = verdict,
-        net = network.label(),
+         Address:     {address}\n\
+         Public key:  {pk}\n\
+         Persona:     {persona}\n\
+         Email:       {email}\n\
+         Interaction: {id}{extra}",
+        net = target.network.label(),
         address = ap.address,
         pk = ap.public_key_hex,
         persona = persona.as_deref().unwrap_or("(not requested / not shared)"),
         email = email.as_deref().unwrap_or("(not requested / not shared)"),
-        extra = extra,
-    ))
+        id = reply.interaction_id,
+    )))
+}
+
+/// The challenge a request signs: the caller's (checked), or a fresh one.
+fn challenge_arg(args: &Value) -> Result<String, Failure> {
+    match opt_str(args, "challenge") {
+        Some(challenge) => {
+            check_challenge(&challenge).map_err(Failure::input)?;
+            Ok(challenge)
+        }
+        None => random_challenge().map_err(Failure::local),
+    }
+}
+
+/// Sends an authorized/unauthorized request and lays out the answer with every proof verified.
+async fn persona_request(
+    app: &Rc<App>,
+    args: &Value,
+    target: &Target,
+    tool_name: &str,
+    kind: &str,
+    summary: String,
+    interaction: Value,
+    challenge: &str,
+) -> ToolResult {
+    let ask = Ask {
+        tool: tool_name,
+        kind,
+        summary,
+        interaction,
+    };
+    let (reply, result) = interact(app, args, target, ask).await;
+    let response = match result {
+        Ok(v) => v,
+        Err(f) => return failed(app, tool_name, &f, Some(&reply)),
+    };
+    let verifier = Verifier {
+        challenge,
+        dapp_definition: target.dapp_definition(),
+        origin: target.origin(),
+        network_id: target.network.id(),
+    };
+    let body = render_answer(&response, Some(&verifier));
+    let warning = if body.contains("✗ NOT VERIFIED") {
+        "\n⚠ At least one proof did NOT verify: do not trust what it claims.\n"
+    } else {
+        ""
+    };
+    reply.annotate(ToolResult::text(format!(
+        "{title} ✓ (network: {net})\n{body}{warning}\nChallenge:   {challenge}\nInteraction: {id}\n\n\
+         Raw answer:\n```json\n{raw}\n```",
+        title = tool_name.to_uppercase().replace('_', " "),
+        net = target.network.label(),
+        id = reply.interaction_id,
+        raw = serde_json::to_string_pretty(&response).unwrap_or_default(),
+    )))
+}
+
+async fn request_login(app: &Rc<App>, args: &Value) -> ToolResult {
+    const TOOL: &str = "request_login";
+    let target = match target(app, args, DEFAULT_SIGN_TIMEOUT) {
+        Ok(t) => t,
+        Err(f) => return failed(app, TOOL, &f, None),
+    };
+    let without = opt_bool(args, "without_challenge").unwrap_or(false);
+    let challenge = match challenge_arg(args) {
+        Ok(c) => c,
+        Err(f) => return failed(app, TOOL, &f, None),
+    };
+    let built = (|| -> Result<AuthorizedRequest, String> {
+        Ok(AuthorizedRequest {
+            reset: Some((false, false)),
+            one_time_accounts: parse_accounts(args.get("accounts"), "accounts", &challenge)?,
+            one_time_persona_data: parse_persona_data(args.get("persona_data"), "persona_data")?,
+            ..AuthorizedRequest::new(if without {
+                Auth::LoginWithoutChallenge
+            } else {
+                Auth::LoginWithChallenge(challenge.clone())
+            })
+        })
+    })();
+    let request = match built {
+        Ok(r) => r,
+        Err(e) => return failed(app, TOOL, &Failure::input(e), None),
+    };
+    if let Err(f) = require_dapp(&target) {
+        return failed(app, TOOL, &f, None);
+    }
+    let summary = format!(
+        "log in{}{}",
+        if without {
+            " (no proof)"
+        } else {
+            " with a persona proof"
+        },
+        what_else(&request)
+    );
+    let interaction = authorized_request(&request, &target.ctx);
+    persona_request(
+        app,
+        args,
+        &target,
+        TOOL,
+        "login",
+        summary,
+        interaction,
+        &challenge,
+    )
+    .await
+}
+
+async fn request_ownership_proof(app: &Rc<App>, args: &Value) -> ToolResult {
+    const TOOL: &str = "request_ownership_proof";
+    let identity = match req_str(args, "identity_address") {
+        Ok(v) => v,
+        Err(e) => return failed(app, TOOL, &Failure::input(e), None),
+    };
+    let accounts = string_list(args, "accounts");
+    let prove_persona = opt_bool(args, "prove_persona").unwrap_or(false);
+    if accounts.is_empty() && !prove_persona {
+        return failed(
+            app,
+            TOOL,
+            &Failure::input("nothing to prove: pass accounts and/or prove_persona: true"),
+            None,
+        );
+    }
+    let target = match target(app, args, DEFAULT_SIGN_TIMEOUT) {
+        Ok(t) => t,
+        Err(f) => return failed(app, TOOL, &f, None),
+    };
+    if let Err(f) = require_dapp(&target) {
+        return failed(app, TOOL, &f, None);
+    }
+    let challenge = match challenge_arg(args) {
+        Ok(c) => c,
+        Err(f) => return failed(app, TOOL, &f, None),
+    };
+    let request = AuthorizedRequest {
+        proof_of_ownership: Some(OwnershipWanted {
+            challenge: challenge.clone(),
+            accounts: accounts.clone(),
+            identity: prove_persona.then(|| identity.clone()),
+        }),
+        ..AuthorizedRequest::new(Auth::UsePersona(identity.clone()))
+    };
+    let summary = format!(
+        "prove ownership of {n} account(s){p} as {identity}",
+        n = accounts.len(),
+        p = if prove_persona { " and the persona" } else { "" },
+    );
+    let interaction = authorized_request(&request, &target.ctx);
+    persona_request(
+        app,
+        args,
+        &target,
+        TOOL,
+        "ownership_proof",
+        summary,
+        interaction,
+        &challenge,
+    )
+    .await
+}
+
+async fn request_authorized_tool(app: &Rc<App>, args: &Value) -> ToolResult {
+    const TOOL: &str = "request_authorized";
+    let target = match target(app, args, DEFAULT_SIGN_TIMEOUT) {
+        Ok(t) => t,
+        Err(f) => return failed(app, TOOL, &f, None),
+    };
+    let challenge = match challenge_arg(args) {
+        Ok(c) => c,
+        Err(f) => return failed(app, TOOL, &f, None),
+    };
+    let identity = opt_str(args, "identity_address");
+    let built = (|| -> Result<AuthorizedRequest, String> {
+        let auth = match opt_str(args, "auth").as_deref() {
+            Some("login") => Auth::LoginWithChallenge(challenge.clone()),
+            Some("login_without_challenge") => Auth::LoginWithoutChallenge,
+            Some("use_persona") => Auth::UsePersona(
+                identity
+                    .clone()
+                    .ok_or("auth = use_persona needs identity_address (from request_login)")?,
+            ),
+            Some(other) => {
+                return Err(format!(
+                    "unknown auth \"{other}\" — use login, login_without_challenge or use_persona"
+                ))
+            }
+            None => return Err("missing required parameter 'auth'".to_string()),
+        };
+        let prove_accounts = string_list(args, "prove_accounts");
+        let prove_persona = opt_bool(args, "prove_persona").unwrap_or(false);
+        if prove_persona && !matches!(auth, Auth::UsePersona(_)) {
+            return Err("prove_persona needs auth = use_persona with identity_address".to_string());
+        }
+        let proof_of_ownership = (!prove_accounts.is_empty() || prove_persona).then(|| OwnershipWanted {
+            challenge: challenge.clone(),
+            accounts: prove_accounts,
+            identity: if prove_persona { identity.clone() } else { None },
+        });
+        Ok(AuthorizedRequest {
+            auth,
+            reset: Some((
+                opt_bool(args, "reset_accounts").unwrap_or(false),
+                opt_bool(args, "reset_persona_data").unwrap_or(false),
+            )),
+            proof_of_ownership,
+            one_time_accounts: parse_accounts(
+                args.get("one_time_accounts"),
+                "one_time_accounts",
+                &challenge,
+            )?,
+            ongoing_accounts: parse_accounts(args.get("ongoing_accounts"), "ongoing_accounts", &challenge)?,
+            one_time_persona_data: parse_persona_data(
+                args.get("one_time_persona_data"),
+                "one_time_persona_data",
+            )?,
+            ongoing_persona_data: parse_persona_data(
+                args.get("ongoing_persona_data"),
+                "ongoing_persona_data",
+            )?,
+        })
+    })();
+    let request = match built {
+        Ok(r) => r,
+        Err(e) => return failed(app, TOOL, &Failure::input(e), None),
+    };
+    if let Err(f) = require_dapp(&target) {
+        return failed(app, TOOL, &f, None);
+    }
+    let how = match &request.auth {
+        Auth::LoginWithChallenge(_) => "log in with a persona proof".to_string(),
+        Auth::LoginWithoutChallenge => "log in (no proof)".to_string(),
+        Auth::UsePersona(identity) => format!("as {identity}"),
+    };
+    let summary = format!("{how}{}", what_else(&request));
+    let interaction = authorized_request(&request, &target.ctx);
+    persona_request(
+        app,
+        args,
+        &target,
+        TOOL,
+        "authorized",
+        summary,
+        interaction,
+        &challenge,
+    )
+    .await
+}
+
+async fn request_data(app: &Rc<App>, args: &Value) -> ToolResult {
+    const TOOL: &str = "request_data";
+    let target = match target(app, args, DEFAULT_SIGN_TIMEOUT) {
+        Ok(t) => t,
+        Err(f) => return failed(app, TOOL, &f, None),
+    };
+    let challenge = match challenge_arg(args) {
+        Ok(c) => c,
+        Err(f) => return failed(app, TOOL, &f, None),
+    };
+    let accounts = match parse_accounts(args.get("accounts"), "accounts", &challenge) {
+        Ok(a) => a,
+        Err(e) => return failed(app, TOOL, &Failure::input(e), None),
+    };
+    let persona_data = match parse_persona_data(args.get("persona_data"), "persona_data") {
+        Ok(d) => d,
+        Err(e) => return failed(app, TOOL, &Failure::input(e), None),
+    };
+    if accounts.is_none() && persona_data.is_none() {
+        return failed(
+            app,
+            TOOL,
+            &Failure::input("nothing asked: pass accounts and/or persona_data"),
+            None,
+        );
+    }
+    if accounts.as_ref().is_some_and(|a| a.challenge.is_some()) {
+        if let Err(f) = require_dapp(&target) {
+            return failed(app, TOOL, &f, None);
+        }
+    }
+    let probe = AuthorizedRequest {
+        one_time_accounts: accounts.clone(),
+        one_time_persona_data: persona_data,
+        ..AuthorizedRequest::new(Auth::LoginWithoutChallenge)
+    };
+    let summary = format!("share{}", what_else(&probe));
+    let interaction = unauthorized_request(accounts.as_ref(), persona_data, &target.ctx);
+    persona_request(app, args, &target, TOOL, "data", summary, interaction, &challenge).await
+}
+
+/// «, 1+ account(s) with proof, ongoing persona data (name, phones)» — what else a request asks.
+fn what_else(request: &AuthorizedRequest) -> String {
+    let quantity = |q: radixdlt_connect::Quantity| match q {
+        radixdlt_connect::Quantity::AtLeast(n) => format!("{n}+"),
+        radixdlt_connect::Quantity::Exactly(n) => format!("exactly {n}"),
+    };
+    let accounts = |a: &radixdlt_connect::AccountsWanted, when: &str| {
+        format!(
+            "{when}{q} account(s){p}",
+            q = quantity(a.quantity),
+            p = if a.challenge.is_some() { " with proof" } else { "" }
+        )
+    };
+    let data = |d: &radixdlt_connect::PersonaDataWanted, when: &str| {
+        let mut fields = Vec::new();
+        if d.name {
+            fields.push("name".to_string());
+        }
+        if let Some(q) = d.emails {
+            fields.push(format!("{} email(s)", quantity(q)));
+        }
+        if let Some(q) = d.phones {
+            fields.push(format!("{} phone(s)", quantity(q)));
+        }
+        format!("{when}persona data ({})", fields.join(", "))
+    };
+    let mut parts = Vec::new();
+    if let Some((a, d)) = request.reset {
+        if a || d {
+            parts.push(format!(
+                "reset {}",
+                [(a, "accounts"), (d, "persona data")]
+                    .iter()
+                    .filter(|(on, _)| *on)
+                    .map(|(_, what)| *what)
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            ));
+        }
+    }
+    if let Some(own) = &request.proof_of_ownership {
+        parts.push(format!(
+            "prove {} account(s){}",
+            own.accounts.len(),
+            if own.identity.is_some() { " + persona" } else { "" }
+        ));
+    }
+    if let Some(a) = &request.one_time_accounts {
+        parts.push(accounts(a, ""));
+    }
+    if let Some(a) = &request.ongoing_accounts {
+        parts.push(accounts(a, "ongoing "));
+    }
+    if let Some(d) = &request.one_time_persona_data {
+        parts.push(data(d, ""));
+    }
+    if let Some(d) = &request.ongoing_persona_data {
+        parts.push(data(d, "ongoing "));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", parts.join(", "))
+    }
+}
+
+fn string_list(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 async fn transaction_status(args: &Value) -> ToolResult {
@@ -844,21 +1489,6 @@ async fn transaction_status(args: &Value) -> ToolResult {
 
 /* ──────────────────────────────── helpers ──────────────────────────────── */
 
-fn load_password(app: &Rc<App>, args: &Value) -> Result<Vec<u8>, String> {
-    let state = Store::load(app.config_path())
-        .map_err(|_| "no paired wallet. Call pair_wallet first (needed once per device).".to_string())?;
-    password_for(&state, opt_str(args, "wallet_public_key").as_deref())
-}
-
-fn password_for(state: &LinkState, wallet_public_key: Option<&str>) -> Result<Vec<u8>, String> {
-    match wallet_public_key {
-        Some(pk) => state.password_bytes_for(pk).map_err(|e| e.to_string()),
-        None => state
-            .password_bytes()
-            .map_err(|_| "no paired wallet. Call pair_wallet first (needed once per device).".to_string()),
-    }
-}
-
 /// Env var holding the default dApp definition for a network, so the operator
 /// can configure the connector's identity once instead of relying on the agent
 /// to pass `dapp_definition` on every call.
@@ -870,8 +1500,8 @@ fn dapp_definition_env(network: Network) -> &'static str {
 }
 
 /// Resolves the dApp definition with precedence: call arg → per-network env var
-/// → empty (which makes the wallet show the request as unverified).
-fn resolve_dapp_definition(args: &Value, network: Network) -> String {
+/// → empty (which the wallet refuses).
+pub fn resolve_dapp_definition(args: &Value, network: Network) -> String {
     opt_str(args, "dapp_definition")
         .or_else(|| env_var(dapp_definition_env(network)))
         .unwrap_or_default()
@@ -879,7 +1509,7 @@ fn resolve_dapp_definition(args: &Value, network: Network) -> String {
 
 /// Resolves the origin with precedence: call arg → `RADIX_DAPP_ORIGIN` env var
 /// → the built-in default.
-fn resolve_origin(args: &Value) -> String {
+pub fn resolve_origin(args: &Value) -> String {
     opt_str(args, "origin")
         .or_else(|| env_var("RADIX_DAPP_ORIGIN"))
         .unwrap_or_else(|| DEFAULT_ORIGIN.to_string())
@@ -890,27 +1520,15 @@ fn env_var(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|s| !s.is_empty())
 }
 
-fn dapp_context(args: &Value, network: Network) -> Result<DappContext, String> {
-    let dapp_definition = resolve_dapp_definition(args, network);
-    let origin = resolve_origin(args);
-    Ok(DappContext::new(network.id(), dapp_definition, origin))
-}
-
-fn signing_timeout(args: &Value) -> Duration {
-    Duration::from_secs(clamp_timeout(
-        opt_u64(args, "timeout_seconds").unwrap_or(DEFAULT_SIGN_TIMEOUT),
-    ))
-}
-
-fn clamp_timeout(seconds: u64) -> u64 {
+pub fn clamp_timeout(seconds: u64) -> u64 {
     seconds.clamp(1, MAX_TIMEOUT)
 }
 
-fn req_network(args: &Value) -> Result<Network, String> {
+pub fn req_network(args: &Value) -> Result<Network, String> {
     Network::parse(&req_str(args, "network")?)
 }
 
-fn opt_str(args: &Value, key: &str) -> Option<String> {
+pub fn opt_str(args: &Value, key: &str) -> Option<String> {
     args.get(key)
         .and_then(|v| v.as_str())
         .map(str::to_string)
@@ -921,11 +1539,11 @@ fn req_str(args: &Value, key: &str) -> Result<String, String> {
     opt_str(args, key).ok_or_else(|| format!("missing required parameter '{key}'"))
 }
 
-fn opt_u64(args: &Value, key: &str) -> Option<u64> {
+pub fn opt_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(Value::as_u64)
 }
 
-fn opt_bool(args: &Value, key: &str) -> Option<bool> {
+pub fn opt_bool(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(Value::as_bool)
 }
 

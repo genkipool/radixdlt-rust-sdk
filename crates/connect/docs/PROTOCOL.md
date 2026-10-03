@@ -210,6 +210,28 @@ Interactions supported (schema in
 
 ---
 
+### 6.1 Delivery, settling and retries (`Connector::exchange`)
+
+Every `request_*` method is `exchange` with a built request; `exchange` (and
+`await_response`, which only listens for an earlier `interactionId`) reports each
+step to a `Progress` observer: `TurnTaken`, `Settling`, `ChannelOpen`,
+**`Delivered`** (the wallet's `receiveMessageConfirmation`: the request is now in
+its queue), `Resending`, `Reconnecting`, and `OtherMessage` (an answer to an
+EARLIER interaction — never silently dropped).
+
+Behaviour observed on a real Android wallet, and what the connector does about it:
+
+| Wallet behaviour | Consequence | Connector |
+| --- | --- | --- |
+| One data channel per LINK; ~5 s after a connection closes it tears down the link's channel *at that moment*. | A channel opened right after another dies a few seconds in; its request reaches the phone but the answer is lost. | Waits `WALLET_SETTLE` (8 s) after the link's last channel closed before opening another. |
+| It reads a new channel only once it has seen the connection come up on its side. | A message sent into that gap is lost with no error. | Waits 0.6 s after `on_open`; resends (same id, fresh channel, up to `SEND_ATTEMPTS` = 3) when no receipt confirmation arrives in 6 s. |
+| The answer goes to whatever channel the link has when the person decides. | A channel lost after delivery would strand the answer. | Reopens (after settling) and keeps listening; never resends a delivered request. |
+| Requests sit in an in-memory queue until approved/rejected or the app closes; a dApp cannot withdraw one. | Unanswered requests block everything behind them. | (Caller's job — the MCP refuses new sends while one is pending.) |
+
+Channels are closed explicitly when dropped, so cancelling a request (dropping its
+future) ends the connection instead of leaving a half-open one for the wallet to
+route answers to.
+
 ## 7. Persistent link state (`state.rs`, `connector.json`)
 
 Pairings are stored in a `connector.json` compatible with the JS Radix Connect

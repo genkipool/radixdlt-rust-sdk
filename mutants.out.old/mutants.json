@@ -1,0 +1,162 @@
+[
+  {
+    "diff": "--- crates/address/src/lib.rs\n+++ replace virtual_identity_address -> Result<String, AddressError> with Ok(String::new())\n@@ -94,25 +94,17 @@\n }\n \n /// Derives the `identity_...` (bech32m) address of an Ed25519 virtual identity — a persona's\n /// address — the same way [`virtual_account_address`] does an account's.\n ///\n /// # Errors\n /// As [`virtual_account_address`].\n pub fn virtual_identity_address(public_key_hex: &str, network_id: u8) -> Result<String, AddressError> {\n-    let bytes = hex::decode(public_key_hex).map_err(|e| AddressError::InvalidHex(e.to_string()))?;\n-    let pk = Ed25519PublicKey::try_from(bytes.as_slice()).map_err(|_| AddressError::InvalidKeyLength)?;\n-    let network = network_by_id(network_id).ok_or(AddressError::UnknownNetwork(network_id))?;\n-\n-    let identity = ComponentAddress::preallocated_identity_from_public_key(&pk);\n-    let encoder = AddressBech32Encoder::new(&network);\n-    encoder\n-        .encode(identity.as_bytes())\n-        .map_err(|e| AddressError::Encode(format!(\"{e:?}\")))\n+    Ok(String::new()) /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n \n     #[test]\n     fn derives_known_address() {\n",
+    "file": "crates/address/src/lib.rs",
+    "function": {
+      "function_name": "virtual_identity_address",
+      "return_type": "-> Result<String, AddressError>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 111
+        },
+        "start": {
+          "column": 1,
+          "line": 96
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/address/src/lib.rs:102:5: replace virtual_identity_address -> Result<String, AddressError> with Ok(String::new())",
+    "package": "radixdlt-address",
+    "replacement": "Ok(String::new())",
+    "span": {
+      "end": {
+        "column": 61,
+        "line": 110
+      },
+      "start": {
+        "column": 5,
+        "line": 102
+      }
+    }
+  },
+  {
+    "diff": "--- crates/address/src/lib.rs\n+++ replace virtual_identity_address -> Result<String, AddressError> with Ok(\"xyzzy\".into())\n@@ -94,25 +94,17 @@\n }\n \n /// Derives the `identity_...` (bech32m) address of an Ed25519 virtual identity — a persona's\n /// address — the same way [`virtual_account_address`] does an account's.\n ///\n /// # Errors\n /// As [`virtual_account_address`].\n pub fn virtual_identity_address(public_key_hex: &str, network_id: u8) -> Result<String, AddressError> {\n-    let bytes = hex::decode(public_key_hex).map_err(|e| AddressError::InvalidHex(e.to_string()))?;\n-    let pk = Ed25519PublicKey::try_from(bytes.as_slice()).map_err(|_| AddressError::InvalidKeyLength)?;\n-    let network = network_by_id(network_id).ok_or(AddressError::UnknownNetwork(network_id))?;\n-\n-    let identity = ComponentAddress::preallocated_identity_from_public_key(&pk);\n-    let encoder = AddressBech32Encoder::new(&network);\n-    encoder\n-        .encode(identity.as_bytes())\n-        .map_err(|e| AddressError::Encode(format!(\"{e:?}\")))\n+    Ok(\"xyzzy\".into()) /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n \n     #[test]\n     fn derives_known_address() {\n",
+    "file": "crates/address/src/lib.rs",
+    "function": {
+      "function_name": "virtual_identity_address",
+      "return_type": "-> Result<String, AddressError>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 111
+        },
+        "start": {
+          "column": 1,
+          "line": 96
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/address/src/lib.rs:102:5: replace virtual_identity_address -> Result<String, AddressError> with Ok(\"xyzzy\".into())",
+    "package": "radixdlt-address",
+    "replacement": "Ok(\"xyzzy\".into())",
+    "span": {
+      "end": {
+        "column": 61,
+        "line": 110
+      },
+      "start": {
+        "column": 5,
+        "line": 102
+      }
+    }
+  },
+  {
+    "diff": "--- crates/rola/src/lib.rs\n+++ replace verify_account_proof -> Result<(), RolaError> with Ok(())\n@@ -167,24 +167,17 @@\n /// about an account its key does not control.\n pub fn verify_account_proof(\n     proof: &AccountProof,\n     challenge_hex: &str,\n     dapp_definition: &str,\n     origin: &str,\n     network_id: u8,\n ) -> Result<(), RolaError> {\n-    verify_proof(\n-        proof,\n-        challenge_hex,\n-        dapp_definition,\n-        origin,\n-        network_id,\n-        virtual_account_address,\n-    )\n+    Ok(()) /* ~ changed by cargo-mutants ~ */\n }\n \n /// Verifies a ROLA PERSONA proof: `proof.address` is the persona's `identity_…` address, and the\n /// public key must derive to it as a virtual identity. Same message, same signature check as an\n /// account proof — only the address the key must own differs.\n ///\n /// # Errors\n /// As [`verify_account_proof`].\n",
+    "file": "crates/rola/src/lib.rs",
+    "function": {
+      "function_name": "verify_account_proof",
+      "return_type": "-> Result<(), RolaError>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 183
+        },
+        "start": {
+          "column": 1,
+          "line": 160
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/rola/src/lib.rs:175:5: replace verify_account_proof -> Result<(), RolaError> with Ok(())",
+    "package": "radixdlt-rola",
+    "replacement": "Ok(())",
+    "span": {
+      "end": {
+        "column": 6,
+        "line": 182
+      },
+      "start": {
+        "column": 5,
+        "line": 175
+      }
+    }
+  },
+  {
+    "diff": "--- crates/rola/src/lib.rs\n+++ replace verify_persona_proof -> Result<(), RolaError> with Ok(())\n@@ -190,24 +190,17 @@\n /// As [`verify_account_proof`].\n pub fn verify_persona_proof(\n     proof: &AccountProof,\n     challenge_hex: &str,\n     dapp_definition: &str,\n     origin: &str,\n     network_id: u8,\n ) -> Result<(), RolaError> {\n-    verify_proof(\n-        proof,\n-        challenge_hex,\n-        dapp_definition,\n-        origin,\n-        network_id,\n-        virtual_identity_address,\n-    )\n+    Ok(()) /* ~ changed by cargo-mutants ~ */\n }\n \n fn verify_proof(\n     proof: &AccountProof,\n     challenge_hex: &str,\n     dapp_definition: &str,\n     origin: &str,\n     network_id: u8,\n",
+    "file": "crates/rola/src/lib.rs",
+    "function": {
+      "function_name": "verify_persona_proof",
+      "return_type": "-> Result<(), RolaError>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 206
+        },
+        "start": {
+          "column": 1,
+          "line": 185
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/rola/src/lib.rs:198:5: replace verify_persona_proof -> Result<(), RolaError> with Ok(())",
+    "package": "radixdlt-rola",
+    "replacement": "Ok(())",
+    "span": {
+      "end": {
+        "column": 6,
+        "line": 205
+      },
+      "start": {
+        "column": 5,
+        "line": 198
+      }
+    }
+  },
+  {
+    "diff": "--- crates/rola/src/lib.rs\n+++ replace verify_proof -> Result<(), RolaError> with Ok(())\n@@ -208,48 +208,17 @@\n fn verify_proof(\n     proof: &AccountProof,\n     challenge_hex: &str,\n     dapp_definition: &str,\n     origin: &str,\n     network_id: u8,\n     derive: fn(&str, u8) -> Result<String, AddressError>,\n ) -> Result<(), RolaError> {\n-    let message = signature_message(challenge_hex, dapp_definition, origin)?;\n-\n-    // 1) Signature valid for the public key.\n-    let pk_bytes =\n-        hex::decode(&proof.public_key_hex).map_err(|e| RolaError::InvalidPublicKeyHex(e.to_string()))?;\n-    let pk_arr: [u8; 32] = pk_bytes\n-        .as_slice()\n-        .try_into()\n-        .map_err(|_| RolaError::InvalidPublicKey)?;\n-    let verifying_key = VerifyingKey::from_bytes(&pk_arr).map_err(|_| RolaError::InvalidPublicKey)?;\n-\n-    let sig_bytes =\n-        hex::decode(&proof.signature_hex).map_err(|e| RolaError::InvalidSignatureHex(e.to_string()))?;\n-    let sig_arr: [u8; 64] = sig_bytes\n-        .as_slice()\n-        .try_into()\n-        .map_err(|_| RolaError::InvalidSignatureLength)?;\n-    let signature = Signature::from_bytes(&sig_arr);\n-\n-    verifying_key\n-        .verify_strict(&message, &signature)\n-        .map_err(|_| RolaError::SignatureMismatch)?;\n-\n-    // 2) The public key derives to the claimed address (virtual account or identity).\n-    let derived = derive(&proof.public_key_hex, network_id)?;\n-    if derived != proof.address {\n-        return Err(RolaError::AddressMismatch {\n-            derived,\n-            claimed: proof.address.clone(),\n-        });\n-    }\n-    Ok(())\n+    Ok(()) /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n \n     #[test]\n     fn rola_message_is_blake2b_256() {\n",
+    "file": "crates/rola/src/lib.rs",
+    "function": {
+      "function_name": "verify_proof",
+      "return_type": "-> Result<(), RolaError>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 248
+        },
+        "start": {
+          "column": 1,
+          "line": 208
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/rola/src/lib.rs:216:5: replace verify_proof -> Result<(), RolaError> with Ok(())",
+    "package": "radixdlt-rola",
+    "replacement": "Ok(())",
+    "span": {
+      "end": {
+        "column": 11,
+        "line": 247
+      },
+      "start": {
+        "column": 5,
+        "line": 216
+      }
+    }
+  }
+]

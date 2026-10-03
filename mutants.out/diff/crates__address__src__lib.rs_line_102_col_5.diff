@@ -1,0 +1,29 @@
+--- crates/address/src/lib.rs
++++ replace virtual_identity_address -> Result<String, AddressError> with Ok(String::new())
+@@ -94,25 +94,17 @@
+ }
+ 
+ /// Derives the `identity_...` (bech32m) address of an Ed25519 virtual identity — a persona's
+ /// address — the same way [`virtual_account_address`] does an account's.
+ ///
+ /// # Errors
+ /// As [`virtual_account_address`].
+ pub fn virtual_identity_address(public_key_hex: &str, network_id: u8) -> Result<String, AddressError> {
+-    let bytes = hex::decode(public_key_hex).map_err(|e| AddressError::InvalidHex(e.to_string()))?;
+-    let pk = Ed25519PublicKey::try_from(bytes.as_slice()).map_err(|_| AddressError::InvalidKeyLength)?;
+-    let network = network_by_id(network_id).ok_or(AddressError::UnknownNetwork(network_id))?;
+-
+-    let identity = ComponentAddress::preallocated_identity_from_public_key(&pk);
+-    let encoder = AddressBech32Encoder::new(&network);
+-    encoder
+-        .encode(identity.as_bytes())
+-        .map_err(|e| AddressError::Encode(format!("{e:?}")))
++    Ok(String::new()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn derives_known_address() {

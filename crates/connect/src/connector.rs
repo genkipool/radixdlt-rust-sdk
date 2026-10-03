@@ -454,6 +454,21 @@ async fn add_remote_candidate(pc: &Arc<dyn PeerConnection>, payload: Value) {
     let _ = pc.add_ice_candidate(init).await;
 }
 
+/// Closing on drop is what lets a caller CANCEL: dropping the request future drops the channel,
+/// and the wallet sees the connection go instead of keeping a half-dead one for this link. Left
+/// open, the wallet may keep routing answers to a channel nobody reads.
+impl Drop for Channel {
+    fn drop(&mut self) {
+        let (dc, pc) = (self.dc.clone(), self._pc.clone());
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = dc.close().await;
+                let _ = pc.close().await;
+            });
+        }
+    }
+}
+
 impl Channel {
     /// Sends an application message (JSON Value), chunked, and waits for the peer's
     /// confirmation.
@@ -492,7 +507,12 @@ impl Channel {
         timeout(wait, self.incoming.recv())
             .await
             .map_err(|_| ConnectError::ResponseTimeout)?
-            .ok_or(ConnectError::SignalingClosed)
+            // The data channel ended: the wallet closed it (or the transport failed). Not a
+            // signaling problem — signaling is long gone by now — and saying so sent people
+            // debugging the wrong layer.
+            .ok_or_else(|| {
+                ConnectError::WebRtc("the data channel closed (the wallet ended the connection)".into())
+            })
     }
 }
 
