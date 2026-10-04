@@ -235,12 +235,13 @@ pub fn list_json() -> Vec<Value> {
         tool(
             "send_transaction",
             "Send a transaction to sign",
-            "Sends a transaction manifest to the paired wallet to sign AND submit. The user approves on their phone. Returns the transaction intent hash; confirm the commit with transaction_status. Build and preview the manifest with the radix-community HTTP MCP server first. Refuses to send while an earlier request may still be waiting in the wallet (see pending_requests).",
+            "Sends a transaction manifest to the paired wallet to sign AND submit. The user approves on their phone. Returns the transaction intent hash; confirm the commit with transaction_status. It is simulated on the Gateway first and NOT sent to the phone when the simulation fails; preview_only: true returns the simulation without sending. Refuses to send while an earlier request may still be waiting in the wallet (see pending_requests).",
             false,
             request_schema(
                 json!({
                     "manifest": { "type": "string", "description": "The transaction manifest (RTM text) to sign and submit. Never include lock_fee: the wallet adds its own." },
                     "message": { "type": "string", "description": "Optional transaction message shown to the user in the wallet." },
+                    "preview_only": { "type": "boolean", "description": "Only simulate it on the Gateway and report the outcome; nothing is sent to the wallet." },
                     "blobs": { "type": "array", "items": { "type": "string" }, "description": "Hex-encoded blobs referenced by the manifest via Blob(\"<hash>\") (optional)." },
                     "blob_files": { "type": "array", "items": { "type": "string" }, "description": "Paths to binary files read locally and attached as blobs — use for large payloads like package WASM (optional)." }
                 }),
@@ -835,7 +836,52 @@ async fn send_transaction(app: &Rc<App>, args: &Value) -> ToolResult {
         Ok(b) => b,
         Err(e) => return failed(app, TOOL, &Failure::input(e), None),
     };
+    if opt_bool(args, "preview_only").unwrap_or(false) {
+        return preview_only(target.network, &manifest, &blobs).await;
+    }
+    if let Err(failure) = preflight(
+        target.network,
+        &manifest,
+        &blobs,
+        "Not sent to the phone: the transaction would fail on the ledger. Fix the manifest (preview_only: true shows the simulation) and send again.",
+    )
+    .await
+    {
+        return failed(app, TOOL, &failure, None);
+    }
     submit_transaction(app, TOOL, args, &target, &manifest, &message, &blobs).await
+}
+
+/// The simulation alone: nothing reaches the phone.
+async fn preview_only(network: Network, manifest: &str, blobs: &[String]) -> ToolResult {
+    match gateway::preview(network, manifest, blobs).await {
+        Ok(outcome) if outcome.success => ToolResult::text("PREVIEW SUCCEEDED (nothing was sent to the wallet)".to_string()),
+        Ok(outcome) => ToolResult::text(format!(
+            "PREVIEW FAILED (nothing was sent to the wallet): {}",
+            outcome.message.unwrap_or_else(|| "the simulation did not succeed".to_string())
+        )),
+        Err(e) => ToolResult::text(format!("PREVIEW COULD NOT RUN: {e}")),
+    }
+}
+
+/// Dry-runs a manifest on the Gateway (free credit, signatures assumed) before the phone is asked.
+///
+/// A transaction that fails on the ledger still costs its fee, and a request that reaches the
+/// phone only to fail wastes the person's attention — and, while it waits in the wallet, blocks
+/// every other request on the link (`PENDING_IN_WALLET`). Only a definitive simulated FAILURE
+/// blocks; a preview that could not run (Gateway down) lets the request through, because the
+/// wallet previews it again before anybody signs.
+async fn preflight(network: Network, manifest: &str, blobs: &[String], hint: &str) -> Result<(), Failure> {
+    match gateway::preview(network, manifest, blobs).await {
+        Ok(outcome) if !outcome.success => Err(Failure::new(
+            "PREVIEW_FAILED",
+            "preflight",
+            true,
+            outcome.message.unwrap_or_else(|| "the simulation did not succeed".to_string()),
+            hint,
+        )),
+        _ => Ok(()),
+    }
 }
 
 async fn deploy_package(app: &Rc<App>, args: &Value) -> ToolResult {
@@ -887,22 +933,16 @@ async fn deploy_package(app: &Rc<App>, args: &Value) -> ToolResult {
          None\n;\n"
     );
 
-    // Dry-run on the Gateway (with the WASM blob) before asking the user to
-    // approve — a package deploy is costly, so never sign one that would fail.
-    // Only a definitive simulated failure blocks; a preview infra error does not.
-    if let Ok(outcome) = gateway::preview(target.network, &manifest, std::slice::from_ref(&wasm_hex)).await {
-        if !outcome.success {
-            let failure = Failure::new(
-                "PREVIEW_FAILED",
-                "preflight",
-                true,
-                outcome
-                    .message
-                    .unwrap_or_else(|| "the simulation did not succeed".to_string()),
-                "Not signed: a deploy costs the fee even when it fails. Fix the package or the owner role, and preview again.",
-            );
-            return failed(app, TOOL, &failure, None);
-        }
+    // A package deploy is costly: never sign one that would fail.
+    if let Err(failure) = preflight(
+        target.network,
+        &manifest,
+        std::slice::from_ref(&wasm_hex),
+        "Not signed: a deploy costs the fee even when it fails. Fix the package or the owner role, and preview again.",
+    )
+    .await
+    {
+        return failed(app, TOOL, &failure, None);
     }
 
     submit_transaction(app, TOOL, args, &target, &manifest, "", &[wasm_hex]).await
