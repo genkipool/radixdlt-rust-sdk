@@ -23,6 +23,8 @@ radixdlt-connect-types = { path = "../connect-types", version = "0.2.0" }
 ed25519-dalek = "3"
 getrandom = "0.4"
 blake2 = "0.10"
+# The link's turn across processes (an OS file lock), within the crate's MSRV.
+fs4 = { version = "0.13", features = ["sync"] }
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

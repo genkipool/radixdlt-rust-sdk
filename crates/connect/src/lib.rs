@@ -185,6 +185,8 @@ async fn listen(
     }
 }
 
+mod shared_turn;
+
 /// A channel that ended under us (the wallet closed it, or its transport failed), as opposed
 /// to a timeout or an answer.
 fn channel_lost(error: &ConnectError) -> bool {
@@ -198,24 +200,39 @@ fn last_closed() -> &'static std::sync::Mutex<std::collections::HashMap<u64, Ins
     CLOSED.get_or_init(Default::default)
 }
 
-/// Records, when dropped, that a channel on this link just closed.
-struct ClosesLink(u64);
+/// Records, when dropped, that a channel on this link just closed — in this process and, through
+/// the shared directory, for every other process using the link.
+struct ClosesLink(u64, String);
+
+impl ClosesLink {
+    fn of(password: &[u8]) -> Self {
+        Self(link_key(password), shared_turn::key(password))
+    }
+}
 
 impl Drop for ClosesLink {
     fn drop(&mut self) {
         let mut closed = last_closed().lock().unwrap_or_else(|e| e.into_inner());
         closed.insert(self.0, Instant::now());
+        shared_turn::note_closed(&self.1);
     }
 }
 
 /// How long to wait before opening a channel on this link: what is left of [`WALLET_SETTLE`]
 /// since its last channel closed.
 fn settle_wait(password: &[u8]) -> Duration {
-    let closed = last_closed().lock().unwrap_or_else(|e| e.into_inner());
-    closed
-        .get(&link_key(password))
-        .map(|at| WALLET_SETTLE.saturating_sub(at.elapsed()))
-        .unwrap_or_default()
+    let here = {
+        let closed = last_closed().lock().unwrap_or_else(|e| e.into_inner());
+        closed
+            .get(&link_key(password))
+            .map(|at| WALLET_SETTLE.saturating_sub(at.elapsed()))
+            .unwrap_or_default()
+    };
+    // Another process may have closed a channel on this link more recently.
+    let elsewhere = shared_turn::since_closed(password)
+        .map(|ago| WALLET_SETTLE.saturating_sub(ago))
+        .unwrap_or_default();
+    here.max(elsewhere)
 }
 
 fn link_key(password: &[u8]) -> u64 {
@@ -223,6 +240,13 @@ fn link_key(password: &[u8]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     password.hash(&mut hasher);
     hasher.finish()
+}
+
+/// A link's turn, held for one conversation: this process's and the machine's.
+#[derive(Debug)]
+struct Turn {
+    _here: tokio::sync::OwnedMutexGuard<()>,
+    _machine: shared_turn::SharedTurn,
 }
 
 /// The turn-taking mutex for one paired link, created on first use and shared process-wide.
@@ -446,20 +470,21 @@ impl Connector {
     /// itself, so a queued caller can never exceed the deadline it asked for. When the queue
     /// does not clear in time the caller gets [`ConnectError::LinkBusy`], which says what
     /// happened instead of looking like an unresponsive wallet.
-    async fn take_turn(
-        password: &[u8],
-        budget: Duration,
-    ) -> Result<(tokio::sync::OwnedMutexGuard<()>, Duration), ConnectError> {
+    async fn take_turn(password: &[u8], budget: Duration) -> Result<(Turn, Duration), ConnectError> {
         let turn = link_turn(password);
         let started = Instant::now();
         let guard = tokio::time::timeout(budget, turn.lock_owned())
             .await
             .map_err(|_| ConnectError::LinkBusy)?;
+        // Then the machine-wide turn, so another PROCESS on this link waits too.
+        let shared = shared_turn::take(password, started + budget)
+            .await
+            .map_err(|()| ConnectError::LinkBusy)?;
         let left = budget.saturating_sub(started.elapsed());
         if left.is_zero() {
             return Err(ConnectError::LinkBusy);
         }
-        Ok((guard, left))
+        Ok((Turn { _here: guard, _machine: shared }, left))
     }
 
     /// Sends ANY wallet interaction and returns the wallet's answer to it, reporting each step to
@@ -531,7 +556,7 @@ impl Connector {
         });
         let started = Instant::now();
         let deadline = started + budget;
-        let _closes = ClosesLink(link_key(password));
+        let _closes = ClosesLink::of(password);
         let mut delivered = interaction.is_none();
         let mut attempt = 1u32;
         loop {
@@ -566,7 +591,7 @@ impl Connector {
                             reason: error.to_string(),
                         });
                         drop(channel);
-                        drop(ClosesLink(link_key(password)));
+                        drop(ClosesLink::of(password));
                         continue;
                     }
                     Err(error) => return Err(error),
@@ -582,7 +607,7 @@ impl Connector {
                         reason: error.to_string(),
                     });
                     drop(channel);
-                    drop(ClosesLink(link_key(password)));
+                    drop(ClosesLink::of(password));
                 }
                 other => return other,
             }
@@ -618,7 +643,7 @@ impl Connector {
     pub async fn probe(&self, password: &[u8], overall_timeout: Duration) -> Result<Duration, ConnectError> {
         let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
         let deadline = Instant::now() + budget;
-        let _closes = ClosesLink(link_key(password));
+        let _closes = ClosesLink::of(password);
         self.settle(password, deadline, &mut |_| {}).await?;
         let started = Instant::now();
         let channel = self
@@ -936,7 +961,7 @@ mod tests {
     #[test]
     fn a_new_channel_waits_for_the_wallet_to_settle() {
         assert_eq!(settle_wait(b"never-used-link"), Duration::ZERO);
-        drop(ClosesLink(link_key(b"just-closed-link")));
+        drop(ClosesLink::of(b"just-closed-link"));
         let wait = settle_wait(b"just-closed-link");
         assert!(
             wait > WALLET_SETTLE - Duration::from_secs(1) && wait <= WALLET_SETTLE,
