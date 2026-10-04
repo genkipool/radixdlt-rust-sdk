@@ -17,6 +17,7 @@ off-ledger primitives that, until now, only existed in JavaScript/TypeScript. Bu
 |---|---|
 | [`radixdlt-sdk`](crates/sdk) | Umbrella crate; re-exports the below behind feature flags |
 | [`radixdlt-rola`](crates/rola) | ROLA off-ledger authentication (drop-in for `@radixdlt/rola`) |
+| [`radixdlt-gate`](crates/gate) | Short-lived credentials from a wallet signature, bound to a key the requester holds (request, offline verification, answers sealed to a one-time key) |
 | [`radixdlt-address`](crates/address) | Virtual-account address derivation |
 | [`radixdlt-keystore`](crates/keystore) | Encrypted Ed25519 keystore (scrypt + AES-256-GCM) |
 | [`radixdlt-gateway-tx`](crates/gateway-tx) | Gateway client + local transaction signing |

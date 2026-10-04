@@ -1,0 +1,31 @@
+[package]
+name = "radixdlt-gate"
+description = "Wallet-signed, key-bound, short-lived credentials: the request a Radix Wallet signs, its offline ROLA verification, and answers sealed to a one-time key."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["radix", "radixdlt", "rola", "credentials", "access"]
+categories = ["cryptography::cryptocurrencies", "authentication"]
+readme = "README.md"
+
+[dependencies]
+radixdlt-rola = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+getrandom = { workspace = true }
+sha2 = "0.10"
+# Sealing answers to the requester's one-time key (`seal`).
+x25519-dalek = { version = "2", features = ["static_secrets"], optional = true }
+hkdf = { version = "0.12", optional = true }
+chacha20poly1305 = { version = "0.10", optional = true }
+
+[features]
+default = []
+seal = ["dep:x25519-dalek", "dep:hkdf", "dep:chacha20poly1305"]
+
+[lints]
+workspace = true

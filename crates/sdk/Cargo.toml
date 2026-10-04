@@ -18,6 +18,7 @@ radixdlt-rola = { workspace = true, optional = true }
 radixdlt-keystore = { workspace = true, optional = true }
 radixdlt-gateway-tx = { workspace = true, optional = true }
 radixdlt-connect-types = { workspace = true, optional = true }
+radixdlt-gate = { workspace = true, optional = true }
 
 [features]
 default = ["rola"]
@@ -31,8 +32,10 @@ keystore = ["dep:radixdlt-keystore", "address"]
 gateway = ["dep:radixdlt-gateway-tx"]
 # Transport-agnostic Radix Connect wallet-interaction schema (no heavy deps).
 connect-types = ["dep:radixdlt-connect-types"]
+# Wallet-signed, key-bound, short-lived credentials (implies rola).
+gate = ["dep:radixdlt-gate", "rola"]
 # Everything that shares the radix-common/engine tree.
-full = ["rola", "keystore", "gateway", "connect-types"]
+full = ["rola", "keystore", "gateway", "connect-types", "gate"]
 
 # NOTE: the transports `radixdlt-connect` (WebRTC) and `radixdlt-connect-iroh` (QUIC)
 # are intentionally NOT re-exported here. Their dependency trees cannot be resolved

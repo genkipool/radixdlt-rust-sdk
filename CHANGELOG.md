@@ -9,6 +9,15 @@ minor versions may contain breaking changes.
 
 ### Added
 
+- `radixdlt-gate` — **short-lived credentials from a wallet signature.** The generic layer of
+  PamAuthority's Kubernetes and AWS Gates: `request::GateRequest` (destination, level, the
+  requester's key, a short expiry and a nonce; the challenge is derived from it, so a Gate keeps no
+  state), `proof::SignedProof::verify` (account and persona, offline, with `radixdlt-rola`) and,
+  with the `seal` feature, answers sealed to the requester's one-time X25519 key
+  (HKDF-SHA256 + ChaCha20-Poly1305, the challenge as associated data) so a replayed request only
+  yields data its original requester can open. Wire-compatible with the Gates already deployed
+  (pinned challenge vector). Also behind `radixdlt-sdk`'s `gate` feature.
+
 - `radixdlt-connect` — **one turn per link across PROCESSES.** The link's turn and the
   `WALLET_SETTLE` wait used to live in each process, so two programs on one paired link (two AI
   sessions, a `sudo` prompt, a CLI) could open channels over each other and a request vanished

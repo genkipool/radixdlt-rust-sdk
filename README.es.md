@@ -18,6 +18,7 @@ integraciones de wallet en Rust puro.
 |---|---|
 | [`radixdlt-sdk`](crates/sdk) | Crate paraguas; reexporta los de abajo tras *flags* de features |
 | [`radixdlt-rola`](crates/rola) | Autenticación off-ledger ROLA (equivalente a `@radixdlt/rola`) |
+| [`radixdlt-gate`](crates/gate) | Credenciales cortas a partir de una firma de la billetera, atadas a una clave de quien las pide (petición, verificación sin red, respuestas cifradas para una clave de un solo uso) |
 | [`radixdlt-address`](crates/address) | Derivación de direcciones de cuenta virtual |
 | [`radixdlt-keystore`](crates/keystore) | Keystore Ed25519 cifrado (scrypt + AES-256-GCM) |
 | [`radixdlt-gateway-tx`](crates/gateway-tx) | Cliente del Gateway + firma local de transacciones |
