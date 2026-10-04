@@ -51,7 +51,8 @@ radix-connector-mcp update --tag connector-v0.4.0   # a specific release (also t
 An agent can do the same with the `check_update` / `update_connector` tools. **Updating never
 requires pairing the phone again**: the pairing lives in `connector.json` in the config
 directory, and an update only replaces the binary. Restart the MCP client afterwards so it
-launches the new version.
+launches the new version: a running session keeps the binary it started with (on Linux
+`/proc/<pid>/exe` ends in `(deleted)`), and that old copy keeps the old behaviour.
 
 ## Register with an MCP client
 
@@ -81,7 +82,7 @@ If the binary is not on your `PATH`, use its absolute path as `command`.
 | `pair_status` | Waits for the scan/approval and saves the link. |
 | `list_wallets` / `remove_wallet` | Manage paired devices. |
 | `request_accounts` | Asks the wallet to **share its account address(es)** — no signature/proof. Use it to learn which account to fund or transfer from. |
-| `send_transaction` | Sends a manifest to sign **and submit**; returns the intent hash. Supports `blobs` (inline hex) and `blob_files` (local paths). |
+| `send_transaction` | Sends a manifest to sign **and submit**; returns the intent hash. Supports `blobs` (inline hex) and `blob_files` (local paths). Simulates it on the Gateway first and does **not** reach the phone when the simulation fails (`PREVIEW_FAILED`); `preview_only: true` returns the simulation without sending. |
 | `deploy_package` | Publishes a Scrypto package: reads the `.wasm` from a local path, **dry-runs it on the Gateway first** (aborts if it would fail), attaches it as a blob, signs and submits. |
 | `request_pre_authorization` | Signs a subintent (V2 pre-authorization) without submitting. |
 | `request_account_proof` | ROLA "log in with Radix" with an account; verifies the proof locally. |
@@ -129,8 +130,20 @@ when the app is closed. The connector is built around that:
 - **It waits for the wallet to let go of a channel.** The wallet keeps one channel per link and,
   ~5 s after a connection closes, tears down whatever channel the link has then — so a request
   sent right after another could reach the phone and lose its answer. The connector waits 8 s
-  after a channel closes before opening the next one on the same link (across processes too),
-  and reopens a channel lost after delivery to keep waiting for the answer.
+  after a channel closes before opening the next one on the same link, and reopens a channel
+  lost after delivery to keep waiting for the answer.
+- **It takes turns with every other program on the machine (0.6.0).** Several processes often
+  share one paired link — two AI sessions, a `sudo` prompt, a CLI — and before 0.6.0 the turn and
+  the 8 s wait lived inside each process, so one process could open a channel over another's and
+  the request vanished. The turn is now also an OS file lock and the last close is written to
+  disk (`~/.config/radix-connect/links/`, named by a hash of the link — no secret in it). Verified
+  with two processes asking at once on a real phone: the second waited its turn and the settle
+  time, and both arrived. An **older** connector running beside them does not take part: update
+  every program that uses the link.
+- **It does not ring the phone for a transaction that would fail (0.6.0).** `send_transaction`
+  previews the manifest on the Gateway (free credit, signatures assumed); a definitive failure
+  stops it there (`PREVIEW_FAILED`, `retry_safe`: yes), a preview that could not run lets it
+  through — the wallet previews it again before anybody signs.
 - **It checks the dApp identity first.** When `{origin}/.well-known/radix.json` does not list the
   dApp definition, the wallet drops the request *without answering*; the connector refuses to
   send it (`DAPP_NOT_VERIFIED`) instead of waiting out the timeout.
