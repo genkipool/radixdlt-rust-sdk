@@ -67,7 +67,12 @@ pub(crate) async fn take(password: &[u8], deadline: Instant) -> Result<SharedTur
     let Some(path) = dir().map(|d| d.join(format!("{}.lock", key(password)))) else {
         return Ok(SharedTurn(None));
     };
-    let Ok(file) = OpenOptions::new().create(true).truncate(false).write(true).open(&path) else {
+    let Ok(file) = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+    else {
         return Ok(SharedTurn(None));
     };
     loop {
@@ -82,7 +87,10 @@ pub(crate) async fn take(password: &[u8], deadline: Instant) -> Result<SharedTur
 }
 
 fn now_millis() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }
 
 /// Records, for every process, that a channel on this link just closed.
@@ -124,7 +132,9 @@ mod tests {
         let second = take(password, Instant::now() + Duration::from_millis(400)).await;
         assert!(second.is_err(), "the link is held");
         drop(first);
-        assert!(take(password, Instant::now() + Duration::from_secs(1)).await.is_ok());
+        assert!(take(password, Instant::now() + Duration::from_secs(1))
+            .await
+            .is_ok());
         note_closed(&key(password));
         assert!(since_closed(password).is_some_and(|ago| ago < Duration::from_secs(5)));
         let _ = std::fs::remove_dir_all(&home);

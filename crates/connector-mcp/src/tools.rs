@@ -855,10 +855,14 @@ async fn send_transaction(app: &Rc<App>, args: &Value) -> ToolResult {
 /// The simulation alone: nothing reaches the phone.
 async fn preview_only(network: Network, manifest: &str, blobs: &[String]) -> ToolResult {
     match gateway::preview(network, manifest, blobs).await {
-        Ok(outcome) if outcome.success => ToolResult::text("PREVIEW SUCCEEDED (nothing was sent to the wallet)".to_string()),
+        Ok(outcome) if outcome.success => {
+            ToolResult::text("PREVIEW SUCCEEDED (nothing was sent to the wallet)".to_string())
+        }
         Ok(outcome) => ToolResult::text(format!(
             "PREVIEW FAILED (nothing was sent to the wallet): {}",
-            outcome.message.unwrap_or_else(|| "the simulation did not succeed".to_string())
+            outcome
+                .message
+                .unwrap_or_else(|| "the simulation did not succeed".to_string())
         )),
         Err(e) => ToolResult::text(format!("PREVIEW COULD NOT RUN: {e}")),
     }
@@ -877,7 +881,9 @@ async fn preflight(network: Network, manifest: &str, blobs: &[String], hint: &st
             "PREVIEW_FAILED",
             "preflight",
             true,
-            outcome.message.unwrap_or_else(|| "the simulation did not succeed".to_string()),
+            outcome
+                .message
+                .unwrap_or_else(|| "the simulation did not succeed".to_string()),
             hint,
         )),
         _ => Ok(()),
