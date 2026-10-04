@@ -19,7 +19,8 @@
 //! * `keystore` — encrypted Ed25519 keystore (module `keystore`); implies `address`.
 //! * `gateway` — Gateway client + local transaction signing (module `gateway`).
 //! * `connect-types` — transport-agnostic wallet-interaction schema (module `connect_types`).
-//! * `full` — `rola` + `keystore` + `gateway` + `connect-types`.
+//! * `gate` — wallet-signed, key-bound, short-lived credentials (module `gate`); implies `rola`.
+//! * `full` — `rola` + `keystore` + `gateway` + `connect-types` + `gate`.
 //!
 //! The [`i18n`] module (system-language detection) is always available.
 //!
@@ -69,6 +70,11 @@ pub use radixdlt_gateway_tx as gateway;
 /// feature.
 #[cfg(feature = "connect-types")]
 pub use radixdlt_connect_types as connect_types;
+
+/// Wallet-signed, key-bound, short-lived credentials: the request, its verification, sealed
+/// answers. Enabled by the `gate` feature.
+#[cfg(feature = "gate")]
+pub use radixdlt_gate as gate;
 
 /// Common imports. `use radixdlt_sdk::prelude::*;`
 pub mod prelude {
