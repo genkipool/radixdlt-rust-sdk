@@ -484,7 +484,13 @@ impl Connector {
         if left.is_zero() {
             return Err(ConnectError::LinkBusy);
         }
-        Ok((Turn { _here: guard, _machine: shared }, left))
+        Ok((
+            Turn {
+                _here: guard,
+                _machine: shared,
+            },
+            left,
+        ))
     }
 
     /// Sends ANY wallet interaction and returns the wallet's answer to it, reporting each step to
