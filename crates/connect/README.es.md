@@ -54,6 +54,16 @@ let signed_hex = connector
     .await?;
 ```
 
+### Una conversación por enlace, también entre procesos
+
+Un enlace emparejado lleva una conversación cada vez y la wallet guarda un canal por enlace. Por
+eso las peticiones hacen cola en el enlace: dentro del proceso (un mutex por enlace) y entre todos
+los procesos del equipo (un bloqueo de archivo del sistema y el último cierre de canal, compartidos
+en `~/.config/radix-connect/links/` con el nombre de un hash del enlace, sin escribir ningún
+secreto). La espera cuenta contra el tiempo límite de quien llama; una cola que no avanza a tiempo
+es `ConnectError::LinkBusy`, nunca una pérdida silenciosa. Sin un directorio de configuración
+utilizable se queda en el turno del proceso.
+
 ### Persistencia del enlace y varios dispositivos (`state::LinkState`)
 
 `LinkState` lee/escribe el mismo `connector.json` que usa el conector de Node, así que

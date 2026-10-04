@@ -9,6 +9,20 @@ minor versions may contain breaking changes.
 
 ### Added
 
+- `radixdlt-connect` — **one turn per link across PROCESSES.** The link's turn and the
+  `WALLET_SETTLE` wait used to live in each process, so two programs on one paired link (two AI
+  sessions, a `sudo` prompt, a CLI) could open channels over each other and a request vanished
+  without reaching the phone (seen on 2026-10-04: three transactions lost). The turn is now also an
+  OS file lock (`fs4`) and the last close is shared on disk under
+  `~/.config/radix-connect/links/`, named by a domain-separated BLAKE2b hash of the link password
+  (no secret on disk, the same name for every build — unlike `DefaultHasher`). Verified with two
+  processes asking at once on a real phone: the second waited its turn (6.2 s) and the settle
+  time, and both were delivered and answered.
+- `radixdlt-connector-mcp` 0.6.0 — `send_transaction` **simulates before ringing the phone**: a
+  definitive preview failure is reported as `PREVIEW_FAILED` (retry_safe) and nothing is sent; a
+  preview that cannot run lets the request through. `preview_only: true` returns the simulation
+  without sending. Built on the turn above.
+
 - `radixdlt-connect` — **reaching the phone with no internet.** A local signaling
   relay (`relay`, the public relay's protocol) and a minimal TURN-over-TCP server
   (`turn_server`); `Connector` tries the public relay and every configured one at

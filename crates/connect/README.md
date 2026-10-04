@@ -53,6 +53,16 @@ let signed_hex = connector
     .await?;
 ```
 
+### One conversation per link, across processes
+
+A paired link carries one conversation at a time, and the wallet keeps one channel per link.
+Requests therefore queue on the link — inside the process (a mutex keyed by the link) and across
+every process on the machine (an OS file lock plus the last channel close, shared under
+`~/.config/radix-connect/links/` and named by a hash of the link, so no secret is written). The
+wait counts against the caller's timeout; a queue that does not clear in time is
+`ConnectError::LinkBusy`, never a silent loss. Without a usable config directory it falls back to
+the in-process turn.
+
 ### Link persistence and multiple devices (`state::LinkState`)
 
 `LinkState` reads/writes the same `connector.json` the Node connector uses, so an

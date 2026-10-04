@@ -51,7 +51,9 @@ radix-connector-mcp update --tag connector-v0.4.0   # una versión concreta (tam
 Un agente puede hacer lo mismo con las herramientas `check_update` / `update_connector`.
 **Actualizar nunca obliga a emparejar otra vez el móvil**: el emparejamiento vive en
 `connector.json` del directorio de configuración y una actualización solo sustituye el binario.
-Reinicia después el cliente MCP para que arranque la versión nueva.
+Reinicia después el cliente MCP para que arranque la versión nueva: una sesión abierta sigue
+usando el binario con el que arrancó (en Linux `/proc/<pid>/exe` termina en `(deleted)`), y esa
+copia vieja mantiene el comportamiento viejo.
 
 ## Registrar en un cliente MCP
 
@@ -81,7 +83,7 @@ Si el binario no está en tu `PATH`, usa su ruta absoluta como `command`.
 | `pair_status` | Espera el escaneo/aprobación y guarda el enlace. |
 | `list_wallets` / `remove_wallet` | Gestiona los dispositivos emparejados. |
 | `request_accounts` | Pide a la wallet que **comparta su(s) dirección(es) de cuenta** — sin firma/prueba. Útil para saber qué cuenta fondear o desde cuál transferir. |
-| `send_transaction` | Envía un manifiesto para firmar **y enviar**; devuelve el intent hash. Admite `blobs` (hex en línea) y `blob_files` (rutas locales). |
+| `send_transaction` | Envía un manifiesto para firmar **y enviar**; devuelve el intent hash. Admite `blobs` (hex en línea) y `blob_files` (rutas locales). Antes lo simula en el Gateway y **no** llega al móvil si la simulación falla (`PREVIEW_FAILED`); `preview_only: true` devuelve la simulación sin enviar. |
 | `deploy_package` | Publica un paquete Scrypto: lee el `.wasm` de una ruta local, **hace dry-run en el Gateway primero** (aborta si fallaría), lo adjunta como blob, firma y envía. |
 | `request_pre_authorization` | Firma un subintent (pre-autorización V2) sin enviarlo. |
 | `request_account_proof` | "Iniciar sesión con Radix" (ROLA) con una cuenta; verifica la prueba localmente. |
@@ -129,8 +131,20 @@ cierra la app. El conector está hecho alrededor de eso:
 - **Espera a que la wallet suelte el canal.** La wallet guarda un canal por enlace y, unos 5 s
   después de cerrarse una conexión, cierra el canal que tenga el enlace en ese momento: una
   petición enviada justo después de otra podía llegar al móvil y perder su respuesta. El
-  conector espera 8 s tras cerrar un canal antes de abrir otro en el mismo enlace (también
-  entre procesos), y reabre un canal perdido tras la entrega para seguir esperando.
+  conector espera 8 s tras cerrar un canal antes de abrir otro en el mismo enlace, y reabre un
+  canal perdido tras la entrega para seguir esperando.
+- **Respeta el turno de los demás programas del equipo (0.6.0).** Varios procesos suelen
+  compartir un enlace emparejado — dos sesiones de IA, un `sudo`, una CLI — y antes de la 0.6.0 el
+  turno y la espera de 8 s vivían dentro de cada proceso, así que uno podía abrir un canal encima
+  del de otro y la petición se perdía. Ahora el turno es también un bloqueo de archivo del sistema
+  y el último cierre se escribe en disco (`~/.config/radix-connect/links/`, con el nombre de un hash
+  del enlace, sin secreto). Comprobado con dos procesos pidiendo a la vez en un móvil real: el
+  segundo esperó su turno y el asentamiento, y llegaron los dos. Un conector **anterior** que siga
+  abierto no participa: actualiza todos los programas que usan el enlace.
+- **No hace sonar el móvil por una transacción que fallaría (0.6.0).** `send_transaction` simula el
+  manifiesto en el Gateway (crédito gratis, firmas supuestas); un fallo definitivo la para ahí
+  (`PREVIEW_FAILED`, `retry_safe`: sí) y una simulación que no se pudo hacer la deja pasar — la
+  wallet la vuelve a simular antes de que nadie firme.
 - **Comprueba antes la identidad de la dApp.** Si `{origin}/.well-known/radix.json` no lista la
   dApp definition, la wallet descarta la petición *sin responder*; el conector se niega a
   enviarla (`DAPP_NOT_VERIFIED`) en vez de agotar el tiempo.
