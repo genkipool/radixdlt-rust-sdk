@@ -21,9 +21,19 @@ if ! git rev-parse --verify --quiet "$BASELINE" >/dev/null; then
     exit 0
 fi
 
+# A crate that did not exist at the baseline has no API anybody depends on yet: there is nothing
+# to compare it with, and semver-checks would fail looking for it. Leave it out, and say so.
+new_crates=()
+for manifest in crates/*/Cargo.toml; do
+    if ! git cat-file -e "$BASELINE:$manifest" 2>/dev/null; then
+        name=$(sed -n 's/^name *= *"\(.*\)"/\1/p' "$manifest" | head -1)
+        [ -n "$name" ] && new_crates+=(--exclude "$name") && echo "New since $BASELINE (not compared): $name"
+    fi
+done
+
 echo "Comparing the public API against $BASELINE"
 echo
-cargo semver-checks check-release --baseline-rev "$BASELINE" --workspace
+cargo semver-checks check-release --baseline-rev "$BASELINE" --workspace "${new_crates[@]}"
 status=$?
 
 echo
