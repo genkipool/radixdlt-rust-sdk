@@ -60,8 +60,9 @@ pub use error::ConnectError;
 pub use radixdlt_connect_types::{
     account_proof_request, account_proof_request_sharing, account_request, check_failure, extract_accounts,
     extract_login, extract_persona_email, extract_persona_name, extract_proofs,
-    extract_signed_partial_transaction, extract_transaction_intent_hash, login_request,
-    pre_authorization_request, transaction_request, DappContext, PersonaRequest, WalletInteractionError,
+    extract_signed_partial_transaction, extract_transaction_intent_hash, is_rejection_by_person,
+    login_request, pre_authorization_request, transaction_request, DappContext, PersonaRequest,
+    WalletInteractionError,
 };
 pub use radixdlt_connect_types::{
     authorized_request, extract_ongoing_accounts, extract_ownership_proofs, extract_persona_phones,
