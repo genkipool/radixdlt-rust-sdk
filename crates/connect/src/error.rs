@@ -31,6 +31,15 @@ pub enum ConnectError {
     LinkBusy,
 }
 
+impl ConnectError {
+    /// Whether the wallet answered that the PERSON refused, rather than that it cannot answer
+    /// what was asked (see [`radixdlt_connect_types::is_rejection_by_person`]).
+    #[must_use]
+    pub fn rejected_by_person(&self) -> bool {
+        matches!(self, ConnectError::WalletRejected(reason) if radixdlt_connect_types::is_rejection_by_person(reason))
+    }
+}
+
 impl std::fmt::Display for ConnectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let lang = Lang::detect();
@@ -98,5 +107,17 @@ impl From<WalletInteractionError> for ConnectError {
             WalletInteractionError::WalletRejected(s) => ConnectError::WalletRejected(s),
             WalletInteractionError::Protocol(s) => ConnectError::Protocol(s),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConnectError;
+
+    #[test]
+    fn only_the_person_rejecting_is_a_refusal() {
+        assert!(ConnectError::WalletRejected("rejectedByUser".into()).rejected_by_person());
+        assert!(!ConnectError::WalletRejected("invalidPersona".into()).rejected_by_person());
+        assert!(!ConnectError::ResponseTimeout.rejected_by_person());
     }
 }

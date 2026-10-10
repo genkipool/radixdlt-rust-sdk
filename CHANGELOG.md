@@ -9,6 +9,14 @@ minor versions may contain breaking changes.
 
 ### Added
 
+- `radixdlt-connect-types` / `radixdlt-connect` — **a refusal is not every failure.**
+  `is_rejection_by_person(reason)`, `WalletInteractionError::rejected_by_person()` and
+  `ConnectError::rejected_by_person()` tell the person pressing «reject» (`rejectedByUser`) apart from
+  a request the wallet cannot answer (`invalidPersona` for a persona it does not hold, `wrongNetwork`,
+  …). Callers that treated every wallet failure as a refusal gave up where they should have asked
+  something else — PamAuthority asked a wallet for the last persona seen on a machine, got
+  `invalidPersona`, and never went on to the full login.
+
 - `radixdlt-gate` — **short-lived credentials from a wallet signature.** The generic layer of
   PamAuthority's Kubernetes and AWS Gates: `request::GateRequest` (destination, level, the
   requester's key, a short expiry and a nonce; the challenge is derived from it, so a Gate keeps no

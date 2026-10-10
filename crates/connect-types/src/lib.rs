@@ -94,6 +94,23 @@ impl std::fmt::Display for WalletInteractionError {
 
 impl std::error::Error for WalletInteractionError {}
 
+/// Whether a wallet's failure reason is the PERSON refusing — pressing «reject» — rather than the
+/// wallet being unable to answer what was asked (`invalidPersona` for a persona it does not hold,
+/// `wrongNetwork`, …). Only the first is an answer to respect; after the second, something else may
+/// still be asked of the same wallet.
+#[must_use]
+pub fn is_rejection_by_person(reason: &str) -> bool {
+    reason.split(':').next().unwrap_or(reason).trim() == "rejectedByUser"
+}
+
+impl WalletInteractionError {
+    /// Whether this is the person refusing (see [`is_rejection_by_person`]).
+    #[must_use]
+    pub fn rejected_by_person(&self) -> bool {
+        matches!(self, WalletInteractionError::WalletRejected(reason) if is_rejection_by_person(reason))
+    }
+}
+
 pub(crate) fn metadata(ctx: &DappContext) -> Value {
     json!({
         "version": 2,
@@ -988,5 +1005,16 @@ mod tests {
         assert_eq!(extract_signed_partial_transaction(&plain).expect("found"), "cafe");
 
         assert!(extract_signed_partial_transaction(&json!({ "items": {} })).is_err());
+    }
+
+    /// Only the person pressing «reject» is a refusal; a request the wallet cannot answer is not.
+    #[test]
+    fn only_the_person_rejecting_is_a_refusal() {
+        assert!(is_rejection_by_person("rejectedByUser"));
+        assert!(!is_rejection_by_person("invalidPersona"));
+        assert!(!is_rejection_by_person("wrongNetwork: on 1"));
+        assert!(WalletInteractionError::WalletRejected("rejectedByUser".into()).rejected_by_person());
+        assert!(!WalletInteractionError::WalletRejected("invalidPersona".into()).rejected_by_person());
+        assert!(!WalletInteractionError::Protocol("x".into()).rejected_by_person());
     }
 }
