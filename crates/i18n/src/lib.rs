@@ -111,6 +111,11 @@ fn detect_uncached() -> Lang {
             }
         }
     }
+    // Windows has no locale files: the language is the system's (or the user's), asked of it.
+    #[cfg(windows)]
+    if let Some(locale) = sys_locale::get_locale() {
+        return Lang::from_locale_str(&locale);
+    }
     Lang::En
 }
 

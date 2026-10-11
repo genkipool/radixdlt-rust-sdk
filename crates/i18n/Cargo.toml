@@ -13,5 +13,10 @@ readme = "README.md"
 
 [dependencies]
 
+# Windows keeps the language in the system, not in the environment: a service or LogonUI has no
+# LANG at all. Asked of Windows itself, through a safe API.
+[target.'cfg(windows)'.dependencies]
+sys-locale = "0.3"
+
 [lints]
 workspace = true
