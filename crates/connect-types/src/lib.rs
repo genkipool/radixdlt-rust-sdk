@@ -26,6 +26,8 @@
 // allowed HERE rather than switched off for the crate.
 #![allow(clippy::indexing_slicing)]
 
+pub mod relays;
+
 use radixdlt_i18n::{tr, Lang};
 use serde_json::{json, Value};
 use uuid::Uuid;

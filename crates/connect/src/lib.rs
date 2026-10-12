@@ -272,8 +272,9 @@ fn link_turn(password: &[u8]) -> std::sync::Arc<tokio::sync::Mutex<()>> {
 /// Where extra signaling relays are configured, besides [`Connector::with_extra_signaling`]:
 /// the `RADIX_CONNECT_RELAYS` environment variable (URLs separated by commas or spaces), and
 /// the files `~/.config/radix-connect/relays` and `/etc/radix-connect/relays` (one URL per
-/// line, `#` for comments). Read when a [`Connector`] is created, so every program built on this
-/// crate — and every user on the machine, through the `/etc` file — reaches a local relay with no
+/// line, `#` for comments) — on Windows `%APPDATA%\radix-connect\relays` and
+/// [`system_relays_file`]. Read when a [`Connector`] is created, so every program built on this
+/// crate — and every user on the machine, through the system file — reaches a local relay with no
 /// code of its own.
 pub const RELAYS_ENV: &str = "RADIX_CONNECT_RELAYS";
 
@@ -298,12 +299,9 @@ pub fn configured_relays() -> Vec<String> {
     if let Ok(env) = std::env::var(RELAYS_ENV) {
         add(&env);
     }
-    let user_config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")));
     let files = [
-        user_config.map(|dir| dir.join("radix-connect").join("relays")),
-        Some(std::path::PathBuf::from("/etc/radix-connect/relays")),
+        radixdlt_connect_types::relays::user_relays_file(),
+        Some(system_relays_file()),
     ];
     for file in files.into_iter().flatten() {
         if let Ok(text) = std::fs::read_to_string(file) {
@@ -312,6 +310,8 @@ pub fn configured_relays() -> Vec<String> {
     }
     found
 }
+
+pub use radixdlt_connect_types::relays::system_relays_file;
 
 /// The public Radix signaling server, then every configured relay.
 fn default_signaling_bases() -> Vec<String> {
