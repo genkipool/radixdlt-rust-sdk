@@ -20,6 +20,12 @@ verify_account_proof(&proof, challenge_hex, dapp_definition, origin, network_id)
 Ideal for backends doing "log in with Radix". Error messages are localized to the
 system language. Part of the [RadixDLT Rust SDK](https://crates.io/crates/radixdlt-sdk).
 
+## Delegated ROLA
+
+`verify_signed` also accepts **delegated** proofs: the same ROLA message signed by a P-256 key in a
+TPM, a Secure Enclave or a passkey, which the account and identity keys delegated to once (and
+were then destroyed). See [`docs/DELEGATED.md`](docs/DELEGATED.md).
+
 ## Specification
 
 The exact signed-message byte layout and the verification predicate (with

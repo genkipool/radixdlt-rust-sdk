@@ -30,14 +30,20 @@ export TMPDIR="$PWD/$SCRATCH"
 # the command early -- bash joins the escaped newline, meets the `#`, and stops there -- so
 # `--exclude-re` ran as a command of its own and `--timeout` was silently dropped. The script
 # then read the resulting 127 as "mutants survived".
+# --gitignore: the nested workspaces' own target/ dirs (tens of GB of build cache) are not
+# copied into every scratch tree. What is mutated and tested is unchanged.
 cargo mutants \
     --file 'crates/rola/src/lib.rs' \
+    --file 'crates/rola/src/delegation.rs' \
+    --file 'crates/rola/src/signed.rs' \
+    --file 'crates/rola/src/canonical.rs' \
     --file 'crates/address/src/lib.rs' \
     --file 'crates/keystore/src/lib.rs' \
     --file 'crates/connect-types/src/lib.rs' \
     --output "$OUT" \
     --exclude-re 'impl std::fmt::Display' \
     --timeout 120 \
+    --gitignore true \
     "$@"
 status=$?
 

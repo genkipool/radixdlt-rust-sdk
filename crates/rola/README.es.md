@@ -21,6 +21,12 @@ Ideal para backends que hacen "iniciar sesión con Radix". Los mensajes de error
 localizan al idioma del sistema. Forma parte del
 [RadixDLT Rust SDK](https://crates.io/crates/radixdlt-sdk).
 
+## ROLA delegado
+
+`verify_signed` acepta también pruebas **delegadas**: el mismo mensaje ROLA firmado por una clave
+P-256 en un TPM, un Secure Enclave o una passkey, en la que las claves de cuenta e identidad
+delegaron una vez (y se destruyeron). Ver [`docs/DELEGATED.es.md`](docs/DELEGATED.es.md).
+
 ## Especificación
 
 El layout exacto de bytes del mensaje firmado y el predicado de verificación (con

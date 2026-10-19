@@ -7,7 +7,7 @@
 [package]
 name = "radixdlt-connect"
 description = "Radix Connect protocol in native Rust: signaling, WebRTC and wallet interactions (a drop-in for @radixdlt/radix-connect-webrtc)."
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/genkipool/radixdlt-rust-sdk"
@@ -18,8 +18,8 @@ categories = ["cryptography::cryptocurrencies", "network-programming"]
 readme = "README.md"
 
 [dependencies]
-radixdlt-i18n = { path = "../i18n", version = "0.2.0" }
-radixdlt-connect-types = { path = "../connect-types", version = "0.2.0" }
+radixdlt-i18n = { path = "../i18n", version = "0.3.0" }
+radixdlt-connect-types = { path = "../connect-types", version = "0.3.0" }
 ed25519-dalek = "3"
 getrandom = "0.4"
 blake2 = "0.10"

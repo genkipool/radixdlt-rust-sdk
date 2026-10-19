@@ -1,0 +1,396 @@
+{
+  "cases": [
+    {
+      "address": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+      "holder": "account",
+      "name": "tpm person, account",
+      "proof": {
+        "curve": "delegated",
+        "delegation": {
+          "account": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+          "createdAt": 1760000000,
+          "delegate": {
+            "alg": "p256",
+            "key": "0307810ea974cea5773e63b897f37e3be9a09e7a5fe9b971a44d1065ac2a3a9311"
+          },
+          "device": "pc-de-luis",
+          "identity": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+          "kind": "tpm",
+          "label": "luis",
+          "network": 2,
+          "signatures": {
+            "account": {
+              "publicKey": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+              "signature": "03133d425eb946360b89e3efec94c9bdca28e6731e4614330b4566b86fc1e5f95134e12cbfca579236150870724db2f9c1386e20b39216b8e73b7abed5db4c05"
+            },
+            "identity": {
+              "publicKey": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+              "signature": "ddfb2d54006a3fbb4fcfd01973203f6490cf1ac13365d2622c9dcf77a53480b6327a533c36d4077601553a7885f52dd83d8bfafbc5f3694e5246362fa3977109"
+            }
+          },
+          "subject": "person",
+          "v": 1
+        },
+        "signature": "b8c25a730642dad573f6159733c0f88aaeed18bb8baa1ce86ac2aa1d742b7011415498753d058ae6b2a4407045438746b24bb336132bafba1bf243d902ce98c6"
+      },
+      "purpose": "login",
+      "valid": true
+    },
+    {
+      "address": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+      "holder": "identity",
+      "name": "tpm person, identity",
+      "proof": {
+        "curve": "delegated",
+        "delegation": {
+          "account": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+          "createdAt": 1760000000,
+          "delegate": {
+            "alg": "p256",
+            "key": "0307810ea974cea5773e63b897f37e3be9a09e7a5fe9b971a44d1065ac2a3a9311"
+          },
+          "device": "pc-de-luis",
+          "identity": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+          "kind": "tpm",
+          "label": "luis",
+          "network": 2,
+          "signatures": {
+            "account": {
+              "publicKey": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+              "signature": "03133d425eb946360b89e3efec94c9bdca28e6731e4614330b4566b86fc1e5f95134e12cbfca579236150870724db2f9c1386e20b39216b8e73b7abed5db4c05"
+            },
+            "identity": {
+              "publicKey": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+              "signature": "ddfb2d54006a3fbb4fcfd01973203f6490cf1ac13365d2622c9dcf77a53480b6327a533c36d4077601553a7885f52dd83d8bfafbc5f3694e5246362fa3977109"
+            }
+          },
+          "subject": "person",
+          "v": 1
+        },
+        "signature": "b8c25a730642dad573f6159733c0f88aaeed18bb8baa1ce86ac2aa1d742b7011415498753d058ae6b2a4407045438746b24bb336132bafba1bf243d902ce98c6"
+      },
+      "purpose": "web",
+      "valid": true
+    },
+    {
+      "address": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+      "holder": "account",
+      "name": "agent, listed purpose",
+      "proof": {
+        "curve": "delegated",
+        "delegation": {
+          "account": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+          "createdAt": 1760000000,
+          "delegate": {
+            "alg": "p256",
+            "key": "02b0514c4c13540f2397f54719f3332e7ef38e42ad9dc08b71e660ce16b9e88d09"
+          },
+          "device": "pc-de-luis",
+          "identity": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+          "kind": "tpm",
+          "label": "luis",
+          "network": 2,
+          "purposes": [
+            "login",
+            "kube"
+          ],
+          "signatures": {
+            "account": {
+              "publicKey": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+              "signature": "14f913b4cdec99b104c6e88d155f4b4b49018cdea2c67a54ab0e44129424fe3f4b462d0b6a9b48fb22f22bbade25e4fa4f65005c13eadbac471ea821d57fe901"
+            },
+            "identity": {
+              "publicKey": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+              "signature": "9b84565536d8a14f4cd3146708b65c74f1c822d6362a06de0fc3467d80039783e7f69f5abf2912ab6e289f8195caf3c37af8a18d54f762d4f6471f5857b6f40d"
+            }
+          },
+          "subject": "agent",
+          "v": 1
+        },
+        "signature": "c910dae0de569c7e0d4ac72b30a09c32e6ae2024cb6df7386e6eb341f76e1d7a78c3d02e299bf71104574a356cd168f5365730cb68eef883556e9452210cdbec"
+      },
+      "purpose": "kube",
+      "valid": true
+    },
+    {
+      "address": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+      "holder": "account",
+      "name": "agent, unlisted purpose",
+      "proof": {
+        "curve": "delegated",
+        "delegation": {
+          "account": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+          "createdAt": 1760000000,
+          "delegate": {
+            "alg": "p256",
+            "key": "02b0514c4c13540f2397f54719f3332e7ef38e42ad9dc08b71e660ce16b9e88d09"
+          },
+          "device": "pc-de-luis",
+          "identity": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+          "kind": "tpm",
+          "label": "luis",
+          "network": 2,
+          "purposes": [
+            "login",
+            "kube"
+          ],
+          "signatures": {
+            "account": {
+              "publicKey": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+              "signature": "14f913b4cdec99b104c6e88d155f4b4b49018cdea2c67a54ab0e44129424fe3f4b462d0b6a9b48fb22f22bbade25e4fa4f65005c13eadbac471ea821d57fe901"
+            },
+            "identity": {
+              "publicKey": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+              "signature": "9b84565536d8a14f4cd3146708b65c74f1c822d6362a06de0fc3467d80039783e7f69f5abf2912ab6e289f8195caf3c37af8a18d54f762d4f6471f5857b6f40d"
+            }
+          },
+          "subject": "agent",
+          "v": 1
+        },
+        "signature": "c910dae0de569c7e0d4ac72b30a09c32e6ae2024cb6df7386e6eb341f76e1d7a78c3d02e299bf71104574a356cd168f5365730cb68eef883556e9452210cdbec"
+      },
+      "purpose": "aws",
+      "valid": false
+    },
+    {
+      "address": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+      "holder": "account",
+      "name": "agent, people only",
+      "proof": {
+        "curve": "delegated",
+        "delegation": {
+          "account": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+          "createdAt": 1760000000,
+          "delegate": {
+            "alg": "p256",
+            "key": "02b0514c4c13540f2397f54719f3332e7ef38e42ad9dc08b71e660ce16b9e88d09"
+          },
+          "device": "pc-de-luis",
+          "identity": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+          "kind": "tpm",
+          "label": "luis",
+          "network": 2,
+          "purposes": [
+            "login",
+            "kube"
+          ],
+          "signatures": {
+            "account": {
+              "publicKey": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+              "signature": "14f913b4cdec99b104c6e88d155f4b4b49018cdea2c67a54ab0e44129424fe3f4b462d0b6a9b48fb22f22bbade25e4fa4f65005c13eadbac471ea821d57fe901"
+            },
+            "identity": {
+              "publicKey": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+              "signature": "9b84565536d8a14f4cd3146708b65c74f1c822d6362a06de0fc3467d80039783e7f69f5abf2912ab6e289f8195caf3c37af8a18d54f762d4f6471f5857b6f40d"
+            }
+          },
+          "subject": "agent",
+          "v": 1
+        },
+        "signature": "c910dae0de569c7e0d4ac72b30a09c32e6ae2024cb6df7386e6eb341f76e1d7a78c3d02e299bf71104574a356cd168f5365730cb68eef883556e9452210cdbec"
+      },
+      "purpose": "web",
+      "valid": false
+    },
+    {
+      "address": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+      "holder": "identity",
+      "name": "passkey, user verified",
+      "proof": {
+        "curve": "delegated",
+        "delegation": {
+          "account": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+          "createdAt": 1760000000,
+          "delegate": {
+            "alg": "p256",
+            "key": "033adab15d66256bf15cd716035b3f041444e512fed1dd64d4ba75597d20e366f1"
+          },
+          "device": "pc-de-luis",
+          "identity": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+          "kind": "webauthn",
+          "label": "luis",
+          "network": 2,
+          "rpId": "pam.example",
+          "signatures": {
+            "account": {
+              "publicKey": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+              "signature": "e4017b65f2f62b81e791ac8720211c31632840b842cadae32bb686932a7ce1b1b3d42e514bc7a739a40213ee8e891deffa4348007910623a86bc496db8e63904"
+            },
+            "identity": {
+              "publicKey": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+              "signature": "45255ae9d759ce89ee6f027b1c2063a07f59897b77052528eba70fa358dd0bb4dac6f7248223f79d7acc06474448a93d0debb2e044a10d329486d1e5d3007301"
+            }
+          },
+          "subject": "person",
+          "v": 1
+        },
+        "webauthn": {
+          "authenticatorData": "aFI6hPdh3w3sQvPAyZ7UvqxEJ7B0XROyFkK4JRkUmF4FAAAABw",
+          "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiSFVobHU1MjNjcnJ4MTBCWFgtZVZqY2FYbDk3WGR6SzBvUHRYRVBlM0hrcyIsIm9yaWdpbiI6Imh0dHBzOi8vcGFtLmV4YW1wbGUiLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
+          "signature": "MEQCIEPZ9XqpM68EdIVtsDYrJwQaDEe5pE1d6OmwMRv9YfiSAiA3xhSlS6RwrA1P4GVx3diO5P4-bFAD6BVOhejDRfKVNg"
+        }
+      },
+      "purpose": "web",
+      "valid": true
+    },
+    {
+      "address": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+      "holder": "identity",
+      "name": "passkey, synced (BE)",
+      "proof": {
+        "curve": "delegated",
+        "delegation": {
+          "account": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+          "createdAt": 1760000000,
+          "delegate": {
+            "alg": "p256",
+            "key": "033adab15d66256bf15cd716035b3f041444e512fed1dd64d4ba75597d20e366f1"
+          },
+          "device": "pc-de-luis",
+          "identity": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+          "kind": "webauthn",
+          "label": "luis",
+          "network": 2,
+          "rpId": "pam.example",
+          "signatures": {
+            "account": {
+              "publicKey": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+              "signature": "e4017b65f2f62b81e791ac8720211c31632840b842cadae32bb686932a7ce1b1b3d42e514bc7a739a40213ee8e891deffa4348007910623a86bc496db8e63904"
+            },
+            "identity": {
+              "publicKey": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+              "signature": "45255ae9d759ce89ee6f027b1c2063a07f59897b77052528eba70fa358dd0bb4dac6f7248223f79d7acc06474448a93d0debb2e044a10d329486d1e5d3007301"
+            }
+          },
+          "subject": "person",
+          "v": 1
+        },
+        "webauthn": {
+          "authenticatorData": "aFI6hPdh3w3sQvPAyZ7UvqxEJ7B0XROyFkK4JRkUmF4NAAAABw",
+          "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiSFVobHU1MjNjcnJ4MTBCWFgtZVZqY2FYbDk3WGR6SzBvUHRYRVBlM0hrcyIsIm9yaWdpbiI6Imh0dHBzOi8vcGFtLmV4YW1wbGUiLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
+          "signature": "MEUCIE3Vt7_U1i5IAkNUCB-Vpp3K0Re6b8JNO1H3TlKSY9iiAiEA5RhRz52nuGQ8Bl2DkiZee9VnbnA90jEevDdy_yJfstk"
+        }
+      },
+      "purpose": "web",
+      "valid": true
+    },
+    {
+      "address": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+      "holder": "identity",
+      "name": "passkey, not user verified",
+      "proof": {
+        "curve": "delegated",
+        "delegation": {
+          "account": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+          "createdAt": 1760000000,
+          "delegate": {
+            "alg": "p256",
+            "key": "033adab15d66256bf15cd716035b3f041444e512fed1dd64d4ba75597d20e366f1"
+          },
+          "device": "pc-de-luis",
+          "identity": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+          "kind": "webauthn",
+          "label": "luis",
+          "network": 2,
+          "rpId": "pam.example",
+          "signatures": {
+            "account": {
+              "publicKey": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+              "signature": "e4017b65f2f62b81e791ac8720211c31632840b842cadae32bb686932a7ce1b1b3d42e514bc7a739a40213ee8e891deffa4348007910623a86bc496db8e63904"
+            },
+            "identity": {
+              "publicKey": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+              "signature": "45255ae9d759ce89ee6f027b1c2063a07f59897b77052528eba70fa358dd0bb4dac6f7248223f79d7acc06474448a93d0debb2e044a10d329486d1e5d3007301"
+            }
+          },
+          "subject": "person",
+          "v": 1
+        },
+        "webauthn": {
+          "authenticatorData": "aFI6hPdh3w3sQvPAyZ7UvqxEJ7B0XROyFkK4JRkUmF4BAAAABw",
+          "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiSFVobHU1MjNjcnJ4MTBCWFgtZVZqY2FYbDk3WGR6SzBvUHRYRVBlM0hrcyIsIm9yaWdpbiI6Imh0dHBzOi8vcGFtLmV4YW1wbGUiLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
+          "signature": "MEYCIQDN0emg3brgGuX8xlXn0Wv_gpX_iV_0HbdnWnvpCPvTPAIhAIrYNBjy8TICPCkKMiwpTUX6dpj4SaV3PFnB5lERXHMV"
+        }
+      },
+      "purpose": "web",
+      "valid": false
+    },
+    {
+      "address": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+      "holder": "account",
+      "name": "certificate changed",
+      "proof": {
+        "curve": "delegated",
+        "delegation": {
+          "account": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+          "createdAt": 1760000000,
+          "delegate": {
+            "alg": "p256",
+            "key": "0307810ea974cea5773e63b897f37e3be9a09e7a5fe9b971a44d1065ac2a3a9311"
+          },
+          "device": "pc-de-luis",
+          "identity": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+          "kind": "tpm",
+          "label": "admin",
+          "network": 2,
+          "signatures": {
+            "account": {
+              "publicKey": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+              "signature": "03133d425eb946360b89e3efec94c9bdca28e6731e4614330b4566b86fc1e5f95134e12cbfca579236150870724db2f9c1386e20b39216b8e73b7abed5db4c05"
+            },
+            "identity": {
+              "publicKey": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+              "signature": "ddfb2d54006a3fbb4fcfd01973203f6490cf1ac13365d2622c9dcf77a53480b6327a533c36d4077601553a7885f52dd83d8bfafbc5f3694e5246362fa3977109"
+            }
+          },
+          "subject": "person",
+          "v": 1
+        },
+        "signature": "b8c25a730642dad573f6159733c0f88aaeed18bb8baa1ce86ac2aa1d742b7011415498753d058ae6b2a4407045438746b24bb336132bafba1bf243d902ce98c6"
+      },
+      "purpose": "login",
+      "valid": false
+    },
+    {
+      "address": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+      "holder": "account",
+      "name": "another hardware key",
+      "proof": {
+        "curve": "delegated",
+        "delegation": {
+          "account": "account_tdx_2_12xcunasz9kqu8vj7xsmvklca7alev54w8cf3ps5wvgwas76vufcde5",
+          "createdAt": 1760000000,
+          "delegate": {
+            "alg": "p256",
+            "key": "0307810ea974cea5773e63b897f37e3be9a09e7a5fe9b971a44d1065ac2a3a9311"
+          },
+          "device": "pc-de-luis",
+          "identity": "identity_tdx_2_12gyjc4sszsslw3tp90wxk5wpuervvxkr7hkvlmf0t8pqpavp7x2n06",
+          "kind": "tpm",
+          "label": "luis",
+          "network": 2,
+          "signatures": {
+            "account": {
+              "publicKey": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+              "signature": "03133d425eb946360b89e3efec94c9bdca28e6731e4614330b4566b86fc1e5f95134e12cbfca579236150870724db2f9c1386e20b39216b8e73b7abed5db4c05"
+            },
+            "identity": {
+              "publicKey": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+              "signature": "ddfb2d54006a3fbb4fcfd01973203f6490cf1ac13365d2622c9dcf77a53480b6327a533c36d4077601553a7885f52dd83d8bfafbc5f3694e5246362fa3977109"
+            }
+          },
+          "subject": "person",
+          "v": 1
+        },
+        "signature": "30afe87ed62b1a6efc9eb24364ead116b8de7bd2c61014c6a373aeafd2aa1a28270a24834b8115a8614c4fe203bbaff8864660316b8822b39f1dffc4ab50d30c"
+      },
+      "purpose": "login",
+      "valid": false
+    }
+  ],
+  "challenge": "5c3a0f0e7d1b2a39485766554433221100ffeeddccbbaa998877665544332211",
+  "dAppDefinition": "account_tdx_2_129grv2vv4q3w7aqzzwesc5k0xp4lg5dj4p78q80ca79rj5rct8mujk",
+  "networkId": 2,
+  "origin": "https://pam.example",
+  "spec": "pamauthority delegated ROLA v1 — crates/rola/docs/DELEGATED.md"
+}

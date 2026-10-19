@@ -8,6 +8,10 @@
 //! (Virtual accounts; accounts with rotated owner keys additionally require a
 //! Gateway read — a later phase.)
 //!
+//! Delegated ROLA (`docs/DELEGATED.md`): the same message, signed by a P-256 key in a TPM,
+//! a Secure Enclave or a passkey that the two addresses delegated to once. [`verify_signed`]
+//! checks either kind and says which one signed.
+//!
 //! User-facing error text is localized to the system language via `radixdlt-i18n`.
 
 // In TESTS a panic IS the failure mechanism. Library code keeps the deny: a panic there is
@@ -27,6 +31,13 @@ use blake2::{Blake2b, Digest};
 use ed25519_dalek::{Signature, VerifyingKey};
 use radixdlt_address::{virtual_account_address, virtual_identity_address, AddressError};
 use radixdlt_i18n::{tr, Lang};
+
+mod canonical;
+pub mod delegation;
+mod signed;
+
+pub use delegation::{issue, DelegateKind, Delegation, Issue, Subject};
+pub use signed::{verify_signed, Holder, Method, Request, SignedError, SignedProof};
 
 type Blake2b256 = Blake2b<U32>;
 
