@@ -27,7 +27,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
+use iroh::endpoint::{presets, Connection, Incoming, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, TransportAddr};
 use radixdlt_i18n::{tr, Lang};
 use serde_json::Value;
@@ -258,12 +258,44 @@ impl IrohConnector {
     /// Accepts an incoming connection and opens a message channel. The peer sends
     /// the first message.
     pub async fn accept(&self) -> Result<IrohChannel, IrohError> {
+        self.accept_pending().await?.ready().await
+    }
+
+    /// The next connection a peer opens, before its handshake: what a server that serves many
+    /// peers loops on, finishing each one ([`Pending::ready`]) in a task of its own.
+    ///
+    /// [`IrohConnector::accept`] waits for the whole handshake AND for the peer to open its stream
+    /// before it returns; looped on, one slow peer — or one that connects and never opens a stream
+    /// — holds every other peer at the door until it gives up.
+    ///
+    /// # Errors
+    /// [`IrohError::Accept`] when the endpoint has been closed.
+    pub async fn accept_pending(&self) -> Result<Pending, IrohError> {
         let incoming = self
             .endpoint
             .accept()
             .await
             .ok_or_else(|| IrohError::Accept("endpoint closed".to_string()))?;
-        let conn = incoming.await.map_err(|e| IrohError::Accept(e.to_string()))?;
+        Ok(Pending { incoming })
+    }
+}
+
+/// A connection a peer has opened whose handshake is not finished yet ([`IrohConnector::accept_pending`]).
+pub struct Pending {
+    incoming: Incoming,
+}
+
+impl Pending {
+    /// Finishes the handshake and takes the peer's stream. Bound it with a timeout: a peer that
+    /// never opens its stream would otherwise be waited on for as long as the connection lives.
+    ///
+    /// # Errors
+    /// [`IrohError::Accept`] when the handshake fails, [`IrohError::Stream`] when no stream comes.
+    pub async fn ready(self) -> Result<IrohChannel, IrohError> {
+        let conn = self
+            .incoming
+            .await
+            .map_err(|e| IrohError::Accept(e.to_string()))?;
         let (send, recv) = conn
             .accept_bi()
             .await
