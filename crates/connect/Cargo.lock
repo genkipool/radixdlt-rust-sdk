@@ -1749,7 +1749,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-address"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hex",
  "radix-common",
@@ -1758,7 +1758,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connect"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm 0.11.0",
  "async-trait",
@@ -1788,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connect-types"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "radixdlt-i18n",
  "serde_json",
@@ -1797,20 +1797,25 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-i18n"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "sys-locale",
 ]
 
 [[package]]
 name = "radixdlt-rola"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
+ "base64 0.22.1",
  "blake2",
  "ed25519-dalek 3.0.0",
  "hex",
+ "p256",
  "radixdlt-address",
  "radixdlt-i18n",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
