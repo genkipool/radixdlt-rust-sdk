@@ -61,6 +61,20 @@ impl OneTimeKey {
         }
     }
 
+    /// A key kept across restarts — a gateway's, which secrets are sealed to for as long as it
+    /// lives — from the 32 secret bytes it was saved as.
+    pub fn from_secret_bytes(secret: [u8; 32]) -> Self {
+        Self {
+            secret: StaticSecret::from(secret),
+        }
+    }
+
+    /// The 32 secret bytes, to save a long-lived key. Whoever reads them can open what was sealed
+    /// to it: they belong in a file only root can read.
+    pub fn secret_bytes(&self) -> [u8; 32] {
+        self.secret.to_bytes()
+    }
+
     /// The hex public key to put in `GateRequest::key`.
     pub fn public_hex(&self) -> String {
         hex::encode(PublicKey::from(&self.secret).as_bytes())
@@ -157,6 +171,16 @@ mod tests {
             Err(SealError::Unopenable)
         );
         assert_eq!(client.open(&sealed, "challenge-2"), Err(SealError::Unopenable));
+        Ok(())
+    }
+
+    #[test]
+    fn a_saved_key_is_the_same_key() -> Result<(), SealError> {
+        let first = OneTimeKey::generate();
+        let again = OneTimeKey::from_secret_bytes(first.secret_bytes());
+        assert_eq!(again.public_hex(), first.public_hex());
+        let sealed = seal(b"device secret", &first.public_hex(), "pamauthority-net:d1")?;
+        assert_eq!(again.open(&sealed, "pamauthority-net:d1")?, b"device secret");
         Ok(())
     }
 
