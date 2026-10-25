@@ -31,6 +31,8 @@ confidence-threshold = 0.9
 # Each workspace resolves a different subtree, so a licence allowed for one is unused in
 # another. Warning about that once per workspace is noise, not information.
 unused-allowed-license = "allow"
+# The same for exceptions: the wasm-only Unlicense crates below exist in connect-iroh only.
+unused-license-exception = "allow"
 
 # ─────────────────────────────────────────────────────────────────────────────────────────
 # OPEN QUESTION BEFORE PUBLISHING TO crates.io — read this before releasing.
@@ -117,6 +119,23 @@ license-files = []
 name = "sbor-derive-common"
 expression = "LicenseRef-Radix-1.0"
 license-files = []
+
+# Unlicense (OSI-approved: a public-domain dedication with a permissive fallback grant) is allowed
+# for these three crates ONLY: `ws_stream_wasm`, iroh-relay's browser (wasm) transport, and the two
+# it depends on. They reach the graph solely through that wasm path, so no native binary contains
+# them — and they are still checked for advisories like everything else. Any OTHER Unlicense
+# dependency still stops the gate.
+[[licenses.exceptions]]
+crate = "ws_stream_wasm"
+allow = ["Unlicense"]
+
+[[licenses.exceptions]]
+crate = "pharos"
+allow = ["Unlicense"]
+
+[[licenses.exceptions]]
+crate = "async_io_stream"
+allow = ["Unlicense"]
 
 [bans]
 # Two semver-compatible copies of one crate is how a fix lands in one place and not the other.
