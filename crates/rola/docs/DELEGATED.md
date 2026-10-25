@@ -44,8 +44,8 @@ sequenceDiagram
   "rpId": "<only for webauthn>",
   "subject": "person" | "agent",
   "purposes": ["login", "kube"],          // only for agents
-  "label": "luis",                       // the OS user name, or the invitation's
-  "device": "pc-de-luis",
+  "label": "eva",                       // the OS user name, or the invitation's
+  "device": "pc-de-eva",
   "createdAt": 1760000000,
   "attestation": "<optional, opaque>",
   "signatures": {

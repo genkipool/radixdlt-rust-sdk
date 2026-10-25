@@ -45,8 +45,8 @@ fn certificate(point: &[u8; 33], kind: &str, rp_id: Option<&str>, purposes: Opti
         kind,
         rp_id,
         agent_purposes: purposes,
-        label: "luis",
-        device: "pc-de-luis",
+        label: "eva",
+        device: "pc-de-eva",
         created_at: 1_760_000_000,
     };
     issue(

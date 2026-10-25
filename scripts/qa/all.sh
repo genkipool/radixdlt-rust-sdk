@@ -18,6 +18,7 @@ step "Coverage"     ./scripts/qa/coverage.sh || fail=1
 # Every workspace, not only the root: each has its own lockfile, and the connector shipped with
 # advisories the root never had because only the root was checked.
 step "Supply chain" ./scripts/qa/for-each-workspace.sh cargo deny --config "$PWD/deny.toml" check || fail=1
+step "Nobody's name" ./scripts/qa/no-personal-data.sh || fail=1
 step "Public API"   ./scripts/qa/semver.sh || fail=1
 step "Mutation"     ./scripts/qa/mutants.sh || fail=1
 

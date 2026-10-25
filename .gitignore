@@ -1,1 +1,3 @@
 target/
+# cargo-mutants' own output, when it is run by hand: logs full of local paths.
+/mutants.out*/

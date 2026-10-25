@@ -79,7 +79,7 @@ fn a_delegated_proof_answers_for_both_addresses_and_says_who_signed() {
                 delegation,
                 backup_eligible,
             }) => {
-                assert_eq!(delegation.label, "luis");
+                assert_eq!(delegation.label, "eva");
                 assert!(!backup_eligible);
             }
             other => panic!("expected a delegated signer, got {other:?}"),

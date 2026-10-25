@@ -772,7 +772,7 @@ mod persona_tests {
     #[test]
     fn an_answer_without_a_login_is_not_one() {
         // What an `unauthorizedRequest` answers with: accounts, maybe a name, no persona at all.
-        let ordinary = account_proof_response("id", "account_tdx_2_1a", "aa", "bb", Some("Luis"));
+        let ordinary = account_proof_response("id", "account_tdx_2_1a", "aa", "bb", Some("Eva"));
         assert!(extract_login(&ordinary).is_err());
         // And a wallet that refused is a refusal, which `check_failure` already words.
         assert!(extract_login(&failure_response("id", "rejectedByUser")).is_err());
@@ -784,10 +784,10 @@ mod persona_tests {
             "emailAddresses": ["ana@example.org"] } } });
         assert_eq!(extract_persona_email(&plain).as_deref(), Some("ana@example.org"));
         let wrapped = serde_json::json!({ "items": { "oneTimePersonaData": {
-            "emailAddresses": [{ "value": "luis@example.org" }] } } });
+            "emailAddresses": [{ "value": "eva@example.org" }] } } });
         assert_eq!(
             extract_persona_email(&wrapped).as_deref(),
-            Some("luis@example.org")
+            Some("eva@example.org")
         );
         // Nothing shared is not an error: it is a login with no email on it.
         let none = serde_json::json!({ "items": { "oneTimePersonaData": { "name": {} } } });

@@ -333,8 +333,8 @@ pub(crate) mod tests {
             kind,
             rp_id,
             agent_purposes: purposes,
-            label: "luis",
-            device: "pc-de-luis",
+            label: "eva",
+            device: "pc-de-eva",
             created_at: 1_760_000_000,
         };
         let cert = issue(
@@ -350,8 +350,8 @@ pub(crate) mod tests {
     fn an_issued_certificate_verifies_and_says_what_it_was_issued_with() {
         let (hardware, cert) = person();
         let d = Delegation::verify(&cert).unwrap();
-        assert_eq!(d.label, "luis");
-        assert_eq!(d.device, "pc-de-luis");
+        assert_eq!(d.label, "eva");
+        assert_eq!(d.device, "pc-de-eva");
         assert_eq!(d.subject, Subject::Person);
         assert_eq!(d.kind, DelegateKind::Tpm);
         assert_eq!(d.network, NETWORK);
