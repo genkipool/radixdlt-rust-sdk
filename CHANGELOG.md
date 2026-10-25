@@ -110,23 +110,6 @@ minor versions may contain breaking changes.
   English fallback; `Lang` is now `#[non_exhaustive]`, so adding a language is
   non-breaking.
 
-### Security
-
-- **Off the vulnerable `crypto-bigint 0.5`** ([RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387):
-  operations meant to be constant-time could branch on secrets). No workspace locks it any more:
-  - `radixdlt-rola` — `p256` `0.13` → `0.14` (`ecdsa 0.17`, `crypto-bigint 0.7.8`). The public API
-    and the delegated vectors are unchanged; high-S raw signatures are still refused.
-  - `radixdlt-connect` — `webrtc`/`rtc` `0.20` → `0.21`, whose DTLS no longer uses the RustCrypto
-    curves (it takes `ring`, as rustls here already did). The TURN client and the test TURN server
-    follow the new `rtc-turn`/`rtc-stun` API (explicit crypto provider, `now` on every call).
-  - `rust-version` of `radixdlt-connect`, `radixdlt-connect-iroh` and `radixdlt-connector-mcp`
-    raised to `1.87`, what their dependencies now require (as the rest of the SDK).
-- Lockfiles moved past three more advisories, all compatible updates:
-  `rustls-webpki` `0.103.16` ([RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382),
-  distrusted intermediates accepted), `webpki-root-certs` `1.0.11`
-  ([RUSTSEC-2026-0383](https://rustsec.org/advisories/RUSTSEC-2026-0383)) and `tokio` `1.54.1`
-  ([RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386), `AsyncFd` I/O safety).
-
 ### Changed
 
 - `radixdlt-connect-iroh` — `protocol::Wallet` (and with it the `radixdlt-gateway-tx`
@@ -177,6 +160,39 @@ minor versions may contain breaking changes.
 - `radixdlt-connect` — all signing calls now correlate the wallet response by
   `interactionId`, discarding stale queued responses; `LinkState` documents the
   multi-device API in the README.
+
+## [connector-v0.6.1] - 2026-10-25
+
+`radixdlt-connector-mcp` 0.6.1: the same connector, rebuilt past the **ten** RustSec advisories
+the 0.6.0 binary carried. Nothing changes for callers; the self-updater offers it.
+
+### Security
+
+- **Off the vulnerable `crypto-bigint 0.5`** ([RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387):
+  operations meant to be constant-time could branch on secrets), and with it `ctutils` `0.4.5`
+  ([RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385)). No workspace locks it any more:
+  - `radixdlt-rola` — `p256` `0.13` → `0.14` (`ecdsa 0.17`, `crypto-bigint 0.7.8`). The public API
+    and the delegated vectors are unchanged; high-S raw signatures are still refused.
+  - `radixdlt-connect` — `webrtc`/`rtc` `0.20` → `0.21`, whose DTLS no longer uses the RustCrypto
+    curves (it takes `ring`, as rustls here already did). The TURN client and the test TURN server
+    follow the new `rtc-turn`/`rtc-stun` API (explicit crypto provider, `now` on every call).
+  - `rust-version` of `radixdlt-connect`, `radixdlt-connect-iroh` and `radixdlt-connector-mcp`
+    raised to `1.87`, what their dependencies now require (as the rest of the SDK).
+- TLS and certificates, all compatible updates:
+  - `rustls` `0.23.46` ([RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346),
+    [0347](https://rustsec.org/advisories/RUSTSEC-2026-0347),
+    [0348](https://rustsec.org/advisories/RUSTSEC-2026-0348),
+    [0349](https://rustsec.org/advisories/RUSTSEC-2026-0349));
+  - `rustls-webpki` `0.103.16` ([RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382),
+    distrusted intermediates accepted);
+  - `webpki-roots` and `webpki-root-certs` `1.0.11`
+    ([RUSTSEC-2026-0381](https://rustsec.org/advisories/RUSTSEC-2026-0381),
+    [RUSTSEC-2026-0383](https://rustsec.org/advisories/RUSTSEC-2026-0383), distrusted emSign roots).
+- `tokio` `1.54.1` ([RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386), `AsyncFd`
+  I/O safety); in `radixdlt-connect-iroh`'s lockfile, `h2` `0.4.20`
+  ([RUSTSEC-2026-0258](https://rustsec.org/advisories/RUSTSEC-2026-0258)).
+- `radixdlt-connect`'s dev-dependency on `radixdlt-rola` names its version, as every other path
+  dependency does (cargo-deny refused it as a wildcard).
 
 ## [connector-v0.3.2]
 

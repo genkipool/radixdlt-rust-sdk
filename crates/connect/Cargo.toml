@@ -45,4 +45,4 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 
 [dev-dependencies]
 # Used by the `prove` example to verify the ROLA proof returned by the wallet.
-radixdlt-rola = { path = "../rola" }
+radixdlt-rola = { path = "../rola", version = "0.3.0" }
