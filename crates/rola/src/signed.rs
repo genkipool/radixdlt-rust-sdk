@@ -301,7 +301,8 @@ fn verify_delegated(
 /// S (the high-S twin of a valid signature is refused, so a signature has one spelling).
 fn raw_verifies(key: &P256Key, message: &[u8], rs: &[u8; 64]) -> Result<(), SignedError> {
     let signature = P256Signature::from_slice(rs).map_err(|_| SignedError::DelegateSignature)?;
-    if signature.normalize_s().is_some() {
+    // A high S is the malleable twin of a valid signature: only the low form is accepted.
+    if signature.normalize_s() != signature {
         return Err(SignedError::DelegateSignature);
     }
     key.verify(message, &signature)
@@ -350,7 +351,7 @@ fn webauthn_verifies(
         return Err(SignedError::DelegateSignature);
     }
     let signature = P256Signature::from_der(der).map_err(|_| SignedError::DelegateSignature)?;
-    let signature = signature.normalize_s().unwrap_or(signature);
+    let signature = signature.normalize_s();
     let mut signed = authenticator_data.clone();
     signed.extend_from_slice(&Sha256::digest(client_data_json));
     key.verify(&signed, &signature)

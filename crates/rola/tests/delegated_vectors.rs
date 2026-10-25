@@ -31,7 +31,7 @@ fn hardware(seed: u8) -> (P256Secret, [u8; 33]) {
     let key = P256Secret::from_slice(&[seed; 32]).unwrap();
     let point: [u8; 33] = key
         .verifying_key()
-        .to_encoded_point(true)
+        .to_sec1_point(true)
         .as_bytes()
         .try_into()
         .unwrap();
@@ -63,7 +63,7 @@ fn message() -> Vec<u8> {
 
 fn raw(key: &P256Secret, cert: &Value) -> Value {
     let s: Signature = key.sign(&message());
-    let s = s.normalize_s().unwrap_or(s);
+    let s = s.normalize_s();
     json!({"curve": "delegated", "delegation": cert, "signature": hex::encode(s.to_bytes())})
 }
 

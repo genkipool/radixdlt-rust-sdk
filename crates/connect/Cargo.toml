@@ -12,7 +12,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/genkipool/radixdlt-rust-sdk"
 authors = ["Luis Alberto Reoyo Bolaños <68571366+genkipool@users.noreply.github.com>"]
-rust-version = "1.80"
+rust-version = "1.87"
 keywords = ["radix", "radixdlt", "radix-connect", "webrtc", "wallet"]
 categories = ["cryptography::cryptocurrencies", "network-programming"]
 readme = "README.md"
@@ -34,9 +34,9 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.23"
-webrtc = "0.20"
+webrtc = "0.21"
 async-trait = "0.1.91"
-rtc = "0.20"
+rtc = "0.21"
 bytes = "1"
 sansio = "1"
 webpki-roots = "1"

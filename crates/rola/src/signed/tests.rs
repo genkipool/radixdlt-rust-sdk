@@ -3,7 +3,6 @@
 use super::*;
 use crate::delegation::tests::{certificate, person, NETWORK};
 use ed25519_dalek::Signer as _;
-use p256::ecdsa::signature::Signer as _;
 use p256::ecdsa::SigningKey as P256Secret;
 use serde_json::json;
 
@@ -28,7 +27,7 @@ fn rola_message() -> Vec<u8> {
 /// What a TPM answers: low-S `r ‖ s` over SHA-256 of the ROLA message.
 fn raw_proof(hardware: &P256Secret, cert: &Value) -> Value {
     let signature: P256Signature = hardware.sign(&rola_message());
-    let signature = signature.normalize_s().unwrap_or(signature);
+    let signature = signature.normalize_s();
     json!({"curve": "delegated", "delegation": cert, "signature": hex::encode(signature.to_bytes())})
 }
 
@@ -133,7 +132,7 @@ fn only_the_named_key_signs() {
 fn a_high_s_twin_is_refused() {
     let (hardware, cert) = person();
     let signature: P256Signature = hardware.sign(&rola_message());
-    let low = signature.normalize_s().unwrap_or(signature);
+    let low = signature.normalize_s();
     let (r, s) = low.split_scalars();
     let high = P256Signature::from_scalars(r, -*s).unwrap();
     let proof = json!({"curve": "delegated", "delegation": cert, "signature": hex::encode(high.to_bytes())});

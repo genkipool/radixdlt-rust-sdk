@@ -81,7 +81,7 @@ ed25519-dalek = "3"
 blake2 = "0.10"
 hex = "0.4"
 # Delegated ROLA: the P-256 keys that TPMs, Secure Enclaves and passkeys sign with.
-p256 = { version = "0.13", features = ["ecdsa"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
 sha2 = "0.10"
 base64 = "0.22"
 radix-common = "1.3.1"

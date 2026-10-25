@@ -110,6 +110,23 @@ minor versions may contain breaking changes.
   English fallback; `Lang` is now `#[non_exhaustive]`, so adding a language is
   non-breaking.
 
+### Security
+
+- **Off the vulnerable `crypto-bigint 0.5`** ([RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387):
+  operations meant to be constant-time could branch on secrets). No workspace locks it any more:
+  - `radixdlt-rola` — `p256` `0.13` → `0.14` (`ecdsa 0.17`, `crypto-bigint 0.7.8`). The public API
+    and the delegated vectors are unchanged; high-S raw signatures are still refused.
+  - `radixdlt-connect` — `webrtc`/`rtc` `0.20` → `0.21`, whose DTLS no longer uses the RustCrypto
+    curves (it takes `ring`, as rustls here already did). The TURN client and the test TURN server
+    follow the new `rtc-turn`/`rtc-stun` API (explicit crypto provider, `now` on every call).
+  - `rust-version` of `radixdlt-connect`, `radixdlt-connect-iroh` and `radixdlt-connector-mcp`
+    raised to `1.87`, what their dependencies now require (as the rest of the SDK).
+- Lockfiles moved past three more advisories, all compatible updates:
+  `rustls-webpki` `0.103.16` ([RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382),
+  distrusted intermediates accepted), `webpki-root-certs` `1.0.11`
+  ([RUSTSEC-2026-0383](https://rustsec.org/advisories/RUSTSEC-2026-0383)) and `tokio` `1.54.1`
+  ([RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386), `AsyncFd` I/O safety).
+
 ### Changed
 
 - `radixdlt-connect-iroh` — `protocol::Wallet` (and with it the `radixdlt-gateway-tx`

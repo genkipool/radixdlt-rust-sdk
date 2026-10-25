@@ -16,6 +16,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use rtc::crypto::{RTCCrypto, RTCCryptoProvider};
 use rtc::stun::attributes::{ATTR_NONCE, ATTR_REALM, ATTR_USERNAME};
 use rtc::stun::error_code::{
     ErrorCode, ErrorCodeAttribute, CODE_ALLOC_MISMATCH, CODE_BAD_REQUEST, CODE_UNAUTHORIZED,
@@ -132,6 +133,8 @@ struct Allocation {
 struct Session {
     client: SocketAddr,
     config: Arc<TurnConfig>,
+    /// Signs and checks MESSAGE-INTEGRITY (the same ring the TLS side already uses).
+    crypto: Arc<dyn RTCCryptoProvider>,
     nonce: String,
     out: mpsc::UnboundedSender<Vec<u8>>,
     allocation: Option<Allocation>,
@@ -152,9 +155,11 @@ impl Session {
         });
         let mut nonce = [0u8; 16];
         getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
+        let crypto = rtc::crypto::default_provider().map_err(|e| e.to_string())?;
         let mut session = Session {
             client,
             config,
+            crypto,
             nonce: hex::encode(nonce),
             out,
             allocation: None,
@@ -220,7 +225,10 @@ impl Session {
             self.reply(&m, CLASS_SUCCESS_RESPONSE, vec![Box::new(mapped)], None);
             return;
         }
-        let Some(integrity) = self.authenticate(&m) else {
+        // The integrity borrows this local copy, not `self`, so the handlers below may still
+        // take `&mut self`.
+        let crypto = Arc::clone(&self.crypto);
+        let Some(integrity) = self.authenticate(&m, crypto.crypto()) else {
             return;
         };
         match method {
@@ -236,7 +244,7 @@ impl Session {
 
     /// Long-term credentials: challenge a request without them, refuse a wrong one, and return
     /// the integrity to sign the response with.
-    fn authenticate(&self, m: &Message) -> Option<MessageIntegrity> {
+    fn authenticate<'c>(&self, m: &Message, crypto: &'c dyn RTCCrypto) -> Option<MessageIntegrity<'c>> {
         let username = TextAttribute::get_from_as(m, ATTR_USERNAME).ok();
         let Some(username) = username.filter(|_| m.contains(rtc::stun::attributes::ATTR_MESSAGE_INTEGRITY))
         else {
@@ -250,17 +258,21 @@ impl Session {
             self.challenge(m);
             return None;
         }
-        let integrity = MessageIntegrity::new_long_term_integrity(
+        let Ok(key) = MessageIntegrity::long_term_integrity_key(
             self.config.username.clone(),
             self.config.realm.clone(),
             self.config.password.clone(),
-        );
+            crypto,
+        ) else {
+            self.challenge(m);
+            return None;
+        };
         let mut checked = m.clone();
-        if integrity.check(&mut checked).is_err() {
+        if MessageIntegrity::check(&mut checked, &key, crypto).is_err() {
             self.challenge(m);
             return None;
         }
-        Some(integrity)
+        Some(MessageIntegrity::new_raw_integrity_with_provider(key, crypto))
     }
 
     fn challenge(&self, m: &Message) {
@@ -275,7 +287,7 @@ impl Session {
         self.reply(m, CLASS_ERROR_RESPONSE, attrs, None);
     }
 
-    fn error(&self, m: &Message, code: ErrorCode, integrity: Option<MessageIntegrity>) {
+    fn error(&self, m: &Message, code: ErrorCode, integrity: Option<MessageIntegrity<'_>>) {
         let attrs: Vec<Box<dyn Setter>> = vec![Box::new(ErrorCodeAttribute {
             code,
             reason: b"Error".to_vec(),
@@ -283,14 +295,14 @@ impl Session {
         self.reply(m, CLASS_ERROR_RESPONSE, attrs, integrity);
     }
 
-    fn reply(
+    fn reply<'a>(
         &self,
         m: &Message,
         class: rtc::stun::message::MessageClass,
-        mut attrs: Vec<Box<dyn Setter>>,
-        integrity: Option<MessageIntegrity>,
+        mut attrs: Vec<Box<dyn Setter + 'a>>,
+        integrity: Option<MessageIntegrity<'a>>,
     ) {
-        let mut setters: Vec<Box<dyn Setter>> = vec![
+        let mut setters: Vec<Box<dyn Setter + 'a>> = vec![
             Box::new(m.transaction_id),
             Box::new(MessageType::new(m.typ.method, class)),
         ];
@@ -305,7 +317,7 @@ impl Session {
         }
     }
 
-    async fn on_allocate(&mut self, m: &Message, integrity: MessageIntegrity) {
+    async fn on_allocate(&mut self, m: &Message, integrity: MessageIntegrity<'_>) {
         if self.allocation.is_some() {
             self.error(m, CODE_ALLOC_MISMATCH, Some(integrity));
             return;
@@ -378,7 +390,7 @@ impl Session {
         self.reply(m, CLASS_SUCCESS_RESPONSE, attrs, Some(integrity));
     }
 
-    fn on_refresh(&mut self, m: &Message, integrity: MessageIntegrity) {
+    fn on_refresh(&mut self, m: &Message, integrity: MessageIntegrity<'_>) {
         let mut lifetime = Lifetime(LIFETIME);
         let _ = lifetime.get_from(m);
         if lifetime.0.is_zero() {
@@ -399,7 +411,7 @@ impl Session {
         );
     }
 
-    fn on_channel_bind(&mut self, m: &Message, integrity: MessageIntegrity) {
+    fn on_channel_bind(&mut self, m: &Message, integrity: MessageIntegrity<'_>) {
         let mut number = ChannelNumber::default();
         let mut peer = PeerAddress::default();
         let valid = number.get_from(m).is_ok() && peer.get_from(m).is_ok();

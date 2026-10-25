@@ -325,7 +325,7 @@ pub(crate) mod tests {
         rp_id: Option<&str>,
     ) -> (p256::ecdsa::SigningKey, Value) {
         let hardware = p256::ecdsa::SigningKey::from_slice(&[5; 32]).unwrap();
-        let point = hardware.verifying_key().to_encoded_point(true);
+        let point = hardware.verifying_key().to_sec1_point(true);
         let delegate_key: [u8; 33] = point.as_bytes().try_into().unwrap();
         let spec = Issue {
             network: NETWORK,
@@ -360,7 +360,7 @@ pub(crate) mod tests {
         assert!(d.identity.starts_with("identity_tdx_2_"));
         assert_eq!(
             &d.delegate_key[..],
-            hardware.verifying_key().to_encoded_point(true).as_bytes()
+            hardware.verifying_key().to_sec1_point(true).as_bytes()
         );
     }
 

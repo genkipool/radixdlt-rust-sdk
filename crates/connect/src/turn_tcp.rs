@@ -296,23 +296,30 @@ impl TurnTcpRuntime {
             .next()
             .ok_or_else(|| ConnectError::WebRtc(format!("{} resolved to nothing", server.addr)))?;
 
-        let mut client = TurnClient::new(TurnClientConfig {
-            stun_serv_addr: String::new(),
-            turn_serv_addr: peer.to_string(),
-            // The stream's own local address is irrelevant to the protocol; what matters is
-            // that everything is tagged TCP so the client frames it for a stream.
-            local_addr: "0.0.0.0:0".parse().unwrap_or(peer),
-            transport_protocol: TransportProtocol::TCP,
-            username: server.username.clone(),
-            password: server.password.clone(),
-            realm: String::new(),
-            software: String::new(),
-            rto_in_ms: 0,
-        })
+        let crypto =
+            rtc::crypto::default_provider().map_err(|e| ConnectError::WebRtc(format!("TURN crypto: {e}")))?;
+        let mut client = TurnClient::new(
+            TurnClientConfig {
+                stun_serv_addr: String::new(),
+                turn_serv_addr: peer.to_string(),
+                // The stream's own local address is irrelevant to the protocol; what matters is
+                // that everything is tagged TCP so the client frames it for a stream.
+                local_addr: "0.0.0.0:0".parse().unwrap_or(peer),
+                transport_protocol: TransportProtocol::TCP,
+                username: server.username.clone(),
+                password: server.password.clone(),
+                realm: String::new(),
+                software: String::new(),
+                rto_in_ms: 0,
+                // The client's own refresh schedule, as before.
+                allocation_refresh_interval_cap: None,
+            },
+            crypto,
+        )
         .map_err(|e| ConnectError::WebRtc(format!("TURN client: {e}")))?;
 
         client
-            .allocate()
+            .allocate(Instant::now())
             .map_err(|e| ConnectError::WebRtc(format!("TURN allocate: {e}")))?;
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
@@ -470,7 +477,7 @@ async fn drive(
                     if let (Some(addr), Some(mut waiting)) = (relayed, queued.remove(&peer)) {
                         if let Ok(mut relay) = client.relay(addr) {
                             for payload in waiting.drain(..) {
-                                let _ = relay.send_to(&payload, peer);
+                                let _ = relay.send_to(Instant::now(), &payload, peer);
                             }
                         }
                     }
@@ -546,7 +553,7 @@ async fn drive(
                         let Some(addr) = relayed else { continue };
                         if permitted.contains(&peer) {
                             if let Ok(mut relay) = client.relay(addr) {
-                                let _ = relay.send_to(&payload, peer);
+                                let _ = relay.send_to(Instant::now(), &payload, peer);
                             }
                         } else {
                             // Hold it until the relay agrees to talk to this peer, and ask
@@ -558,7 +565,7 @@ async fn drive(
                             waiting.push_back(payload);
                             if requested.insert(peer) {
                                 if let Ok(mut relay) = client.relay(addr) {
-                                    if relay.create_permission(peer).is_err() {
+                                    if relay.create_permission(Instant::now(), peer).is_err() {
                                         requested.remove(&peer);
                                     }
                                 }
