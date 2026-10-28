@@ -15,6 +15,9 @@ or by email to the maintainer. Include:
 You can expect an initial response within a few days. Once a fix is ready it will be
 released as a new patch version and the vulnerable versions will be yanked.
 
+For **PamAuthority** (the product built on these crates: its agent, panel, server and contract),
+use the form at <https://pamauthority.genkipool.com/security> instead.
+
 ## Scope
 
 These crates handle cryptographic material (Ed25519 keys, ROLA proofs) and network
