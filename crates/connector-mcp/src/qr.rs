@@ -2,15 +2,16 @@
 //!   * a Unicode half-block string for terminal agents (Claude Code, …), and
 //!   * a base64 PNG for agents with a graphical UI (Claude Desktop, Antigravity).
 //!
-//! Both are produced from the same QR matrix, so they encode exactly the same
-//! payload. The raw payload string is also returned to the caller so a user can
-//! regenerate the QR with a **local** tool if neither rendering scans.
+//! Both are produced from the same QR matrix (`radixdlt_connect_types::qr`, the encoder
+//! every pairing program shares), so they encode exactly the same payload. The raw payload
+//! string is also returned to the caller so a user can regenerate the QR with a **local**
+//! tool if neither rendering scans.
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
-use qrcode::{Color, QrCode};
+use radixdlt_connect_types::qr::{QrMatrix, QUIET_ZONE};
 
 /// A rendered QR in both forms.
 pub struct RenderedQr {
@@ -23,48 +24,11 @@ pub struct RenderedQr {
 /// Builds a QR from `payload` and renders both forms. Fails only if the payload
 /// is too large to encode as a QR code.
 pub fn render(payload: &str) -> Result<RenderedQr, String> {
-    let code = QrCode::new(payload.as_bytes()).map_err(|e| format!("could not build the QR code: {e}"))?;
-    let width = code.width();
-    let modules: Vec<bool> = code.to_colors().into_iter().map(|c| c == Color::Dark).collect();
+    let matrix = QrMatrix::encode(payload).map_err(|e| e.to_string())?;
     Ok(RenderedQr {
-        unicode: to_unicode(width, &modules),
-        png_base64: to_png_base64(width, &modules)?,
+        unicode: matrix.to_unicode(),
+        png_base64: to_png_base64(&matrix)?,
     })
-}
-
-/// Quiet zone (light border) in modules, as required by the QR spec for scanning.
-const QUIET: usize = 4;
-
-/// Renders the matrix as Unicode half-blocks: each character stacks two vertical
-/// modules, so the art is compact. Dark modules are filled glyphs on the terminal
-/// background.
-fn to_unicode(width: usize, modules: &[bool]) -> String {
-    let size = width + QUIET * 2;
-    let dark = |x: usize, y: usize| -> bool {
-        if x < QUIET || y < QUIET || x >= QUIET + width || y >= QUIET + width {
-            false // quiet zone
-        } else {
-            modules[(y - QUIET) * width + (x - QUIET)]
-        }
-    };
-
-    let mut out = String::with_capacity(size * (size / 2 + 1));
-    let mut y = 0;
-    while y < size {
-        for x in 0..size {
-            let top = dark(x, y);
-            let bottom = y + 1 < size && dark(x, y + 1);
-            out.push(match (top, bottom) {
-                (true, true) => '█',
-                (true, false) => '▀',
-                (false, true) => '▄',
-                (false, false) => ' ',
-            });
-        }
-        out.push('\n');
-        y += 2;
-    }
-    out
 }
 
 /// Scale, in pixels, of each QR module in the PNG.
@@ -72,17 +36,18 @@ const SCALE: usize = 8;
 
 /// Renders the matrix as a grayscale PNG (black modules on white) and returns it
 /// base64-encoded.
-fn to_png_base64(width: usize, modules: &[bool]) -> Result<String, String> {
-    let side = (width + QUIET * 2) * SCALE;
+fn to_png_base64(matrix: &QrMatrix) -> Result<String, String> {
+    let width = matrix.width();
+    let side = (width + QUIET_ZONE * 2) * SCALE;
     let mut pixels = vec![255u8; side * side]; // white background
 
     for my in 0..width {
         for mx in 0..width {
-            if !modules[my * width + mx] {
+            if !matrix.is_dark(mx, my) {
                 continue;
             }
-            let px0 = (mx + QUIET) * SCALE;
-            let py0 = (my + QUIET) * SCALE;
+            let px0 = (mx + QUIET_ZONE) * SCALE;
+            let py0 = (my + QUIET_ZONE) * SCALE;
             for dy in 0..SCALE {
                 let row = (py0 + dy) * side;
                 for dx in 0..SCALE {

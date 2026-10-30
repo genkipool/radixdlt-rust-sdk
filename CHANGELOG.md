@@ -9,6 +9,24 @@ minor versions may contain breaking changes.
 
 ### Added
 
+- `radixdlt-connect-iroh` — **the Radix mobile wallet over iroh, from a server, no browser.**
+  `mobile::MobileWalletConnector` speaks *Radix Connect over iroh v1* (the protocol of the Radix
+  Wallet and the Connector Extension, through the `radix-connect-iroh` library) in the connector
+  role, with `radixdlt_connect::Connector`'s API: `pair` (same QR, the wallet's `linkClient`
+  signature required and verified; the pairing session is kept for the wallet's regular
+  connection), `exchange` with `Progress`, `await_response`, `probe`, the `request_*` helpers,
+  plus `open_link`, `subscribe`, `diagnostics`, `close_link`/`close`. One session per link,
+  answers matched by `interactionId` (concurrent requests on one link), a request sent again only
+  when nothing was sent, late answers kept for `await_response`, every wait bounded. Timeout
+  errors carry the link's connectivity snapshot (relay reachable?, state, path, last error), and
+  everything is logged through `tracing` without passwords or message contents. Example
+  `mobile_login` (QR in the terminal, ROLA login verified); tests against a simulated wallet over
+  an in-process relay. `rust-version` is now 1.91 (iroh 1.4).
+- `radixdlt-connect-types` — `linking`: the linking message, the pairing QR payload, `linkClient`
+  parsing and signature verification, password and identity generation — one implementation for
+  both transports. `qr` (feature `qr`): the QR matrix and its terminal rendering, moved from
+  `radixdlt-connector-mcp`.
+
 - `radixdlt-connect-types` / `radixdlt-connect` — **a refusal is not every failure.**
   `is_rejection_by_person(reason)`, `WalletInteractionError::rejected_by_person()` and
   `ConnectError::rejected_by_person()` tell the person pressing «reject» (`rejectedByUser`) apart from
@@ -112,6 +130,11 @@ minor versions may contain breaking changes.
 
 ### Changed
 
+- `radixdlt-connect` — `pair`, `await_link_client`, `crypto::linking_message` and
+  `crypto::connection_id_hex` use `radixdlt-connect-types::linking` (same API). `pair` now refuses
+  an identity whose public key does not belong to its private key before showing the QR (it used
+  to show a QR every wallet rejects). New `From<LinkingError> for ConnectError`.
+- `radixdlt-connector-mcp` — draws its QR with `radixdlt-connect-types::qr` (same output).
 - `radixdlt-connect-iroh` — `protocol::Wallet` (and with it the `radixdlt-gateway-tx`
   dependency) is now behind a `wallet` feature, **on by default**, so nothing
   changes for existing users. It is separable because the Scrypto engine that

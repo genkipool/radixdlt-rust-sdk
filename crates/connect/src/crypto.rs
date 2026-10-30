@@ -20,9 +20,10 @@ pub fn blake2b_256(data: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// connectionId (hex) derived from the link password.
+/// connectionId (hex) derived from the link password
+/// ([`radixdlt_connect_types::linking::connection_id`]).
 pub fn connection_id_hex(password: &[u8]) -> String {
-    hex::encode(blake2b_256(password))
+    hex::encode(radixdlt_connect_types::linking::connection_id(password))
 }
 
 /// The AES key from a link password, refusing anything that is not 32 bytes.
@@ -70,17 +71,28 @@ pub fn decrypt_payload(hex_data: &str, key: &[u8]) -> Result<Vec<u8>, ConnectErr
         .map_err(|_| ConnectError::Crypto("decryption failed (key/iv/tag)".into()))
 }
 
-/// Linking signature message: blake2b_256("L" ‖ password).
+/// Linking signature message: blake2b_256("L" ‖ password). One implementation for every
+/// transport: [`radixdlt_connect_types::linking::linking_message`].
+///
+/// A function rather than a `pub use`, so tools that check this crate's public API alone (it
+/// predates the shared module) still see it.
 pub fn linking_message(password: &[u8]) -> [u8; 32] {
-    let mut buf = Vec::with_capacity(1 + password.len());
-    buf.push(b'L');
-    buf.extend_from_slice(password);
-    blake2b_256(&buf)
+    radixdlt_connect_types::linking::linking_message(password)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The re-exported linking message is the one this crate always computed.
+    #[test]
+    fn linking_message_is_blake2b_of_l_and_the_password() {
+        let password = [0x42u8; 32];
+        let mut buf = vec![b'L'];
+        buf.extend_from_slice(&password);
+        assert_eq!(linking_message(&password), blake2b_256(&buf));
+        assert_eq!(connection_id_hex(&password), hex::encode(blake2b_256(&password)));
+    }
 
     #[test]
     fn round_trip_aes_gcm() {

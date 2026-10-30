@@ -18,6 +18,12 @@ radixdlt-connect-types = "0.1"
   `extract_proofs`, `extract_transaction_intent_hash`, …
 - **Wallet side** — parse requests, build responses: `parse_account_proof_request`,
   `account_proof_response`, …
+- **Linking** (`linking`) — what pairing a connector with the wallet signs and checks, the
+  same over every transport: `linking_message`, `pairing_qr` (the QR JSON),
+  `parse_link_client` / `verify_link_signature` (the wallet's answer), `generate_password`,
+  `generate_identity`, `connection_id`.
+- **QR** (`qr`, feature `qr`) — the pairing QR as a matrix (`QrMatrix`) and as terminal art
+  (`render_unicode`).
 
 Error messages are localized to the system language. Part of the
 [RadixDLT Rust SDK](https://crates.io/crates/radixdlt-sdk).

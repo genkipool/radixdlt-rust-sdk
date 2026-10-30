@@ -1,15 +1,17 @@
-//! radixdlt-connect-iroh — An [iroh](https://iroh.computer) (QUIC) peer-to-peer
-//! transport for the RadixDLT Rust SDK.
+//! radixdlt-connect-iroh — An [iroh](https://iroh.computer) (QUIC) transport for the
+//! RadixDLT Rust SDK, an alternative to `radixdlt-connect` (WebRTC). Two uses:
 //!
-//! This is an alternative to `radixdlt-connect` (WebRTC). It does NOT talk to the
-//! Radix mobile Wallet (which only speaks Radix Connect over WebRTC); instead it
-//! connects two peers that both use the SDK — for example a pure-Rust desktop
-//! signer, a server, or an IoT device. That makes it possible to run flows like
-//! ROLA "log in with Radix" entirely in Rust, with no mobile wallet involved.
-//!
-//! Messages are JSON [`serde_json::Value`]s, length-prefixed over a single QUIC
-//! bidirectional stream. The connecting side ([`IrohConnector::connect`]) sends
-//! first; the accepting side ([`IrohConnector::accept`]) receives first.
+//! * **The Radix mobile wallet** ([`mobile`], [`MobileWalletConnector`]): "Radix Connect over
+//!   iroh v1", the protocol the Radix Wallet and the Radix Connector Extension speak. A Rust
+//!   server pairs with the wallet through the usual QR code and sends it wallet interactions
+//!   directly — no browser, no extension. Same API shape as `radixdlt_connect::Connector`.
+//! * **SDK-to-SDK** ([`IrohConnector`], `protocol`): two peers that both use the SDK — a
+//!   pure-Rust desktop signer, a server, an IoT device — so flows like ROLA "log in with Radix"
+//!   run entirely in Rust, with no phone involved. Messages are JSON [`serde_json::Value`]s,
+//!   length-prefixed over a single QUIC bidirectional stream (ALPN [`ALPN`]); the connecting
+//!   side ([`IrohConnector::connect`]) sends first, the accepting side
+//!   ([`IrohConnector::accept`]) receives first. This protocol is the SDK's own: the mobile
+//!   wallet does not speak it.
 //!
 //! User-facing error text is localized to the system language.
 
@@ -31,6 +33,9 @@ use iroh::endpoint::{presets, Connection, Incoming, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, TransportAddr};
 use radixdlt_i18n::{tr, Lang};
 use serde_json::Value;
+
+pub mod mobile;
+pub use mobile::{MobileError, MobileWalletConnector};
 
 /// Answering wallet requests. Behind the `wallet` feature because it needs the Scrypto
 /// engine, whose exact `regex` pin cannot coexist with the mobile wallet's webrtc stack.

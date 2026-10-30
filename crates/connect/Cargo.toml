@@ -20,7 +20,6 @@ readme = "README.md"
 [dependencies]
 radixdlt-i18n = { path = "../i18n", version = "0.3.0" }
 radixdlt-connect-types = { path = "../connect-types", version = "0.3.0" }
-ed25519-dalek = "3"
 getrandom = "0.4"
 blake2 = "0.10"
 # The link's turn across processes (an OS file lock), within the crate's MSRV.

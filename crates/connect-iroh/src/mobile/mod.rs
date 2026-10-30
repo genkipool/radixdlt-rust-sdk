@@ -1,0 +1,960 @@
+//! The Radix **mobile wallet** over iroh: "Radix Connect over iroh v1", the protocol the Radix
+//! Wallet and the Radix Connector Extension speak, from a Rust program — no browser involved.
+//!
+//! [`MobileWalletConnector`] plays the role the Connector Extension plays: it pairs with the
+//! wallet through the same QR code, then sends it wallet interactions (ROLA logins and account
+//! proofs, transactions, pre-authorizations) and returns its answers. Its API mirrors
+//! `radixdlt_connect::Connector` (WebRTC) method for method, so switching transport is a matter
+//! of changing the type: `pair`, `exchange` (with [`Progress`]), `await_response`, `probe` and the
+//! `request_*` helpers, all built on [`radixdlt_connect_types`] — the same JSON either way.
+//!
+//! # How a link works over iroh
+//!
+//! A link is its 32-byte **password** (from pairing). Both iroh endpoint keys derive from it, so
+//! only the holder of the password can reach this end, and the session admits only the link's
+//! wallet. This connector keeps **one session per link**, started on first use and kept until
+//! [`close_link`](MobileWalletConnector::close_link), [`close`](MobileWalletConnector::close) or
+//! drop: it listens at the relay, and the wallet dials in whenever its app is open with iroh on
+//! for the link. Both ends must use the **same relay** (default [`DEFAULT_RELAY_URL`], a public
+//! development relay; run your own `iroh-relay` in production).
+//!
+//! Requests are matched with answers by `interactionId`, so several can be in flight on one link.
+//! Anything else the wallet sends — its `accountList` right after connecting, an answer that
+//! arrived after its request timed out here — is reported to [`exchange`]'s observer as
+//! [`Progress::OtherMessage`] and to [`subscribe`](MobileWalletConnector::subscribe)rs; late
+//! answers are also kept (bounded) for [`await_response`](MobileWalletConnector::await_response).
+//!
+//! A request is sent again **only** when the session reports that nothing was sent (the wallet
+//! dropped the connection just before). Once it may have reached the wallet — confirmed, or a
+//! confirmation that timed out or was lost with the connection — it is never sent again: the
+//! person could otherwise be asked twice, or sign a transaction twice.
+//!
+//! # Diagnostics
+//!
+//! Every timeout carries a snapshot of the link's connectivity ([`MobileError::diagnostics`]),
+//! and the state reports in [`Progress`] carry one too; [`MobileWalletConnector::diagnostics`]
+//! takes one at any time. Its `Display` is one log line, e.g.
+//! `connector efcc89cfbf → 4d99dc649e state=disconnected relay=https://… (NOT connected)`. The
+//! connector also logs through [`tracing`](https://docs.rs/tracing) (target
+//! `radixdlt_connect_iroh`; the protocol's own events are under `radix_connect_iroh`): links are
+//! named by a short hash of the password, messages by their size and interaction id — never the
+//! password or a message's contents.
+//!
+//! [`exchange`]: MobileWalletConnector::exchange
+
+#![warn(
+    missing_docs,
+    missing_debug_implementations,
+    unreachable_pub,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::redundant_clone,
+    clippy::todo
+)]
+#![deny(clippy::unwrap_used, clippy::dbg_macro, clippy::unimplemented, unsafe_code)]
+
+mod error;
+mod inbox;
+mod link;
+mod log;
+mod requests;
+
+use std::fmt;
+use std::sync::Arc;
+use std::time::Duration;
+
+use radix_connect_iroh::{ConnectionPassword, SendError, SessionConfig};
+use radixdlt_connect_types::linking::LinkClient;
+use serde_json::Value;
+use tokio::sync::broadcast::{self, error::RecvError};
+use tokio::sync::watch;
+use tokio::time::{sleep, sleep_until, timeout_at, Instant};
+use zeroize::Zeroizing;
+
+pub use error::MobileError;
+pub use radix_connect_iroh::{ConnectionState, Diagnostics, EndpointId, PathKind, Role, DEFAULT_RELAY_URL};
+/// The linking cryptography, shared with the WebRTC transport ([`radixdlt_connect_types::linking`]).
+pub use radixdlt_connect_types::linking;
+pub use radixdlt_connect_types::{
+    account_proof_request, account_proof_request_sharing, account_request, authorized_request, check_failure,
+    extract_accounts, extract_login, extract_ongoing_accounts, extract_ownership_proofs,
+    extract_persona_email, extract_persona_name, extract_persona_phones, extract_proofs,
+    extract_signed_partial_transaction, extract_transaction_intent_hash, is_rejection_by_person,
+    login_request, ownership_request, pre_authorization_request, transaction_request, unauthorized_request,
+    AccountsWanted, Auth, AuthorizedRequest, DappContext, OwnershipWanted, PersonaDataWanted, PersonaRequest,
+    Quantity, WalletInteractionError,
+};
+
+use link::{LinkId, Pending, Registry, Status, Waiter};
+
+/// How long a call waits for the wallet before it first reports that it is waiting. Long enough
+/// for a session that just started to reach its relay, so the first snapshot is not alarming.
+const FIRST_WAITING_REPORT: Duration = Duration::from_secs(2);
+
+/// How often a call still waiting for the wallet reports it, with a fresh diagnostics snapshot.
+const WAITING_REPORT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Bound on starting a session for the calls that have no timeout of their own.
+const SESSION_START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Pause before sending again a request the session could not send at all.
+const RESEND_PAUSE: Duration = Duration::from_millis(200);
+
+/// One step in the life of a call, reported as it happens to the observer of
+/// [`MobileWalletConnector::exchange`] (and of [`pair_with_progress`](MobileWalletConnector::pair_with_progress)).
+///
+/// As over WebRTC, the steps tell apart failures that look alike from here: a request that never
+/// reached [`Progress::Delivered`] (nor [`Progress::Unconfirmed`]) is NOT on the phone, and
+/// sending it again is safe.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum Progress {
+    /// The wallet is not connected: its app must be open, with iroh enabled for this link and the
+    /// same relay. Reported two seconds into the wait and every ten seconds while it lasts.
+    WaitingForWallet {
+        /// How long the call has waited so far.
+        waited: Duration,
+        /// The link's connectivity now.
+        diagnostics: Box<Diagnostics>,
+    },
+    /// The wallet is connected.
+    Connected {
+        /// Time since the call started.
+        elapsed: Duration,
+        /// The link's connectivity now (the path and its round-trip time).
+        diagnostics: Box<Diagnostics>,
+    },
+    /// The wallet confirmed it took the request. From here on it is on the phone.
+    Delivered {
+        /// Time since the call started.
+        elapsed: Duration,
+    },
+    /// Nothing was sent — the wallet dropped the connection just before — so the request is sent
+    /// again, with the same interaction id, once the wallet is back.
+    Resending {
+        /// Which attempt this is (2 = the first resend).
+        attempt: u32,
+        /// Why the previous attempt sent nothing.
+        reason: String,
+    },
+    /// The wallet did not confirm the request, which may or may not have reached it. It is NOT
+    /// sent again; the call keeps waiting for an answer until its timeout.
+    Unconfirmed {
+        /// What went wrong while sending.
+        reason: String,
+    },
+    /// The wallet disconnected while the call waited for its answer. The request stays on the
+    /// phone; its answer arrives when the wallet connects again.
+    WalletDisconnected {
+        /// The link's connectivity now.
+        diagnostics: Box<Diagnostics>,
+    },
+    /// A message that answers no request in flight — the wallet's `accountList`, or the late
+    /// answer to an earlier request (also kept for [`MobileWalletConnector::await_response`]).
+    OtherMessage(Value),
+}
+
+/// The messages a link receives that no request claimed ([`MobileWalletConnector::subscribe`]).
+#[derive(Debug)]
+pub struct WalletMessages {
+    link: LinkId,
+    messages: broadcast::Receiver<Value>,
+    status: watch::Receiver<Status>,
+}
+
+impl WalletMessages {
+    /// The next message, or `None` once the link is closed. A subscriber that falls more than 64
+    /// messages behind skips the oldest ones.
+    pub async fn recv(&mut self) -> Option<Value> {
+        loop {
+            tokio::select! {
+                biased;
+                message = self.messages.recv() => match message {
+                    Ok(message) => return Some(message),
+                    Err(RecvError::Lagged(skipped)) => log::skipped(self.link, skipped),
+                    Err(RecvError::Closed) => return None,
+                },
+                ended = self.status.wait_for(|status| *status == Status::Ended) => {
+                    let _ = ended;
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+/// Talks to the Radix mobile wallet over "Radix Connect over iroh v1", playing the connector
+/// role (see the [module documentation](self)).
+///
+/// Thread-safe: every method takes `&self`, so share one connector (in an `Arc`) between the
+/// tasks of a server. Configure it before first use; a session already started keeps the
+/// settings it started with.
+pub struct MobileWalletConnector {
+    relay_url: String,
+    ack_timeout: Option<Duration>,
+    max_message_size: Option<usize>,
+    links: Registry,
+}
+
+impl fmt::Debug for MobileWalletConnector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MobileWalletConnector")
+            .field("relay_url", &self.relay_url)
+            .field("ack_timeout", &self.ack_timeout)
+            .field("max_message_size", &self.max_message_size)
+            .field("running_links", &self.links.running())
+            .finish()
+    }
+}
+
+impl Default for MobileWalletConnector {
+    fn default() -> Self {
+        MobileWalletConnector {
+            relay_url: DEFAULT_RELAY_URL.to_string(),
+            ack_timeout: None,
+            max_message_size: None,
+            links: Registry::default(),
+        }
+    }
+}
+
+impl Drop for MobileWalletConnector {
+    /// Closes every session, telling the wallet, in the background when a tokio runtime is
+    /// running (otherwise they stop abruptly). Call [`close`](Self::close) to wait for it.
+    fn drop(&mut self) {
+        link::close_in_background(self.links.take_all());
+    }
+}
+
+impl MobileWalletConnector {
+    /// A connector using the default relay ([`DEFAULT_RELAY_URL`]).
+    #[must_use]
+    pub fn new() -> Self {
+        MobileWalletConnector::default()
+    }
+
+    /// Uses the relay at `relay_url` — the one the wallet is configured with: both ends of a link
+    /// must use the same relay.
+    ///
+    /// # Errors
+    /// [`MobileError::InvalidRelayUrl`] unless it is an absolute `https://` URL without
+    /// credentials; plain `http://` is accepted only for loopback, private and link-local hosts
+    /// (a development relay on this machine or the local network).
+    pub fn with_relay_url(mut self, relay_url: &str) -> Result<Self, MobileError> {
+        SessionConfig::new(relay_url)?;
+        self.relay_url = relay_url.trim().to_string();
+        Ok(self)
+    }
+
+    /// How long the wallet has to confirm it took a message (default 10 s, as over WebRTC).
+    #[must_use]
+    pub fn with_ack_timeout(mut self, timeout: Duration) -> Self {
+        self.ack_timeout = Some(timeout);
+        self
+    }
+
+    /// The largest message sent or accepted (default 8 MiB).
+    #[must_use]
+    pub fn with_max_message_size(mut self, bytes: usize) -> Self {
+        self.max_message_size = Some(bytes);
+        self
+    }
+
+    /// The relay this connector's sessions use.
+    #[must_use]
+    pub fn relay_url(&self) -> &str {
+        &self.relay_url
+    }
+
+    fn session_config(&self) -> Result<SessionConfig, MobileError> {
+        let mut config = SessionConfig::new(&self.relay_url)?;
+        if let Some(timeout) = self.ack_timeout {
+            config = config.with_ack_timeout(timeout);
+        }
+        if let Some(bytes) = self.max_message_size {
+            config = config.with_max_message_size(bytes);
+        }
+        Ok(config)
+    }
+
+    /// The running link for `password`, starting its session if needed (bounded by `deadline`).
+    async fn link(&self, password: &[u8], deadline: Instant) -> Result<Arc<link::Link>, MobileError> {
+        let secret = ConnectionPassword::from_slice(password)?;
+        let id = LinkId::of(password);
+        match timeout_at(
+            deadline,
+            self.links.get_or_start(&secret, id, || self.session_config()),
+        )
+        .await
+        {
+            Ok(link) => link,
+            Err(_) => {
+                log::session_start_timed_out(id, &self.relay_url);
+                Err(MobileError::Session(
+                    "timed out starting the iroh endpoint".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Pairing: shows a QR code (through `on_qr`, which receives the exact JSON to render), waits
+    /// for the wallet that scans it to answer with its `linkClient`, verifies the wallet's
+    /// signature and returns `(wallet_public_key_hex, password)` to persist the link.
+    ///
+    /// The QR is the same JSON the WebRTC transport shows ([`linking::pairing_qr`]), signed with
+    /// the connector's long-term Ed25519 identity (`identity_*_key_hex`). The session started for
+    /// the new password is KEPT: the wallet closes its linking connection and reconnects with its
+    /// regular one, which this session accepts, so the first request needs no new session.
+    ///
+    /// Store the password like a credential and never log it: whoever holds it can talk to the
+    /// wallet as this connector.
+    ///
+    /// # Errors
+    /// [`MobileError::Crypto`] for an unusable identity (before anything is shown) or a wallet
+    /// whose signature does not verify (a missing one included);
+    /// [`MobileError::WalletUnreachable`] when no wallet connected in time and
+    /// [`MobileError::ResponseTimeout`] when one connected but did not link; plus
+    /// [`MobileError::Session`] and [`MobileError::InvalidRelayUrl`]. On any error the session is
+    /// closed and the password discarded.
+    pub async fn pair<F: FnOnce(String)>(
+        &self,
+        identity_private_key_hex: &str,
+        identity_public_key_hex: &str,
+        on_qr: F,
+        timeout: Duration,
+    ) -> Result<(String, Vec<u8>), MobileError> {
+        self.pair_with_progress(
+            identity_private_key_hex,
+            identity_public_key_hex,
+            on_qr,
+            timeout,
+            &mut |_| {},
+        )
+        .await
+    }
+
+    /// [`pair`](Self::pair), reporting the wallet's connection to `on` ([`Progress::WaitingForWallet`],
+    /// [`Progress::Connected`], [`Progress::WalletDisconnected`], each with a diagnostics
+    /// snapshot) — pairing is where a relay the server cannot reach shows up first.
+    ///
+    /// # Errors
+    /// As [`pair`](Self::pair).
+    pub async fn pair_with_progress<F: FnOnce(String)>(
+        &self,
+        identity_private_key_hex: &str,
+        identity_public_key_hex: &str,
+        on_qr: F,
+        timeout: Duration,
+        on: &mut (dyn FnMut(Progress) + Send),
+    ) -> Result<(String, Vec<u8>), MobileError> {
+        let started = Instant::now();
+        let deadline = started + timeout;
+        let password = Zeroizing::new(linking::generate_password()?);
+        let qr = Zeroizing::new(linking::pairing_qr(
+            password.as_slice(),
+            identity_private_key_hex,
+            identity_public_key_hex,
+        )?);
+        let id = LinkId::of(password.as_slice());
+        // Nobody else will ever hold this password: if the caller stops waiting, its session goes.
+        let mut abandoned = Abandoned {
+            links: &self.links,
+            id,
+            armed: true,
+        };
+        let link = self.link(password.as_slice(), deadline).await?;
+        let mut messages = link.subscribe();
+        log::pairing_started(id, &self.relay_url);
+        on_qr(qr.as_str().to_owned());
+
+        let linked = await_link_client(&link, &mut messages, started, deadline, on)
+            .await
+            .and_then(|client| {
+                client.verify(password.as_slice())?;
+                Ok(client.public_key)
+            });
+        abandoned.armed = false;
+        match linked {
+            Ok(wallet_public_key) => {
+                log::paired(id, started);
+                Ok((wallet_public_key, password.to_vec()))
+            }
+            Err(error) => {
+                log::pairing_failed(id, &error);
+                self.links.close(id).await;
+                Err(error)
+            }
+        }
+    }
+
+    /// Sends ANY wallet interaction and returns the wallet's answer to it, reporting each step to
+    /// `on` ([`Progress`]). Every `request_*` method is this with a built request.
+    ///
+    /// The session for `password` is started if needed, and the call waits — within
+    /// `overall_timeout` — for the wallet to connect. The interaction must carry an
+    /// `interactionId` (every builder sets one); its answer is the message with the same id. If
+    /// that answer had already arrived (an earlier call timed out and the person approved later),
+    /// it is returned without sending anything. Dropping the future stops waiting; an answer that
+    /// arrives afterwards is kept for [`await_response`](Self::await_response).
+    ///
+    /// # Errors
+    /// [`MobileError::WalletUnreachable`] (nothing sent), [`MobileError::ConfirmationTimeout`]
+    /// (sent, never confirmed), [`MobileError::ResponseTimeout`] (on the phone, unanswered),
+    /// [`MobileError::MessageTooLarge`] and [`MobileError::MessageRefused`] (not delivered),
+    /// [`MobileError::Protocol`] for an interaction without an id or one already waiting on this
+    /// link, [`MobileError::InvalidPassword`], [`MobileError::Session`] and
+    /// [`MobileError::Closed`]. The answer may still be a wallet `failure`: read it with the
+    /// `extract_*` functions or [`check_failure`].
+    pub async fn exchange(
+        &self,
+        password: &[u8],
+        interaction: &Value,
+        overall_timeout: Duration,
+        on: &mut (dyn FnMut(Progress) + Send),
+    ) -> Result<Value, MobileError> {
+        let started = Instant::now();
+        let deadline = started + overall_timeout;
+        let interaction_id = inbox::interaction_id(interaction)
+            .ok_or_else(|| {
+                MobileError::Protocol(
+                    "the interaction has no interactionId to match its answer by".to_string(),
+                )
+            })?
+            .to_owned();
+        let text = serde_json::to_string(interaction).map_err(|e| MobileError::Protocol(e.to_string()))?;
+        let link = self.link(password, deadline).await?;
+        let mut waiter = match link.register(&interaction_id)? {
+            Pending::Answered(answer) => {
+                log::already_answered(link.id(), &interaction_id);
+                return Ok(answer);
+            }
+            Pending::Waiting(waiter) => waiter,
+        };
+        let mut others = link.subscribe();
+        let request = Request {
+            link: &link,
+            interaction_id: &interaction_id,
+            started,
+            deadline,
+        };
+        let delivered = request.deliver(&text, on).await?;
+        request.listen(&mut waiter, &mut others, delivered, on).await
+    }
+
+    /// Waits for the answer to a request sent EARLIER (by `interaction_id`) without sending
+    /// anything: it is already on the phone, and sending it again would ask the person twice.
+    /// Returns at once if the answer already arrived (it is kept, bounded, when it arrives with
+    /// nobody waiting).
+    ///
+    /// # Errors
+    /// [`MobileError::ResponseTimeout`] when no answer came in time, plus
+    /// [`MobileError::InvalidPassword`], [`MobileError::Session`], [`MobileError::Protocol`] (the
+    /// interaction already has a waiter on this link) and [`MobileError::Closed`].
+    pub async fn await_response(
+        &self,
+        password: &[u8],
+        interaction_id: &str,
+        overall_timeout: Duration,
+        on: &mut (dyn FnMut(Progress) + Send),
+    ) -> Result<Value, MobileError> {
+        let started = Instant::now();
+        let deadline = started + overall_timeout;
+        let link = self.link(password, deadline).await?;
+        let mut waiter = match link.register(interaction_id)? {
+            Pending::Answered(answer) => return Ok(answer),
+            Pending::Waiting(waiter) => waiter,
+        };
+        let mut others = link.subscribe();
+        let request = Request {
+            link: &link,
+            interaction_id,
+            started,
+            deadline,
+        };
+        request
+            .listen(&mut waiter, &mut others, Delivery::Confirmed, on)
+            .await
+    }
+
+    /// Waits until the wallet is connected and returns how long that took, sending nothing:
+    /// whether the wallet app is reachable right now. Nothing appears on the phone.
+    ///
+    /// # Errors
+    /// [`MobileError::WalletUnreachable`] when it did not connect in time, plus
+    /// [`MobileError::InvalidPassword`], [`MobileError::Session`] and [`MobileError::Closed`].
+    pub async fn probe(&self, password: &[u8], overall_timeout: Duration) -> Result<Duration, MobileError> {
+        let started = Instant::now();
+        let deadline = started + overall_timeout;
+        let link = self.link(password, deadline).await?;
+        Request {
+            link: &link,
+            interaction_id: "-",
+            started,
+            deadline,
+        }
+        .wait_for_wallet(&mut |_| {})
+        .await?;
+        Ok(started.elapsed())
+    }
+
+    /// Starts the link's session now, if it is not running, so the wallet can connect BEFORE the
+    /// first request: the wallet dials only while a session listens, and re-dials with a backoff
+    /// of up to 15 s, so a server should open every stored link when it starts. Idempotent;
+    /// every call on a link opens it anyway when needed.
+    ///
+    /// # Errors
+    /// [`MobileError::InvalidPassword`], [`MobileError::InvalidRelayUrl`] and
+    /// [`MobileError::Session`].
+    pub async fn open_link(&self, password: &[u8]) -> Result<(), MobileError> {
+        self.link(password, Instant::now() + SESSION_START_TIMEOUT)
+            .await?;
+        Ok(())
+    }
+
+    /// The messages the link receives that no request claims — the wallet's `accountList` after
+    /// each connection, late answers — from now on. Starts the link's session if needed.
+    ///
+    /// # Errors
+    /// [`MobileError::InvalidPassword`] and [`MobileError::Session`].
+    pub async fn subscribe(&self, password: &[u8]) -> Result<WalletMessages, MobileError> {
+        let link = self
+            .link(password, Instant::now() + SESSION_START_TIMEOUT)
+            .await?;
+        Ok(WalletMessages {
+            link: link.id(),
+            messages: link.subscribe(),
+            status: link.status(),
+        })
+    }
+
+    /// A snapshot of the link's connectivity, or `None` when its session is not running (or is
+    /// being started right now). Its `Display` is one log line; it holds no secrets.
+    #[must_use]
+    pub fn diagnostics(&self, password: &[u8]) -> Option<Diagnostics> {
+        self.links
+            .get(LinkId::of(password))
+            .map(|link| link.diagnostics())
+    }
+
+    /// Whether the wallet of this link is connected right now.
+    #[must_use]
+    pub fn is_connected(&self, password: &[u8]) -> bool {
+        self.links
+            .get(LinkId::of(password))
+            .is_some_and(|link| link.is_connected())
+    }
+
+    /// Closes the link's session, telling the wallet. Calls waiting on it fail with
+    /// [`MobileError::Closed`]; the next call starts a new session.
+    pub async fn close_link(&self, password: &[u8]) {
+        self.links.close(LinkId::of(password)).await;
+    }
+
+    /// Closes every session, telling the wallets, and waits until they are closed.
+    pub async fn close(&self) {
+        self.links.close_all().await;
+    }
+}
+
+/// Discards the session of a pairing whose caller stopped waiting (the future was dropped).
+struct Abandoned<'a> {
+    links: &'a Registry,
+    id: LinkId,
+    armed: bool,
+}
+
+impl Drop for Abandoned<'_> {
+    fn drop(&mut self) {
+        if self.armed && self.links.discard(self.id) {
+            log::pairing_abandoned(self.id);
+        }
+    }
+}
+
+/// Waits for the `linkClient` of the wallet that scanned the QR.
+async fn await_link_client(
+    link: &link::Link,
+    messages: &mut broadcast::Receiver<Value>,
+    started: Instant,
+    deadline: Instant,
+    on: &mut (dyn FnMut(Progress) + Send),
+) -> Result<LinkClient, MobileError> {
+    let mut status = link.status();
+    let mut next_report = Instant::now() + FIRST_WAITING_REPORT;
+    loop {
+        tokio::select! {
+            biased;
+            message = messages.recv() => match message {
+                Ok(message) => {
+                    if let Some(client) = link_client(link, &message)? {
+                        return Ok(client);
+                    }
+                }
+                Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => return Err(MobileError::Closed),
+            },
+            changed = status.changed() => {
+                let now = changed.map(|()| *status.borrow_and_update()).unwrap_or(Status::Ended);
+                if !report_status(link, now, started, on) {
+                    return Err(MobileError::Closed);
+                }
+            }
+            () = sleep_until(next_report.min(deadline)) => {
+                if Instant::now() >= deadline {
+                    return Err(pairing_timed_out(link));
+                }
+                if !link.is_connected() {
+                    report_waiting(link, "pairing", started, on);
+                }
+                next_report = Instant::now() + WAITING_REPORT_INTERVAL;
+            }
+        }
+    }
+}
+
+/// The `linkClient` in `message`, if it is one.
+fn link_client(link: &link::Link, message: &Value) -> Result<Option<LinkClient>, MobileError> {
+    let client = linking::parse_link_client(message)?;
+    log::pairing_message(link.id(), client.is_some());
+    Ok(client)
+}
+
+/// The error of a pairing that ran out of time: no wallet came, or one came and did not link.
+fn pairing_timed_out(link: &link::Link) -> MobileError {
+    let diagnostics = Box::new(link.diagnostics());
+    log::pairing_timed_out(link.id(), link.seen_wallet(), &diagnostics);
+    if link.seen_wallet() {
+        MobileError::ResponseTimeout { diagnostics }
+    } else {
+        MobileError::WalletUnreachable { diagnostics }
+    }
+}
+
+/// Reports a change of the link's status. `false` once the link has ended.
+fn report_status(
+    link: &link::Link,
+    status: Status,
+    started: Instant,
+    on: &mut (dyn FnMut(Progress) + Send),
+) -> bool {
+    let diagnostics = Box::new(link.diagnostics());
+    match status {
+        Status::Connected => on(Progress::Connected {
+            elapsed: started.elapsed(),
+            diagnostics,
+        }),
+        Status::Waiting => on(Progress::WalletDisconnected { diagnostics }),
+        Status::Ended => return false,
+    }
+    true
+}
+
+/// Reports that `what` is still waiting for the wallet.
+fn report_waiting(link: &link::Link, what: &str, started: Instant, on: &mut (dyn FnMut(Progress) + Send)) {
+    let diagnostics = Box::new(link.diagnostics());
+    log::waiting(link.id(), what, started, &diagnostics);
+    on(Progress::WaitingForWallet {
+        waited: started.elapsed(),
+        diagnostics,
+    });
+}
+
+/// How far a request got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Delivery {
+    /// The wallet confirmed it.
+    Confirmed,
+    /// It may or may not have reached the wallet.
+    Uncertain,
+}
+
+/// What to do after a send the session refused.
+#[derive(Debug, PartialEq, Eq)]
+enum AfterSend {
+    /// Nothing was sent: try again once the wallet is back.
+    Retry,
+    /// It may have reached the wallet: wait for an answer, never send it again.
+    Uncertain,
+    /// It was not delivered and cannot be: give up.
+    Fail(MobileError),
+}
+
+impl AfterSend {
+    /// The rule that keeps a person from being asked twice: only a send the session reports as
+    /// NOT sent is retried. A timeout or a lost connection may have delivered it.
+    fn of(error: &SendError) -> Self {
+        match error {
+            SendError::NotConnected => AfterSend::Retry,
+            SendError::Closed => AfterSend::Fail(MobileError::Closed),
+            SendError::MessageTooLarge { size, max } => AfterSend::Fail(MobileError::MessageTooLarge {
+                size: *size,
+                max: *max,
+            }),
+            SendError::Rejected => AfterSend::Fail(MobileError::MessageRefused),
+            // Timeout, ConnectionLost and anything new: it may have reached the wallet.
+            _ => AfterSend::Uncertain,
+        }
+    }
+}
+
+/// One request on one link, between its start and its deadline.
+struct Request<'a> {
+    link: &'a link::Link,
+    interaction_id: &'a str,
+    started: Instant,
+    deadline: Instant,
+}
+
+impl Request<'_> {
+    /// Waits, until the deadline, for the wallet to be connected.
+    async fn wait_for_wallet(&self, on: &mut (dyn FnMut(Progress) + Send)) -> Result<(), MobileError> {
+        let mut status = self.link.status();
+        let mut next_report = Instant::now() + FIRST_WAITING_REPORT;
+        loop {
+            if self.link.is_connected() {
+                on(Progress::Connected {
+                    elapsed: self.started.elapsed(),
+                    diagnostics: Box::new(self.link.diagnostics()),
+                });
+                return Ok(());
+            }
+            if !self.link.is_running() {
+                return Err(MobileError::Closed);
+            }
+            if Instant::now() >= self.deadline {
+                return Err(self.unreachable());
+            }
+            if Instant::now() >= next_report {
+                report_waiting(self.link, self.interaction_id, self.started, on);
+                next_report = Instant::now() + WAITING_REPORT_INTERVAL;
+            }
+            tokio::select! {
+                changed = status.changed() => changed.map_err(|_| MobileError::Closed)?,
+                () = sleep_until(next_report.min(self.deadline)) => {}
+            }
+        }
+    }
+
+    fn unreachable(&self) -> MobileError {
+        let diagnostics = Box::new(self.link.diagnostics());
+        log::unreachable(self.link.id(), self.interaction_id, &diagnostics);
+        MobileError::WalletUnreachable { diagnostics }
+    }
+
+    /// Sends the request once the wallet is there. Sends again only what the session reports as
+    /// NOT sent; anything that may have reached the wallet is never sent twice.
+    async fn deliver(
+        &self,
+        text: &str,
+        on: &mut (dyn FnMut(Progress) + Send),
+    ) -> Result<Delivery, MobileError> {
+        let mut attempt = 1u32;
+        loop {
+            self.wait_for_wallet(on).await?;
+            log::sending(self.link.id(), self.interaction_id, text.len(), attempt);
+            match timeout_at(self.deadline, self.link.send(text)).await {
+                Ok(Ok(())) => {
+                    log::delivered(self.link.id(), self.interaction_id, self.started);
+                    on(Progress::Delivered {
+                        elapsed: self.started.elapsed(),
+                    });
+                    return Ok(Delivery::Confirmed);
+                }
+                Ok(Err(error)) => match self.after_send(error, attempt + 1, on) {
+                    AfterSend::Retry => {
+                        attempt += 1;
+                        sleep(RESEND_PAUSE.min(self.deadline.saturating_duration_since(Instant::now())))
+                            .await;
+                    }
+                    AfterSend::Uncertain => return Ok(Delivery::Uncertain),
+                    AfterSend::Fail(error) => return Err(error),
+                },
+                // Abandoning the send resets its stream, so the wallet drops a message it has
+                // not taken yet; it may still have taken it a moment before.
+                Err(_) => return Err(self.timed_out(Delivery::Uncertain)),
+            }
+        }
+    }
+
+    /// Classifies a send the session refused, reporting it.
+    fn after_send(
+        &self,
+        error: SendError,
+        next_attempt: u32,
+        on: &mut (dyn FnMut(Progress) + Send),
+    ) -> AfterSend {
+        let reason = error.to_string();
+        let next = AfterSend::of(&error);
+        match &next {
+            AfterSend::Retry => {
+                log::resending(self.link.id(), self.interaction_id, next_attempt, &reason);
+                on(Progress::Resending {
+                    attempt: next_attempt,
+                    reason,
+                });
+            }
+            AfterSend::Uncertain => {
+                log::unconfirmed(
+                    self.link.id(),
+                    self.interaction_id,
+                    &reason,
+                    &self.link.diagnostics(),
+                );
+                on(Progress::Unconfirmed { reason });
+            }
+            AfterSend::Fail(_) => {}
+        }
+        next
+    }
+
+    /// Waits, until the deadline, for the answer, reporting everything else that happens.
+    async fn listen(
+        &self,
+        waiter: &mut Waiter,
+        others: &mut broadcast::Receiver<Value>,
+        delivery: Delivery,
+        on: &mut (dyn FnMut(Progress) + Send),
+    ) -> Result<Value, MobileError> {
+        let mut status = self.link.status();
+        let mut others_open = true;
+        loop {
+            tokio::select! {
+                biased;
+                answer = waiter.answer() => {
+                    log::answered(self.link.id(), self.interaction_id, self.started, answer.is_some());
+                    return answer.ok_or(MobileError::Closed);
+                }
+                message = others.recv(), if others_open => match message {
+                    Ok(message) => on(Progress::OtherMessage(message)),
+                    Err(RecvError::Lagged(skipped)) => log::skipped(self.link.id(), skipped),
+                    Err(RecvError::Closed) => others_open = false,
+                },
+                changed = status.changed() => {
+                    let now = changed.map(|()| *status.borrow_and_update()).unwrap_or(Status::Ended);
+                    log::changed_while_waiting(self.link.id(), self.interaction_id, now, &self.link.diagnostics());
+                    // An ended link wakes the waiter, which reports it.
+                    report_status(self.link, now, self.started, on);
+                }
+                () = sleep_until(self.deadline) => return Err(self.timed_out(delivery)),
+            }
+        }
+    }
+
+    /// The error of a request that ran out of time after it may have been sent.
+    fn timed_out(&self, delivery: Delivery) -> MobileError {
+        let diagnostics = Box::new(self.link.diagnostics());
+        let confirmed = delivery == Delivery::Confirmed;
+        log::timed_out(self.link.id(), self.interaction_id, confirmed, &diagnostics);
+        if confirmed {
+            MobileError::ResponseTimeout { diagnostics }
+        } else {
+            MobileError::ConfirmationTimeout { diagnostics }
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn the_connector_can_be_shared_between_tasks() {
+        assert_send_sync::<MobileWalletConnector>();
+        assert_send_sync::<MobileError>();
+        assert_send_sync::<WalletMessages>();
+    }
+
+    #[test]
+    fn the_default_relay_is_usable_and_others_are_checked() {
+        let connector = MobileWalletConnector::new();
+        assert_eq!(connector.relay_url(), DEFAULT_RELAY_URL);
+        assert!(connector.session_config().is_ok());
+        let local = MobileWalletConnector::new()
+            .with_relay_url(" http://127.0.0.1:3340 ")
+            .unwrap();
+        assert_eq!(local.relay_url(), "http://127.0.0.1:3340");
+        for bad in [
+            "http://relay.example.com",
+            "wss://relay.example.com",
+            "https://u:p@relay.example.com",
+        ] {
+            assert!(
+                matches!(
+                    MobileWalletConnector::new().with_relay_url(bad),
+                    Err(MobileError::InvalidRelayUrl(_))
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    /// Only what certainly was NOT sent is sent again: anything that may have reached the
+    /// wallet could ask the person twice, or sign a transaction twice.
+    #[test]
+    fn only_a_send_that_sent_nothing_is_retried() {
+        assert_eq!(AfterSend::of(&SendError::NotConnected), AfterSend::Retry);
+        assert_eq!(AfterSend::of(&SendError::Timeout), AfterSend::Uncertain);
+        assert_eq!(
+            AfterSend::of(&SendError::ConnectionLost("reset".into())),
+            AfterSend::Uncertain
+        );
+        assert_eq!(
+            AfterSend::of(&SendError::Rejected),
+            AfterSend::Fail(MobileError::MessageRefused)
+        );
+        assert_eq!(
+            AfterSend::of(&SendError::MessageTooLarge { size: 9, max: 8 }),
+            AfterSend::Fail(MobileError::MessageTooLarge { size: 9, max: 8 })
+        );
+        assert_eq!(
+            AfterSend::of(&SendError::Closed),
+            AfterSend::Fail(MobileError::Closed)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_password_of_the_wrong_length_is_refused_before_anything_starts() {
+        let connector = MobileWalletConnector::new();
+        let interaction = serde_json::json!({ "interactionId": "x" });
+        let result = connector
+            .exchange(&[1, 2, 3], &interaction, Duration::from_secs(1), &mut |_| {})
+            .await;
+        assert_eq!(result, Err(MobileError::InvalidPassword));
+        assert!(connector.diagnostics(&[1, 2, 3]).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_interaction_without_an_id_is_refused() {
+        let connector = MobileWalletConnector::new();
+        let result = connector
+            .exchange(
+                &[7; 32],
+                &serde_json::json!({ "items": {} }),
+                Duration::from_secs(1),
+                &mut |_| {},
+            )
+            .await;
+        assert!(matches!(result, Err(MobileError::Protocol(_))), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn an_unusable_identity_fails_pairing_before_the_qr_is_shown() {
+        let connector = MobileWalletConnector::new();
+        let mut shown = false;
+        let result = connector
+            .pair("00", "11", |_| shown = true, Duration::from_secs(1))
+            .await;
+        assert!(matches!(result, Err(MobileError::Crypto(_))), "{result:?}");
+        assert!(!shown);
+    }
+}

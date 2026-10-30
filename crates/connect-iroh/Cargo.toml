@@ -1,19 +1,20 @@
-# Isolated workspace: iroh pulls a large QUIC (quinn) dependency tree. Keeping this
-# crate out of the main SDK workspace avoids any resolution interaction with the
-# webrtc tree of `radixdlt-connect`. Shares `radixdlt-i18n` by path. The developer's
-# choice is at the crate level: `radixdlt-connect` (WebRTC, talks to the mobile
-# wallet) OR `radixdlt-connect-iroh` (QUIC, for pure-Rust SDK-to-SDK peers).
+# Isolated workspace: iroh pulls a large QUIC dependency tree. Keeping this crate out of
+# the main SDK workspace avoids any resolution interaction with the webrtc tree of
+# `radixdlt-connect`. Shares `radixdlt-i18n` by path. The developer's choice is at the
+# crate level: `radixdlt-connect` (WebRTC) OR `radixdlt-connect-iroh` (QUIC: the mobile
+# wallet over "Radix Connect over iroh v1", and pure-Rust SDK-to-SDK peers).
 [workspace]
 
 [package]
 name = "radixdlt-connect-iroh"
-description = "Iroh (QUIC) peer-to-peer transport for the RadixDLT Rust SDK: an alternative to WebRTC for pure-Rust SDK-to-SDK connections."
+description = "Iroh (QUIC) transport for the RadixDLT Rust SDK: talks to the Radix mobile wallet over Radix Connect over iroh v1, and connects pure-Rust SDK-to-SDK peers."
 version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/genkipool/radixdlt-rust-sdk"
 authors = ["Luis Alberto Reoyo Bolaños <68571366+genkipool@users.noreply.github.com>"]
-rust-version = "1.87"
+# iroh 1.4 (and `radix-connect-iroh`, edition 2024) require Rust 1.91.
+rust-version = "1.91"
 keywords = ["radix", "radixdlt", "iroh", "quic", "p2p"]
 categories = ["cryptography::cryptocurrencies", "network-programming"]
 readme = "README.md"
@@ -40,8 +41,26 @@ radixdlt-keystore = { path = "../keystore", version = "0.3.0" }
 # radix-transactions). Optional so that a caller wanting ONLY the iroh transport does not
 # inherit it — see the note on the `wallet` feature below.
 radixdlt-gateway-tx = { path = "../gateway-tx", version = "0.3.0", optional = true }
-iroh = "1"
+# 1.4: the version `radix-connect-iroh` is built and tested against.
+iroh = "1.4.1"
+# "Radix Connect over iroh v1", the protocol the Radix Wallet and the Connector Extension speak
+# (the `mobile` module). A PATH dependency on the sibling repository while both are developed
+# together: it must become a crates.io (or git) dependency before this crate is published —
+# `cargo publish` refuses a path dependency without a version, which is the reminder.
+radix-connect-iroh = { path = "../../../../radix-connect-iroh/crates/radix-connect-iroh" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ed25519-dalek = "3"
 hex = "0.4"
+zeroize = "1.8"
+# Structured logs of the `mobile` connector (links named by a hash, never the password).
+tracing = "0.1"
+
+[dev-dependencies]
+# Integration tests run a real iroh relay in-process, over plain HTTP on 127.0.0.1.
+iroh-relay = { version = "1.4.1", default-features = false, features = ["server", "tls-ring"] }
+# The `mobile_login` example draws the pairing QR in the terminal.
+radixdlt-connect-types = { path = "../connect-types", version = "0.3.0", features = ["qr"] }
+getrandom = "0.4"
+# `RUST_LOG=...` for the example and the log-hygiene test.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "ansi"] }

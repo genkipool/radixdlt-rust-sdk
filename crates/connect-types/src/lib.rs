@@ -12,6 +12,10 @@
 //!   * **wallet side** — parses *requests* and builds *responses*
 //!     ([`parse_account_proof_request`], [`account_proof_response`], …).
 //!
+//! Linking a connector with the wallet is transport-independent too: [`linking`] holds the
+//! linking message, the QR payload and the check of the wallet's `linkClient` signature, and
+//! (with the `qr` feature) [`qr`] draws the QR.
+//!
 //! User-facing error text is localized to the system language.
 
 // In TESTS a panic IS the failure mechanism. Library code keeps the deny: a panic there is
@@ -26,6 +30,9 @@
 // allowed HERE rather than switched off for the crate.
 #![allow(clippy::indexing_slicing)]
 
+pub mod linking;
+#[cfg(feature = "qr")]
+pub mod qr;
 pub mod relays;
 
 use radixdlt_i18n::{tr, Lang};

@@ -53,7 +53,7 @@ pub mod turn_tcp;
 
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 pub use connector::{probe_relay_candidates, radix_default_ice_servers, Channel, IceServer};
 pub use error::ConnectError;
@@ -81,16 +81,8 @@ pub async fn await_link_client(
 ) -> Result<(String, Option<String>), ConnectError> {
     loop {
         let msg = channel.recv_message(wait).await?;
-        if msg.get("discriminator").and_then(|d| d.as_str()) == Some("linkClient") {
-            let pk = msg
-                .get("publicKey")
-                .and_then(|p| p.as_str())
-                .ok_or_else(|| ConnectError::Protocol("linkClient without publicKey".into()))?;
-            let sig = msg
-                .get("signature")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string());
-            return Ok((pk.to_string(), sig));
+        if let Some(link) = radixdlt_connect_types::linking::parse_link_client(&msg)? {
+            return Ok((link.public_key, link.signature));
         }
     }
 }
@@ -837,6 +829,16 @@ impl Connector {
     ///
     /// `identity_private_key_hex` is the connector's persistent Ed25519 private key.
     /// `on_qr` receives the exact QR JSON string to render.
+    ///
+    /// The QR payload and the signature check are [`radixdlt_connect_types::linking`]'s, shared
+    /// with the iroh transport, so a QR from either transport is the same JSON. An identity whose
+    /// public key does not belong to its private key is refused before the QR is shown
+    /// ([`ConnectError::Crypto`]) instead of producing a QR every wallet rejects. A `linkClient`
+    /// without a signature is still accepted here, as it always was over WebRTC.
+    ///
+    /// # Errors
+    /// [`ConnectError::Crypto`] for an unusable identity or an invalid wallet signature, plus the
+    /// transport errors of [`exchange`](Self::exchange).
     pub async fn pair<F: FnOnce(String)>(
         &self,
         identity_private_key_hex: &str,
@@ -844,31 +846,12 @@ impl Connector {
         on_qr: F,
         timeout: Duration,
     ) -> Result<(String, Vec<u8>), ConnectError> {
-        use ed25519_dalek::{Signer, SigningKey};
+        use radixdlt_connect_types::linking;
 
-        // New 32-byte link password.
-        let mut password = [0u8; 32];
-        getrandom::fill(&mut password)
-            .map_err(|e| ConnectError::Crypto(format!("system randomness: {e}")))?;
-
-        // Connector identity signs blake2b("L"‖password).
-        let sk_bytes = hex::decode(identity_private_key_hex)
-            .map_err(|e| ConnectError::Crypto(format!("priv hex: {e}")))?;
-        let sk_arr: [u8; 32] = sk_bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| ConnectError::Crypto("private key is not 32 bytes".into()))?;
-        let signing = SigningKey::from_bytes(&sk_arr);
-        let link_msg = crypto::linking_message(&password);
-        let signature = hex::encode(signing.sign(&link_msg).to_bytes());
-
-        let qr = json!({
-            "password": hex::encode(password),
-            "publicKey": identity_public_key_hex,
-            "signature": signature,
-            "purpose": "general",
-        });
-        on_qr(qr.to_string());
+        // New 32-byte link password, shown in a QR signed by the connector's identity.
+        let password = linking::generate_password()?;
+        let qr = linking::pairing_qr(&password, identity_private_key_hex, identity_public_key_hex)?;
+        on_qr(qr);
 
         // Establish the channel with the scanning wallet and await its linkClient.
         let mut channel = self.establish(&password, timeout).await?;
@@ -876,23 +859,7 @@ impl Connector {
 
         // Verify the wallet's linking signature.
         if let Some(sig_hex) = sig {
-            use ed25519_dalek::{Signature, VerifyingKey};
-            let pk_bytes =
-                hex::decode(&wallet_pk).map_err(|e| ConnectError::Crypto(format!("wallet pk hex: {e}")))?;
-            let pk_arr: [u8; 32] = pk_bytes
-                .as_slice()
-                .try_into()
-                .map_err(|_| ConnectError::Crypto("wallet pk is not 32 bytes".into()))?;
-            let vk = VerifyingKey::from_bytes(&pk_arr)
-                .map_err(|e| ConnectError::Crypto(format!("invalid wallet pk: {e}")))?;
-            let sig_bytes =
-                hex::decode(&sig_hex).map_err(|e| ConnectError::Crypto(format!("sig hex: {e}")))?;
-            let sig_arr: [u8; 64] = sig_bytes
-                .as_slice()
-                .try_into()
-                .map_err(|_| ConnectError::Crypto("signature is not 64 bytes".into()))?;
-            vk.verify_strict(&link_msg, &Signature::from_bytes(&sig_arr))
-                .map_err(|_| ConnectError::Crypto("INVALID wallet linking signature".into()))?;
+            linking::verify_link_signature(&password, &wallet_pk, &sig_hex)?;
         }
 
         Ok((wallet_pk, password.to_vec()))
@@ -902,6 +869,7 @@ impl Connector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// Two requests sharing a link must take turns: the second one only starts once the
     /// first has finished. Without this they race on the same signaling rendezvous and the

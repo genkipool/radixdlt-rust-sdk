@@ -1,6 +1,6 @@
 [package]
 name = "radixdlt-connect-types"
-description = "Transport-agnostic Radix Connect wallet-interaction message schema (requests, responses and parsers), shared by the WebRTC and Iroh transports."
+description = "Transport-agnostic Radix Connect wallet-interaction message schema (requests, responses and parsers) and linking crypto, shared by the WebRTC and Iroh transports."
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -11,10 +11,22 @@ keywords = ["radix", "radixdlt", "radix-connect", "wallet", "schema"]
 categories = ["cryptography::cryptocurrencies", "encoding"]
 readme = "README.md"
 
+[features]
+# The linking QR as a matrix and as terminal art (`qr` module). Off by default: a server that
+# only relays requests has no QR to draw.
+qr = ["dep:qrcode"]
+
 [dependencies]
 radixdlt-i18n = { workspace = true }
 serde_json = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
+# The linking crypto (`linking` module), shared by every transport. Light on purpose: this crate
+# sits under both the WebRTC and the iroh trees.
+blake2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+getrandom = { workspace = true }
+hex = { workspace = true }
+qrcode = { version = "0.14", default-features = false, optional = true }
 
 [lints]
 workspace = true

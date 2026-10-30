@@ -19,6 +19,12 @@ radixdlt-connect-types = "0.1"
   `extract_proofs`, `extract_transaction_intent_hash`, …
 - **Lado wallet** — parsea peticiones, construye respuestas:
   `parse_account_proof_request`, `account_proof_response`, …
+- **Enlace** (`linking`) — lo que firma y comprueba el emparejamiento de un conector con la
+  wallet, igual en todos los transportes: `linking_message`, `pairing_qr` (el JSON del QR),
+  `parse_link_client` / `verify_link_signature` (la respuesta de la wallet),
+  `generate_password`, `generate_identity`, `connection_id`.
+- **QR** (`qr`, feature `qr`) — el QR de emparejamiento como matriz (`QrMatrix`) y como
+  dibujo para terminal (`render_unicode`).
 
 Los mensajes de error se localizan al idioma del sistema. Forma parte del
 [RadixDLT Rust SDK](https://crates.io/crates/radixdlt-sdk).

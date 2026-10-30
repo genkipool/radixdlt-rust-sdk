@@ -1,6 +1,7 @@
 //! Error type for the Radix Connect client. `Display` is localized to the system
 //! language via `radixdlt-i18n`.
 
+use radixdlt_connect_types::linking::LinkingError;
 use radixdlt_connect_types::WalletInteractionError;
 use radixdlt_i18n::{tr, Lang};
 
@@ -106,6 +107,15 @@ impl From<WalletInteractionError> for ConnectError {
         match e {
             WalletInteractionError::WalletRejected(s) => ConnectError::WalletRejected(s),
             WalletInteractionError::Protocol(s) => ConnectError::Protocol(s),
+        }
+    }
+}
+
+impl From<LinkingError> for ConnectError {
+    fn from(e: LinkingError) -> Self {
+        match e {
+            LinkingError::Malformed(_) => ConnectError::Protocol(e.to_string()),
+            other => ConnectError::Crypto(other.to_string()),
         }
     }
 }

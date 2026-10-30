@@ -24,7 +24,8 @@ path = "src/main.rs"
 
 [dependencies]
 radixdlt-connect = { path = "../connect", version = "0.3.0" }
-radixdlt-connect-types = { path = "../connect-types", version = "0.3.0" }
+# `qr`: the QR encoder and terminal renderer shared with every program that pairs a wallet.
+radixdlt-connect-types = { path = "../connect-types", version = "0.3.0", features = ["qr"] }
 radixdlt-rola = { path = "../rola", version = "0.3.0" }
 ed25519-dalek = "3"
 getrandom = "0.4"
@@ -38,7 +39,6 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 # guess between them at runtime.
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 dirs = "5"
-qrcode = { version = "0.14", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.23"
 sha2 = "0.10"
