@@ -9,9 +9,9 @@ a WebRTC con dos usos:
   QR de siempre y le pide inicios de sesión, pruebas de cuenta, transacciones y
   pre-autorizaciones — sin navegador ni extensión.
 - **SDK-a-SDK** — dos peers que usan el SDK (un firmante de escritorio, un servidor, un
-  dispositivo) ejecutan flujos como "iniciar sesión con Radix" (ROLA) enteramente en
-  Rust, con un protocolo propio (`IrohConnector`, `protocol`). La wallet móvil no habla
-  ese.
+  dispositivo) intercambian mensajes JSON acotados y confirmados, y ejecutan flujos como
+  "iniciar sesión con Radix" (ROLA) enteramente en Rust, con un protocolo propio
+  (`IrohConnector`, `protocol`). La wallet móvil no habla ese.
 
 *[English](README.md) · **Español***
 
@@ -211,74 +211,148 @@ relé dentro del proceso.
 
 ## SDK-a-SDK (peers en Rust puro)
 
-### Transporte de bajo nivel
+Dos peers que usan este crate intercambian mensajes JSON sobre iroh con un protocolo propio
+(ALPN `radixdlt-connect-iroh/1`, especificado en [`docs/PROTOCOL.es.md`](docs/PROTOCOL.es.md)).
+
+### El canal
 
 ```rust
 use radixdlt_connect_iroh::IrohConnector;
 
 let endpoint = IrohConnector::bind().await?;
-let mut channel = endpoint.connect(peer_addr).await?;
-channel.send_message(&request).await?;
+let mut channel = endpoint.connect_to_ticket(&ticket).await?;
+channel.send_message(&request).await?;    // vuelve cuando el peer lo ha RECIBIDO
 let response = channel.recv_message().await?;
+println!("hablando con {}", channel.remote_id()); // el EndpointId autenticado del peer
+channel.close().await;                    // acotado
+endpoint.close().await;                   // acotado
 ```
+
+- **Cada mensaje viaja en un stream QUIC propio y el receptor lo confirma.** `send_message`
+  devuelve `Ok` cuando el peer ha recibido el mensaje, así que cerrar justo después no pierde
+  nada; ya no hace falta el baile de `finish`/`wait_closed`.
+- **Acotado.** Un mensaje mayor que `Limits::max_message_size` (8 MiB por defecto) se rechaza
+  — uno entrante, solo por su prefijo de longitud, antes de reservar nada — y el canal sigue
+  usable. Una vez que el peer ha empezado un mensaje, este debe llegar entero en
+  `Limits::message_timeout` (60 s): un peer que envía bytes con cuentagotas no puede retener una
+  tarea para siempre. Esperar el SIGUIENTE mensaje no está acotado, así que un canal puede
+  quedarse abierto e inactivo; envuelve `recv_message` en un timeout propio donde lo quieras.
+- **Seguro ante cancelación.** `send_message` y `recv_message` se pueden envolver en
+  `tokio::time::timeout` o `select!`: una recepción cancelada se reanuda donde se quedó; un envío
+  cancelado se abandona entero (el peer nunca ve una parte). Ninguno puede desincronizar el
+  canal.
+- **Cierre.** `IrohChannel::close` e `IrohConnector::close` esperan como mucho
+  `Limits::close_timeout` (5 s). Si se sueltan (drop) sin `close`, ambos se cierran igualmente
+  en segundo plano cuando hay un runtime de tokio.
+
+### Quién puede conectarse
+
+`IrohChannel::remote_id()` es el `EndpointId` del peer, probado por el handshake QUIC (TLS 1.3):
+marcar un id (o un ticket) llega a quien tiene esa clave o falla. Por defecto cualquiera puede
+conectarse a un endpoint — a una aplicación que autentica a sus peers por su cuenta (como
+PamAuthority, con ROLA) no le hace falta más. Para admitir solo peers conocidos antes de que la
+aplicación los vea:
+
+```rust
+use radixdlt_connect_iroh::{IrohConnector, Limits, Relay};
+
+let hub = IrohConnector::builder()
+    .secret(hub_seed)                     // una clave solo para este endpoint (ver Identidad)
+    .relay(Relay::Enabled)
+    .allow_only([peer_a, peer_b])         // o .admit(|id| registro.contains(id))
+    .limits(Limits::default().with_max_message_size(256 * 1024))
+    .bind()
+    .await?;
+```
+
+Un peer no admitido se rechaza justo después de su handshake; `Pending::ready` lo devuelve como
+error.
 
 ### "Iniciar sesión con Radix" (ROLA) de alto nivel, emparejado por ticket
 
+`protocol::Wallet` es un firmante en Rust puro: guarda la clave de una cuenta y responde a
+interacciones de wallet. **No firma nada por su cuenta**: cada petición pasa por un `Approver`,
+que ve quién pide (el `EndpointId` del peer, y la dApp y el origen que la petición *dice*) y
+exactamente qué pide. Cada tipo de petición tiene su propio método, y cada uno rechaza salvo que
+se implemente — un aprobador escrito para inicios de sesión no puede aprobar una transacción por
+omisión. Las peticiones de otra red, los retos ROLA que no son de 32 bytes, los manifiestos que
+no compilan y las pre-autorizaciones sin caducidad se rechazan antes de preguntar al aprobador.
+Un rechazo le llega a la dApp como `rejectedByUser`.
+
 ```rust
 use radixdlt_connect_iroh::IrohConnector;
-use radixdlt_connect_iroh::protocol::{Wallet, request_account_proof, DappContext};
+use radixdlt_connect_iroh::protocol::{
+    request_account_proof, AccountProofRequest, Approver, DappContext, Requester, Wallet,
+};
 
-// Lado firmante (una "wallet" en Rust puro):
+// Firmante: inicios de sesión en una dApp, del peer con el que se emparejó — nada más.
+struct PairedLogins { peer: radixdlt_connect_iroh::EndpointId }
+impl Approver for PairedLogins {
+    async fn approve_account_proof(&self, from: &Requester, req: &AccountProofRequest) -> bool {
+        from.peer == self.peer && req.dapp_definition == MI_DAPP && req.origin == MI_ORIGEN
+    }
+}
 let wallet = Wallet::from_key_file(&key_file, passphrase)?;
-let signer = IrohConnector::bind().await?;
-let ticket = signer.ticket();             // compártelo como QR / cadena
+let approver = PairedLogins { peer: dapp_id }; // el EndpointId de la dApp, del emparejamiento
+let signer = IrohConnector::builder().allow_only([dapp_id]).bind().await?;
+let ticket = signer.ticket();              // compártelo como QR / texto
 let mut ch = signer.accept().await?;
-wallet.answer(&mut ch).await?;            // firma el desafío ROLA
+wallet.answer(&mut ch, &approver).await?;
 
 // Lado dApp:
 let dapp = IrohConnector::bind().await?;
 let mut ch = dapp.connect_to_ticket(&ticket).await?;
-let proof = request_account_proof(&mut ch, &challenge, &ctx).await?; // enviado + verificado
+let proof = request_account_proof(&mut ch, &challenge, &ctx).await?; // enviada + verificada
 ```
 
-La `Wallet` responde a tres interacciones sobre iroh, igual que el flujo WebRTC:
+El `Wallet` responde a tres interacciones, como en el flujo WebRTC:
 
-- **prueba de cuenta** — "iniciar sesión con Radix" ROLA (`request_account_proof`).
-- **transacción** — la wallet firma *y* envía un manifiesto, devuelve el intent hash
-  (`request_transaction`).
-- **pre-autorización** — la wallet firma un subintent sin enviarlo, devuelve la
-  transacción parcial firmada (`request_pre_authorization`).
+- **prueba de cuenta** — ROLA "iniciar sesión con Radix" (`request_account_proof`).
+- **transacción** — la wallet firma *y envía* un manifiesto, pagando sus comisiones
+  (`request_transaction`). La dApp recibe el hash del intent solo cuando la transacción se ha
+  confirmado con éxito en el ledger; un commit fallido, un rechazo o un resultado aún
+  desconocido es un `failure` que nombra el estado y el hash del intent.
+- **pre-autorización** — la wallet firma un subintent sin enviarlo
+  (`request_pre_authorization`); quien lo tenga puede completarlo y enviarlo hasta que caduque.
 
-### Identidad persistente y peers por internet (relay + discovery)
+`Wallet::new` envía por el Gateway público de su red (1 mainnet, 2 stokenet; cualquier otra
+red es un error) — `with_gateway` lo cambia por otro de la misma red.
 
-`bind()` usa una identidad efímera y solo conexiones directas (mismo host / LAN). Para
-peers que deban ser alcanzables entre reinicios o por internet:
+> **No expongas un `Wallet` a quien pueda alcanzarlo.** Cualquiera que abra un canal puede
+> enviarle peticiones; solo el aprobador se interpone entre ellas y la clave. Empárejalo con
+> peers conocidos (`allow_only`) y nunca respondas con un aprobador que lo aprueba todo.
 
-```rust
-use radixdlt_connect_iroh::{endpoint_id_from_seed, IrohConnector, Relay};
+### Tickets, identidad y alcance
 
-// Hub: semilla fija de 32 bytes → EndpointId estable, relays n0 + discovery activados.
-let hub = IrohConnector::bind_with(Some(seed), Relay::Enabled).await?;
-let ticket = hub.id_ticket();             // estable entre reinicios (solo id, sin addrs)
+| Localizador | Contenido | Alcanza |
+| --- | --- | --- |
+| `ticket()` | `EndpointId` + las direcciones que iroh conoce: las de las interfaces de la máquina (LAN), loopback y, con `Relay::Enabled`, su relé | el mismo host, la misma LAN; con `Relay::Enabled` en ambos extremos, internet |
+| `id_ticket()` / `endpoint_id_string()` | solo el `EndpointId`, estable con una identidad persistente | necesita `Relay::Enabled` en ambos extremos: iroh busca el id en el pkarr/DNS de n0 |
 
-// Peer: enlaza también con Relay::Enabled, luego marca por ticket o por EndpointId crudo.
-let peer = IrohConnector::bind_with(None, Relay::Enabled).await?;
-let mut ch = peer.connect_to_ticket(&ticket).await?;
-// …o, si el id se aprendió por mDNS/discovery:
-// let mut ch = peer.connect_to_endpoint_id(&hub_id).await?;
-```
+`Relay::Disabled` (el de `bind()`) son conexiones directas solamente: sin relé, sin búsqueda de
+direcciones y sin mapeo de puertos. `Relay::Enabled` usa los relés públicos y la búsqueda de
+direcciones de n0 (la URL del relé de este endpoint se publica bajo su `EndpointId`), y el mapeo
+de puertos (UPnP / NAT-PMP / PCP) puede pedir al router local que abra un puerto para conexiones
+directas. Este crate no tiene mDNS: una aplicación que quiera descubrimiento en la LAN anuncia un
+ticket por su cuenta.
 
-`endpoint_id_from_seed(&seed)` deriva la misma cadena `EndpointId` sin conexión (sin
-enlazar un endpoint), útil para imprimir o distribuir un localizador del hub por
-adelantado.
+Un ticket lista todas las direcciones de interfaz de la máquina (VPN y puentes de contenedores
+incluidos): compártelo como cualquier otro dato de red.
 
-Consulta `examples/login.rs` (`cargo run --example login`) para el flujo completo, y
-`tests/` para las pruebas de bajo nivel, login y transacción/pre-auth. Los mensajes de
-error se localizan al idioma del sistema.
+**Identidad.** `bind()` usa una clave efímera; `Builder::secret(seed)` (o
+`bind_with(Some(seed), …)`) una persistente, así que el `EndpointId` y el `id_ticket` sobreviven a
+los reinicios, y `endpoint_id_from_seed(&seed)` deriva el id sin red. Usa una clave dedicada al
+endpoint, no la de una cuenta de Radix: el `EndpointId` es público (lo ven los peers y los relés,
+y con `Relay::Enabled` se publica junto al relé de este endpoint), así que reutilizar la clave de
+una cuenta ata esa cuenta a la presencia en red de la máquina; y una misma clave firmaría en dos
+protocolos (el handshake QUIC y las transacciones de Radix). PamAuthority hace a propósito que el
+`EndpointId` de su *servidor* sea su clave de firma, para que las máquinas que lo marcan ya tengan
+la clave que firma lo que les envía: es una identidad pública de servidor por diseño, no la cuenta
+de una persona, y el compromiso está documentado allí.
 
-El protocolo de cable (transporte, framing, emparejamiento, esquema de mensajes y
-diagramas de secuencia por interacción) está especificado en
-[`docs/PROTOCOL.es.md`](docs/PROTOCOL.es.md) ([English](docs/PROTOCOL.md)).
+Ver `examples/login.rs` (`cargo run --example login`) para el flujo completo, y `tests/` para las
+pruebas del canal, del inicio de sesión y de transacción/pre-autorización. Los mensajes de error
+salen en el idioma del sistema.
 
 ## Licencia
 

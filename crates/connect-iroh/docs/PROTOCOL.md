@@ -2,17 +2,20 @@
 
 ***English** · [Español](PROTOCOL.es.md)*
 
-Version: `radixdlt-connect-iroh/0` · Status: reflects the code in
-`crates/connect-iroh` (`src/lib.rs`, `src/protocol.rs`) and the shared
+Version: `radixdlt-connect-iroh/1` · Status: reflects the code in
+`crates/connect-iroh` (`src/lib.rs`, `src/channel.rs`, `src/protocol.rs`) and the shared
 wallet-interaction schema in `crates/connect-types`.
 
 This document specifies how two pure-Rust SDK peers exchange Radix
 wallet-interaction messages over the [iroh](https://iroh.computer) (QUIC)
-transport. It is an alternative to the WebRTC transport of `radixdlt-connect`;
-it does **not** interoperate with the Radix mobile wallet (which speaks Radix
-Connect only over WebRTC). Both endpoints run the SDK — e.g. a desktop signer, a
-server, or a device — so flows such as ROLA "log in with Radix" run entirely in
-Rust with no phone involved.
+transport. It is the SDK's own protocol: the Radix mobile wallet does not speak it
+(it speaks *Radix Connect over iroh v1*, the `mobile` module). Both endpoints run the
+SDK — e.g. a desktop signer, a server, or a device — so flows such as ROLA "log in
+with Radix" run entirely in Rust with no phone involved.
+
+Version 0 (one bidirectional stream for the whole connection, length-prefixed
+frames, no confirmations) is not spoken any more. Its ALPN differs, so a v0 peer and
+a v1 peer fail at the QUIC handshake instead of misreading each other.
 
 ---
 
@@ -20,93 +23,141 @@ Rust with no phone involved.
 
 | Role | API | Behaviour |
 | --- | --- | --- |
-| **dApp** | `IrohConnector::connect*` + `protocol::request_*` | Initiates the QUIC connection, opens the stream, **sends the request first**, then reads and (for ROLA) natively verifies the response. |
-| **Wallet** (signer) | `IrohConnector::accept` + `protocol::Wallet::answer` | Accepts the connection, **receives the request first**, holds the Ed25519 key, and answers the interaction. |
+| **dApp** | `IrohConnector::connect*` + `protocol::request_*` | Dials, **sends the request first**, then reads and (for ROLA) natively verifies the response. |
+| **Wallet** (signer) | `IrohConnector::accept` + `protocol::Wallet::answer` | Accepts, **receives the request first**, asks its `Approver`, and answers. |
 
-Both roles are symmetric at the transport level (`IrohChannel` can send and
-receive in either direction); the "who sends first" rule below is what
-distinguishes them.
+At the transport level both ends are symmetric: an `IrohChannel` sends and receives in
+either direction, any number of messages. Which side speaks first is the application's
+contract; `IrohConnector::accept` (and `Pending::ready`) returns once the peer has
+started its first message.
 
 ---
 
 ## 2. Transport layer
 
-- **Substrate:** iroh 1.x endpoints over QUIC.
-- **ALPN:** `radixdlt-connect-iroh/0` (`ALPN` constant, `src/lib.rs`). A peer
-  that negotiates any other ALPN is not a participant in this protocol.
-- **Stream:** exactly **one bidirectional QUIC stream** per interaction. The
-  connecting side calls `open_bi`; the accepting side calls `accept_bi`.
-- **Directionality rule:** the **connecting** side (dApp) writes the first
-  message; the **accepting** side (Wallet) reads first. This ordering is the
-  contract that keeps request/response aligned — there is no explicit
-  handshake message.
+- **Substrate:** iroh 1.x endpoints over QUIC (TLS 1.3). An endpoint is identified by its
+  `EndpointId`, an Ed25519 public key; the handshake proves the peer holds its key.
+- **ALPN:** `radixdlt-connect-iroh/1` (`ALPN`, `src/lib.rs`). Nothing else is accepted.
+- **Streams:** every message travels on a **bidirectional QUIC stream of its own**, opened
+  by its sender. A peer may have at most 8 streams open towards an endpoint at once
+  (messages are sequential; the rest is headroom for abandoned sends), and no
+  unidirectional streams: this bounds what one peer can make an endpoint buffer.
 
-### 2.1 Framing
-
-Every message is a single JSON document (`serde_json::Value`) written to the
-stream as a **length-prefixed frame**:
+### 2.1 One message
 
 ```
-┌────────────────────┬──────────────────────────────┐
-│ length (u32, BE)   │ JSON body (`length` bytes)    │
-│ 4 bytes            │ UTF-8, serde_json              │
-└────────────────────┴──────────────────────────────┘
+sender                                              receiver
+  │ open_bi                                            │
+  │ ── length (u32, big-endian) ─────────────────────▶ │  refused at once if length > its limit
+  │ ── JSON body (`length` bytes, UTF-8) ────────────▶ │
+  │ ── FIN ──────────────────────────────────────────▶ │  exactly `length` bytes, then the end
+  │ ◀──────────────────────────── status (1 byte) ──── │
+  │ ◀────────────────────────────────────────── FIN ── │
 ```
 
-- `length` is the byte count of the JSON body, big-endian `u32`.
-- The reader does `read_exact(4)` then `read_exact(length)` (`recv_message`).
-- No maximum size is enforced at the protocol layer beyond `u32` range; QUIC
-  flow control applies.
+| Status | Meaning | Sender's `send_message` |
+| --- | --- | --- |
+| `0x00` | taken: the receiver's application has the message | `Ok(())` |
+| `0x01` | over the receiver's size limit; not read | `Err(Refused { too_large: true })` |
+| `0x02` | not one JSON document of the length announced | `Err(Refused { too_large: false })` |
 
-### 2.2 Connection lifecycle
+- The receiver reads the length, compares it with its limit **before allocating
+  anything**, and grows its buffer only as bytes arrive. Over the limit it sends
+  `STOP_SENDING` (code 1) and status `0x01`.
+- More bytes than announced (stream stopped with code 3), or bytes that are not JSON, are
+  answered `0x02`.
+- A stream that ends (FIN) before `length` bytes, or is reset, carries no message: the
+  receiver skips it and reads the next stream.
 
-1. dApp resolves the Wallet's address (see §3) and `connect`s with the ALPN.
-2. dApp `open_bi` → gets `(SendStream, RecvStream)`; Wallet `accept_bi`.
-3. Messages are exchanged per the interaction flow (§5).
-4. The sender of the last message calls `finish()` on its send stream so the
-   data is flushed; the peer calls `close()` (QUIC close code `0`, reason
-   `"done"`). `wait_closed()` blocks until the connection is torn down, which
-   guarantees delivery of the final frame before the endpoint is dropped.
+### 2.2 Bounds
+
+`Limits` (per endpoint, `Builder::limits`):
+
+| Bound | Default | Applies to |
+| --- | --- | --- |
+| `max_message_size` | 8 MiB | JSON body, sent or received (at most `u32::MAX`). |
+| `message_timeout` | 60 s | Receiving: once the peer's stream is accepted, the whole message must arrive. Sending: open, write, and the status byte. |
+| `close_timeout` | 5 s | `IrohChannel::close`, `IrohChannel::wait_closed`, `IrohConnector::close`. |
+
+Waiting for the peer to **start** its next message is not bounded: a channel may stay
+open and idle for as long as both ends want.
+
+### 2.3 Cancellation
+
+Both operations are cancel-safe (they can be wrapped in `tokio::time::timeout` or
+`select!`):
+
+- **Sending.** The send stream is guarded: if the operation is dropped before the whole
+  message is written and the stream finished, the stream is **reset** (code 2), never
+  finished, so the receiver cannot take a truncated message for a whole one. Dropped
+  after that point, the message is whole and the receiver may still take it.
+- **Receiving.** The partly received message (its stream and the bytes so far) is kept
+  in the channel; the next `recv_message` resumes it.
+
+Because each message has its own stream and its own length prefix, nothing an
+interrupted operation leaves behind can be read as the start of another message.
+
+### 2.4 Connection lifecycle
+
+1. The dApp resolves the Wallet's address (§3) and dials with the ALPN. The handshake
+   authenticates the Wallet's `EndpointId`. If the Wallet admits only some peers (§3.3),
+   it closes any other connection right after the handshake (close code 1, reason
+   `not admitted`).
+2. Messages are exchanged per the interaction flow (§5), each confirmed (§2.1).
+3. Either side calls `IrohChannel::close`: it waits (bounded) until its last
+   confirmation has been acknowledged, then closes the connection (code 0, reason
+   `done`). Dropping a channel does the same in the background. `IrohConnector::close`
+   closes the endpoint and all its connections (bounded).
 
 ---
 
-## 3. Pairing & discovery
-
-An iroh endpoint is identified by its `EndpointId` (its public key). A peer
-needs the Wallet's `EndpointId` and, unless discovery/relay resolves it, at
-least one transport address. The crate offers three locators:
+## 3. Pairing, discovery and admission
 
 | Locator | Produced by | Contents | Use |
 | --- | --- | --- | --- |
-| **ticket** | `ticket()` | hex(JSON of `EndpointAddr` = id + local socket addrs, wildcard IPs mapped to loopback) | Same-host / LAN pairing (paste or QR). Consumed by `connect_to_ticket`. |
-| **id_ticket** | `id_ticket()` | hex(JSON of `EndpointAddr` = id **only**, no addrs) | Internet hubs with a persistent identity; peer resolves addrs via discovery. Consumed by `connect_to_ticket`. |
-| **endpoint id** | `endpoint_id_string()` / `endpoint_id_from_seed(seed)` | the `EndpointId` string | mDNS / discovery pairing. Consumed by `connect_to_endpoint_id`. |
+| **ticket** | `ticket()` | hex(JSON `EndpointAddr`): the id, every address iroh knows for the endpoint (interface/LAN addresses; with `Relay::Enabled`, its relay and public address once known) and loopback | Same host or LAN (paste or QR); internet with `Relay::Enabled` on both ends. Consumed by `connect_to_ticket`. |
+| **id_ticket** | `id_ticket()` | hex(JSON `EndpointAddr`), id **only** | Peers with `Relay::Enabled`, which look the id up. Consumed by `connect_to_ticket`. |
+| **endpoint id** | `endpoint_id_string()` / `endpoint_id_from_seed(seed)` | the `EndpointId` string | As id_ticket. Consumed by `connect_to_endpoint_id`. |
 
-`endpoint_id_from_seed(&seed)` derives the `EndpointId` **offline** (no endpoint
-bound), so a hub locator can be printed/distributed ahead of time; binding the
-same 32-byte seed later yields the same id.
+There is no mDNS in this crate. An application that wants LAN discovery advertises a
+ticket itself.
 
 ### 3.1 Identity
 
 - **Ephemeral** (`bind()` / `bind_with(None, …)`): a fresh random key each run.
-- **Fixed** (`bind_with(Some(seed), …)`): a 32-byte seed → a stable
-  `EndpointId` and stable `id_ticket` across restarts. The same 32 bytes used as
-  a Radix account key unify channel and ledger identity.
+- **Fixed** (`Builder::secret(seed)` / `bind_with(Some(seed), …)`): a 32-byte seed → a
+  stable `EndpointId` and `id_ticket` across restarts; `endpoint_id_from_seed` derives it
+  offline.
+
+Use a seed dedicated to the endpoint, not a Radix account's key: the `EndpointId` is
+public (peers and relays see it; with `Relay::Enabled` it is published with the
+endpoint's relay URL), so an account key would link that account to the machine's
+network presence, and one key would sign in two protocols (TLS handshakes and Radix
+transactions). A server whose identity is public by design may choose otherwise —
+PamAuthority makes its hub's `EndpointId` the key that signs the lists it sends to its
+machines — knowing that trade-off.
 
 ### 3.2 Relay / reachability
 
 | Mode | Meaning |
 | --- | --- |
-| `Relay::Disabled` | Direct connections only (same host / LAN); no relay, no discovery. Preset `Minimal`, `RelayMode::Disabled`. |
-| `Relay::Enabled` | n0 public relays + discovery; peers behind NAT are reachable over the internet by `EndpointId` alone. Preset `N0`. |
+| `Relay::Disabled` | Direct connections only (same host / LAN): preset `Minimal`, no relay, no address lookup, no port mapping. |
+| `Relay::Enabled` | Preset `N0`: n0 public relays, and address lookup through n0's pkarr/DNS (the endpoint publishes its relay URL under its id). Port mapping (UPnP / NAT-PMP / PCP) may ask the local router to open a port for direct connections. Relays forward end-to-end encrypted packets. |
+
+### 3.3 Admission
+
+By default any peer may connect. `Builder::allow_only(ids)` or `Builder::admit(fn)`
+restrict who may connect **to** an endpoint: the check runs right after the handshake,
+on the authenticated `EndpointId`, before the application sees the connection
+(`Pending::ready` returns an error). Dialling out is not restricted. Every channel
+exposes its peer as `IrohChannel::remote_id()`.
 
 ---
 
 ## 4. Message format (application layer)
 
 The JSON payloads are the **same wallet-interaction schema** the WebRTC
-transport uses, built by `radixdlt-connect-types`. Requests and responses are
-discriminated envelopes.
+transport uses, built by `radixdlt-connect-types`.
 
 ### 4.1 Request envelope
 
@@ -123,27 +174,33 @@ discriminated envelopes.
 }
 ```
 
-The **request kind** is `items.discriminator`, read by
-`interaction_discriminator`:
-
 | `items.discriminator` | Interaction |
 | --- | --- |
-| `unauthorizedRequest` / `authorizedRequest` | Account proof (ROLA) / account share |
+| `unauthorizedRequest` / `authorizedRequest` | Account proof (ROLA) |
 | `transaction` | Sign + submit a transaction manifest |
 | `preAuthorizationRequest` | Sign a subintent (pre-authorization) |
 
 ### 4.2 Response envelope
 
 ```json
-{ "discriminator": "success" | "failure", "interactionId": "<echoed>", "items": { ... } }
+{ "discriminator": "success", "interactionId": "<echoed>", "items": { ... } }
+{ "discriminator": "failure", "interactionId": "<echoed>", "error": "<code>", "message": "<why>" }
 ```
 
-- **`failure`** carries a top-level `"error"` string (no `items`). On the dApp
-  side it maps to `IrohError::Rejected` / `Protocol`.
-- **`success`** carries `items` shaped per the interaction (proofs, intent hash,
-  or signed partial transaction).
+On the dApp side a `failure` becomes `IrohError::Rejected("<code>: <why>")`.
 
-The Wallet always echoes the request's `interactionId` in its response.
+| `error` | When |
+| --- | --- |
+| `wrongNetwork` | `metadata.networkId` is not the Wallet's network. |
+| `invalidRequest` | Malformed request; ROLA challenge not 32 bytes (hex); dApp definition not an account of the Wallet's network; empty origin; manifest that does not compile; pre-authorization without expiry; unsupported interaction. |
+| `rejectedByUser` | The `Approver` did not approve it. |
+| `failedToPrepareTransaction` / `failedToSignTransaction` | The Gateway (epoch) or the signing failed. |
+| `failedToSubmitTransaction` | The Gateway did not accept the submission. |
+| `submittedTransactionHasFailedTransactionStatus` | Submitted and committed **as a failure**. |
+| `submittedTransactionHasRejectedTransactionStatus` | Submitted and rejected. |
+| `failedToPollSubmittedTransaction` | Submitted, outcome not known yet (it may still commit): check the intent hash before retrying. |
+
+The `message` of a transaction failure names the intent hash.
 
 ---
 
@@ -157,131 +214,120 @@ sequenceDiagram
     participant D as dApp (connector)
     participant W as Wallet (acceptor)
 
-    Note over W: bind() / bind_with(seed, relay)
-    W->>W: derive ticket / id_ticket / endpoint_id
-    W-->>D: share locator (QR / paste / mDNS)
-
-    Note over D: bind()
-    D->>W: QUIC connect (ALPN "radixdlt-connect-iroh/0")
-    D->>W: open_bi  (SendStream, RecvStream)
-    W->>W: accept_bi
-    Note over D,W: bidirectional stream ready — dApp sends first
+    Note over W: bind() / builder()…bind()
+    W-->>D: share locator (QR / paste / own discovery)
+    D->>W: QUIC connect, ALPN "radixdlt-connect-iroh/1" (TLS proves W's EndpointId)
+    W->>W: admission check on D's EndpointId (if configured)
+    D->>W: stream 1: first message (length + JSON, FIN)
+    Note over W: accept() returns the channel
+    W->>D: status 0x00 on stream 1
 ```
 
 ### 5.2 Account proof — ROLA "log in with Radix"
 
-`request_account_proof` → `Wallet::answer` → `account_proof_response`.
-
 ```mermaid
 sequenceDiagram
     autonumber
     participant D as dApp
     participant W as Wallet (signer)
-    participant K as Ed25519 key
+    participant A as Approver
 
-    Note over D: challenge_hex + DappContext(networkId, dApp, origin)
-    D->>W: frame: unauthorizedRequest { oneTimeAccounts.challenge }
-    W->>W: parse_account_proof_request
-    W->>W: signature_message(challenge, dApp, origin)
-    W->>K: sign(message)
-    K-->>W: signature
-    W->>D: frame: success { proofs: [{ publicKey, signature, curve:"curve25519" }] }
-    D->>D: extract_proofs → AccountProof
+    D->>W: unauthorizedRequest { oneTimeAccounts.challenge }
+    W-->>D: status 0x00
+    W->>W: network = wallet's? challenge 32 bytes? dApp definition an account of this network? origin present?
+    W->>A: approve_account_proof(peer id + claimed dApp/origin, request)
+    alt approved
+        W->>W: sign signature_message(challenge, dApp, origin)
+        W->>D: success { proofs: [{ publicKey, signature, curve:"curve25519" }] }
+    else not approved
+        W->>D: failure { error: "rejectedByUser" }
+    end
+    D-->>W: status 0x00
     D->>D: verify_account_proof(challenge, dApp, origin, networkId)
-    Note over D: returns verified AccountProof (or IrohError::Protocol on ROLA failure)
 ```
-
-Key point: the ROLA proof is **verified natively on the dApp side**
-(`radixdlt-rola::verify_account_proof`) before `request_account_proof` returns.
 
 ### 5.3 Transaction — sign and submit
 
-`request_transaction` → `Wallet::answer` → `transaction_response`.
-
 ```mermaid
 sequenceDiagram
     autonumber
     participant D as dApp
     participant W as Wallet (signer)
-    participant G as Gateway (mainnet/stokenet)
+    participant A as Approver
+    participant G as Gateway (wallet's network)
 
-    D->>W: frame: transaction { send.transactionManifest, blobs, message }
-    W->>W: parse_transaction_request
-    W->>G: compile_manifest_v1(manifest)
-    G-->>W: compiled
-    W->>W: build_notarized(compiled, [key], key)
-    W->>G: submit_and_wait(tx)
-    G-->>W: result (hash returned even if the wait times out)
-    W->>D: frame: success { send.transactionIntentHash }
-    D->>D: extract_transaction_intent_hash
-    Note over D: returns transaction intent hash (String)
+    D->>W: transaction { send.transactionManifest }
+    W->>W: network check, compile_manifest_v1 (else invalidRequest)
+    W->>A: approve_transaction(peer, request)
+    A-->>W: approved (else failure rejectedByUser)
+    W->>G: current epoch, build + notarize, submit
+    W->>G: poll status (40 × 2 s)
+    alt CommittedSuccess
+        W->>D: success { send.transactionIntentHash }
+    else CommittedFailure / Rejected / unknown
+        W->>D: failure { error: "submittedTransactionHas…Status" | "failedToPollSubmittedTransaction", message: "<txid> …" }
+    end
 ```
-
-Note: the Wallet returns the transaction intent hash on submit **even if the
-subsequent wait fails** (e.g. timeout) — the tx was already broadcast.
 
 ### 5.4 Pre-authorization — sign a subintent (no submit)
 
-`request_pre_authorization` → `Wallet::answer` → `pre_authorization_response`.
-
 ```mermaid
 sequenceDiagram
     autonumber
     participant D as dApp
     participant W as Wallet (signer)
+    participant A as Approver
     participant G as Gateway
 
-    D->>W: frame: preAuthorizationRequest { subintentManifest, expireAfterSeconds }
-    W->>W: parse_pre_authorization_request
+    D->>W: preAuthorizationRequest { subintentManifest, expireAfterSeconds > 0 }
+    W->>A: approve_pre_authorization(peer, request)
+    A-->>W: approved (else failure rejectedByUser)
     W->>G: current_epoch()
-    G-->>W: start_epoch
-    Note over W: window = (expireAfterSeconds / 300).max(1) + 1  (epochs ≈ 5 min)
+    Note over W: window = (expireAfterSeconds / 300).max(1) + 1 epochs (saturating)
     W->>W: sign_subintent(manifest, start, start+window, key)
-    W->>D: frame: success { response.signedPartialTransaction }
-    D->>D: extract_signed_partial_transaction
-    Note over D: returns signed partial transaction (hex) — NOT submitted
-```
-
-### 5.5 Unsupported / malformed request
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant D as dApp
-    participant W as Wallet
-
-    D->>W: frame: items.discriminator = <unknown>
-    W->>W: interaction_discriminator → unmatched
-    W->>D: frame: failure { error: "unsupported interaction: ..." }
-    D->>D: maps to IrohError::Rejected / Protocol
+    W->>D: success { response.signedPartialTransaction } — NOT submitted
 ```
 
 ---
 
 ## 6. Error model
 
-`IrohError` (localized to the system language on `Display`):
+`IrohError` (`#[non_exhaustive]`, localized to the system language on `Display`):
 
 | Variant | Raised when |
 | --- | --- |
-| `Bind` | Local endpoint could not bind. |
-| `Connect` | Could not reach / dial the peer, or an invalid ticket/endpoint id. |
-| `Accept` | Error accepting an incoming connection (or endpoint closed). |
-| `Stream` | QUIC stream read/write error (including framing I/O). |
-| `Protocol` | Message could not be (de)serialized, or an interaction-level error (e.g. ROLA verification failed, malformed response). |
-| `Rejected` | The Wallet returned a `failure` response (`WalletInteractionError::WalletRejected`). |
+| `Bind` | The local endpoint could not bind. |
+| `Connect` | Could not reach / dial the peer (unreachable, other protocol version, not admitted), or an invalid ticket/endpoint id. |
+| `Accept` | Accepting failed: endpoint closed, handshake failed, peer not admitted. |
+| `Stream` | The connection was closed or lost. |
+| `Protocol` | (De)serialization failed, a message broke the framing, or an interaction-level error (ROLA verification failed, malformed response). |
+| `Rejected` | The Wallet answered `failure` (§4.2). |
+| `TooLarge { size, max }` | A message over this side's limit: not sent, or refused from its length prefix. |
+| `Refused { too_large }` | The peer refused our message (status `0x01` / `0x02`). |
+| `Timeout { sending, after }` | A started message did not arrive whole, or ours was not confirmed (the peer may still take it), within `message_timeout`. |
+
+After `TooLarge`, `Refused`, `Timeout` or a `Protocol` error about one message, the
+channel is still usable.
 
 ---
 
 ## 7. Security notes
 
-- **Channel confidentiality/integrity:** provided by QUIC/TLS; each endpoint is
-  keyed by its `EndpointId`, so connecting to a known id authenticates the peer
-  at the transport layer.
-- **ROLA:** account ownership is proven and **verified natively** by the dApp
-  against the challenge, dApp definition, origin and network id — independently
-  of transport-layer authentication.
-- **Identity reuse:** using a Radix account's 32-byte key as the endpoint seed
-  ties channel identity to ledger identity; treat the seed as key material.
-- **Relay trust:** `Relay::Enabled` routes setup through n0 relays; relays see
-  connection metadata but not the QUIC-encrypted stream contents.
+- **Channel confidentiality/integrity and peer identity:** QUIC/TLS 1.3. Dialling an
+  `EndpointId` reaches that key's holder or fails; `remote_id()` names the peer on both
+  sides.
+- **Who may connect:** anyone, unless `allow_only` / `admit` say otherwise (§3.3).
+  Applications that authenticate peers themselves may keep the default.
+- **Resource bounds:** message size, time to complete a started message, streams per
+  connection, and close are all bounded (§2.2). The number of connections an endpoint
+  accepts is the application's to bound (e.g. in its accept loop).
+- **A Wallet signs only what its `Approver` approves.** Nothing signs by default
+  (`DenyAll`, and every `Approver` method refuses unless implemented). The dApp
+  definition and origin a request carries are claims; only the peer's `EndpointId` is
+  authenticated. Never expose a Wallet to unknown peers with a permissive approver.
+- **ROLA:** account ownership is proven and **verified natively** by the dApp against
+  the challenge, dApp definition, origin and network id — independently of the
+  transport.
+- **Relay trust:** with `Relay::Enabled`, relays see the two `EndpointId`s and the timing
+  and size of encrypted packets, never their contents; n0's address lookup publishes
+  the endpoint's relay URL under its id.

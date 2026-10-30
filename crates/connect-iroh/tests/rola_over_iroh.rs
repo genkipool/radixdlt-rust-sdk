@@ -51,11 +51,9 @@ async fn rola_login_works_over_iroh() {
             "publicKey": key.public_key,
             "signature": hex::encode(signature.to_bytes()),
         });
+        // Returns once the verifier has taken the proof: nothing to wait for after it.
         ch.send_message(&proof).await.expect("send proof");
-        ch.finish();
-        // Keep the connection alive until the verifier has read and closed it, so
-        // the proof is delivered before this side is dropped.
-        ch.wait_closed().await;
+        ch.close().await;
     };
 
     // Verifier side: connect, send the challenge, receive and verify the proof.
@@ -69,7 +67,7 @@ async fn rola_login_works_over_iroh() {
         .await
         .expect("send challenge");
         let proof = ch.recv_message().await.expect("recv proof");
-        ch.close(); // signal the signer we are done
+        ch.close().await;
         proof
     };
 

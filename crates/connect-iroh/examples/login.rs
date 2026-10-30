@@ -7,9 +7,35 @@
 //!
 //!   cargo run --example login
 
-use radixdlt_connect_iroh::protocol::{request_account_proof, DappContext, Wallet};
-use radixdlt_connect_iroh::IrohConnector;
+use radixdlt_connect_iroh::protocol::{
+    request_account_proof, AccountProofRequest, Approver, DappContext, Requester, Wallet,
+};
+use radixdlt_connect_iroh::{EndpointId, IrohConnector};
 use radixdlt_keystore::KeyFile;
+
+/// What the signer agrees to: logins to ONE dApp and origin, from the ONE peer it paired with.
+/// Transactions and pre-authorizations are not implemented here, so they are refused.
+struct PairedLogins {
+    peer: EndpointId,
+    dapp_definition: String,
+    origin: String,
+}
+
+impl Approver for PairedLogins {
+    async fn approve_account_proof(&self, from: &Requester, request: &AccountProofRequest) -> bool {
+        let ok = from.peer == self.peer
+            && request.dapp_definition == self.dapp_definition
+            && request.origin == self.origin;
+        println!(
+            "login to {} ({}) from {}: {}",
+            request.origin,
+            request.dapp_definition,
+            from.peer.fmt_short(),
+            if ok { "approved" } else { "refused" }
+        );
+        ok
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -30,20 +56,28 @@ async fn main() {
     let ctx = DappContext::new(network_id, dapp_def, origin);
     let challenge = "ab".repeat(32);
 
+    // In a real signer the person approves (or a policy decides); here, a fixed policy.
+    let approver = PairedLogins {
+        peer: dapp.endpoint_id(),
+        dapp_definition: dapp_def.to_string(),
+        origin: origin.to_string(),
+    };
     let signer_fut = async {
         let mut ch = signer.accept().await.expect("accept");
-        wallet.answer(&mut ch).await.expect("answer");
-        ch.wait_closed().await;
+        wallet.answer(&mut ch, &approver).await.expect("answer");
+        ch.close().await;
     };
     let dapp_fut = async {
         let mut ch = dapp.connect_to_ticket(&ticket).await.expect("connect");
         let proof = request_account_proof(&mut ch, &challenge, &ctx)
             .await
             .expect("login");
-        ch.close();
+        ch.close().await;
         proof
     };
 
     let (_, proof) = tokio::join!(signer_fut, dapp_fut);
     println!("✓ ROLA login verified over iroh for account {}", proof.address);
+    signer.close().await;
+    dapp.close().await;
 }

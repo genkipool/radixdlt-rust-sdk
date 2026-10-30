@@ -7,6 +7,63 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Changed (breaking) — `radixdlt-connect-iroh`, SDK-to-SDK transport
+
+- **Protocol version 1** (ALPN `radixdlt-connect-iroh/1`; a v0 peer now fails at the handshake
+  instead of misreading). Every message travels on a QUIC stream of its own — the same 4-byte
+  big-endian length and JSON body — and the receiver answers it with one status byte, so
+  `IrohChannel::send_message` returns once the peer has *taken* the message. Both ends must be
+  updated together; `docs/PROTOCOL.md` specifies it.
+- **Bounded.** New `Limits` (per endpoint): `max_message_size` (8 MiB) — an incoming length over
+  it is refused from the prefix alone, before anything is allocated (it used to allocate whatever
+  the peer announced, up to 4 GiB, and to panic on 32-bit targets); `message_timeout` (60 s) — a
+  message the peer has started must arrive whole in time (a peer trickling bytes held the task
+  forever), while waiting for the NEXT message stays unbounded; `close_timeout` (5 s). A peer may
+  have at most 8 streams open towards an endpoint and no unidirectional ones.
+- **Cancel-safe.** A cancelled `recv_message` keeps what has arrived and the next call resumes it;
+  a cancelled `send_message` resets its stream, so the peer never takes part of a message as a
+  whole one. Before, a cancelled read or write left the stream mid-frame and the next read took
+  JSON bytes for a length. After a refused, timed-out or malformed message the channel stays
+  usable.
+- **Peer identity and admission.** `IrohChannel::remote_id()` (the peer's `EndpointId`,
+  authenticated by the handshake). `IrohConnector::builder()` with `secret`, `relay`, `limits`,
+  and optionally `allow_only(ids)` / `admit(fn)`, which refuse other peers right after their
+  handshake (anyone is admitted by default). `EndpointId` and `EndpointAddr` are re-exported.
+- **Closing.** `IrohConnector::close()` (bounded; dropping one now closes it in the background
+  instead of iroh aborting it and logging an error). `IrohChannel::close()` is now `async` and
+  consumes the channel: it lets the last confirmation reach the peer, then closes (dropping does
+  the same in the background). `IrohChannel::finish()` is gone (confirmations replace it);
+  `wait_closed()` is bounded and returns whether the peer closed.
+- `IrohError` is `#[non_exhaustive]`, with `TooLarge { size, max }`, `Refused { too_large }` and
+  `Timeout { sending, after }`.
+- `ticket()` carries the machine's interface (LAN) addresses as well as loopback (it had loopback
+  only, although documented for LAN use). `Relay::Disabled` also turns port mapping off: a
+  same-host/LAN endpoint no longer asks the router for a port. The docs no longer claim mDNS:
+  `connect_to_endpoint_id` needs `Relay::Enabled` (n0's address lookup); LAN discovery is the
+  application's. The docs recommend a key dedicated to the endpoint rather than a Radix
+  account's, and explain why.
+- **`protocol::Wallet` signs nothing without approval.** `Wallet::answer(channel, approver)`
+  takes an `Approver` — one async method per kind of request (`approve_account_proof`,
+  `approve_transaction`, `approve_pre_authorization`), each refusing unless implemented; `DenyAll`
+  refuses everything. The approver sees a `Requester` (the peer's authenticated `EndpointId`, plus
+  the dApp definition and origin the request claims) and the parsed request. Requests for another
+  network (`wrongNetwork`), ROLA challenges that are not 32 bytes, dApp definitions that are not
+  an account of the wallet's network, empty origins, manifests that do not compile and
+  pre-authorizations without expiry (`invalidRequest`) are refused before the approver is asked;
+  a refusal is `rejectedByUser`. It used to sign a ROLA proof for any dApp and origin, and sign and
+  submit any manifest, for whoever connected.
+
+### Fixed — `radixdlt-connect-iroh`
+
+- `protocol::Wallet` reports a transaction that did not commit successfully as a `failure`
+  naming its status (`submittedTransactionHasFailedTransactionStatus`,
+  `submittedTransactionHasRejectedTransactionStatus`, `failedToPollSubmittedTransaction` when the
+  outcome is not known yet, `failedToSubmitTransaction`) and its intent hash. It used to answer
+  success with the hash whatever happened after the submission.
+- `protocol::Wallet::new` maps network 1 to the mainnet Gateway and 2 to Stokenet, and refuses any
+  other network (it sent every non-mainnet network to Stokenet); `with_gateway` refuses a Gateway
+  of another network and now returns `Result`. New `protocol::public_gateway`.
+
 ### Added
 
 - `radixdlt-connector-mcp` — **Radix Connect over iroh as a second transport**, behind the same

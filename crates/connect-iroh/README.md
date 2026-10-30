@@ -9,8 +9,9 @@ alternative to WebRTC with two uses:
   code and asks it for logins, account proofs, transactions and pre-authorizations —
   no browser, no extension.
 - **SDK-to-SDK** — two peers that both use the SDK (a desktop signer, a server, a
-  device) run flows like ROLA "log in with Radix" entirely in Rust, with their own
-  protocol (`IrohConnector`, `protocol`). The mobile wallet does not speak that one.
+  device) exchange bounded, confirmed JSON messages, and run flows like ROLA "log in with
+  Radix" entirely in Rust, with their own protocol (`IrohConnector`, `protocol`). The mobile
+  wallet does not speak that one.
 
 ***English** · [Español](README.es.md)*
 
@@ -202,29 +203,91 @@ wallet (built on the same protocol library as the real one) over an in-process r
 
 ## SDK-to-SDK (pure-Rust peers)
 
-### Low-level transport
+Two peers that both run this crate exchange JSON messages over iroh with their own protocol
+(ALPN `radixdlt-connect-iroh/1`, specified in [`docs/PROTOCOL.md`](docs/PROTOCOL.md)).
+
+### The channel
 
 ```rust
 use radixdlt_connect_iroh::IrohConnector;
 
 let endpoint = IrohConnector::bind().await?;
-let mut channel = endpoint.connect(peer_addr).await?;
-channel.send_message(&request).await?;
+let mut channel = endpoint.connect_to_ticket(&ticket).await?;
+channel.send_message(&request).await?;    // returns once the peer has TAKEN it
 let response = channel.recv_message().await?;
+println!("talking to {}", channel.remote_id()); // the peer's authenticated EndpointId
+channel.close().await;                    // bounded
+endpoint.close().await;                   // bounded
 ```
+
+- **Every message travels on a QUIC stream of its own and is confirmed by the receiver.**
+  `send_message` returns `Ok` once the peer has taken the message, so closing right after it
+  loses nothing; there is no `finish`/`wait_closed` dance.
+- **Bounded.** A message larger than `Limits::max_message_size` (8 MiB by default) is refused —
+  an incoming one from its length prefix alone, before anything is allocated — and the channel
+  stays usable. Once a peer has started a message, the whole of it must arrive within
+  `Limits::message_timeout` (60 s): a peer trickling bytes cannot hold a task forever. Waiting
+  for the NEXT message is not bounded, so a channel can stay open and idle; wrap
+  `recv_message` in a timeout of your own where you want one.
+- **Cancel-safe.** `send_message` and `recv_message` can be wrapped in `tokio::time::timeout` or
+  `select!`: a cancelled receive resumes where it stopped; a cancelled send is abandoned whole
+  (the peer never sees part of it). Neither can leave the channel out of step.
+- **Closing.** `IrohChannel::close` and `IrohConnector::close` wait at most
+  `Limits::close_timeout` (5 s). Dropped without `close`, both still close gracefully in the
+  background when a tokio runtime is there.
+
+### Who may connect
+
+`IrohChannel::remote_id()` is the peer's `EndpointId`, proven by the QUIC (TLS 1.3) handshake:
+dialling an id (or a ticket) reaches that key's holder or fails. By default anyone may connect
+to an endpoint — an application that authenticates its peers itself (as PamAuthority does,
+with ROLA) needs no more. To admit only known peers before the application sees them:
+
+```rust
+use radixdlt_connect_iroh::{IrohConnector, Limits, Relay};
+
+let hub = IrohConnector::builder()
+    .secret(hub_seed)                     // a key for this endpoint only (see Identity)
+    .relay(Relay::Enabled)
+    .allow_only([peer_a, peer_b])         // or .admit(|id| registry.contains(id))
+    .limits(Limits::default().with_max_message_size(256 * 1024))
+    .bind()
+    .await?;
+```
+
+A peer not admitted is refused right after its handshake; `Pending::ready` reports it as an
+error.
 
 ### High-level "log in with Radix" (ROLA), paired by ticket
 
+`protocol::Wallet` is a pure-Rust signer: it holds an account key and answers wallet
+interactions. **It signs nothing on its own**: every request goes to an `Approver`, which sees
+who asks (the peer's `EndpointId`, plus the dApp definition and origin the request *claims*) and
+exactly what is asked. Each kind of request has its own method, and each refuses unless
+implemented — an approver written for logins cannot approve a transaction by omission.
+Requests for another network, ROLA challenges that are not 32 bytes, manifests that do not
+compile and pre-authorizations without expiry are refused before the approver is asked. A
+refusal reaches the dApp as `rejectedByUser`.
+
 ```rust
 use radixdlt_connect_iroh::IrohConnector;
-use radixdlt_connect_iroh::protocol::{Wallet, request_account_proof, DappContext};
+use radixdlt_connect_iroh::protocol::{
+    request_account_proof, AccountProofRequest, Approver, DappContext, Requester, Wallet,
+};
 
-// Signer side (a pure-Rust "wallet"):
+// Signer side: logins to one dApp, from the peer it paired with — nothing else.
+struct PairedLogins { peer: radixdlt_connect_iroh::EndpointId }
+impl Approver for PairedLogins {
+    async fn approve_account_proof(&self, from: &Requester, req: &AccountProofRequest) -> bool {
+        from.peer == self.peer && req.dapp_definition == MY_DAPP && req.origin == MY_ORIGIN
+    }
+}
 let wallet = Wallet::from_key_file(&key_file, passphrase)?;
-let signer = IrohConnector::bind().await?;
-let ticket = signer.ticket();             // share as a QR / string
+let approver = PairedLogins { peer: dapp_id }; // the dApp's EndpointId, learned when pairing
+let signer = IrohConnector::builder().allow_only([dapp_id]).bind().await?;
+let ticket = signer.ticket();              // share as a QR / string
 let mut ch = signer.accept().await?;
-wallet.answer(&mut ch).await?;            // signs the ROLA challenge
+wallet.answer(&mut ch, &approver).await?;
 
 // dApp side:
 let dapp = IrohConnector::bind().await?;
@@ -232,43 +295,53 @@ let mut ch = dapp.connect_to_ticket(&ticket).await?;
 let proof = request_account_proof(&mut ch, &challenge, &ctx).await?; // sent + verified
 ```
 
-The `Wallet` answers three interactions over iroh, matching the WebRTC flow:
+The `Wallet` answers three interactions, matching the WebRTC flow:
 
 - **account proof** — ROLA "log in with Radix" (`request_account_proof`).
-- **transaction** — the wallet signs *and* submits a manifest, returns the intent
-  hash (`request_transaction`).
-- **pre-authorization** — the wallet signs a subintent without submitting, returns
-  the signed partial transaction (`request_pre_authorization`).
+- **transaction** — the wallet signs *and submits* a manifest, paying its fees
+  (`request_transaction`). The dApp gets the intent hash only once the transaction has
+  committed successfully; a committed failure, a rejection, or an outcome not known yet is a
+  `failure` naming the status and the intent hash.
+- **pre-authorization** — the wallet signs a subintent without submitting it
+  (`request_pre_authorization`); whoever holds it can complete and submit it until it expires.
 
-### Persistent identity and internet peers (relay + discovery)
+`Wallet::new` submits through the public Gateway of its network (1 mainnet, 2 stokenet; any
+other network is an error) — `with_gateway` replaces it with one for the same network.
 
-`bind()` uses an ephemeral identity and direct connections only (same host / LAN).
-For peers that must be reachable across restarts or over the internet:
+> **Do not expose a `Wallet` to whoever can reach it.** Anyone who can open a channel can send
+> it requests; only the approver stands between them and the key. Pair it with known peers
+> (`allow_only`), and never answer with an approver that approves everything.
 
-```rust
-use radixdlt_connect_iroh::{endpoint_id_from_seed, IrohConnector, Relay};
+### Tickets, identity and reachability
 
-// Hub: fixed 32-byte seed → stable EndpointId, n0 relays + discovery enabled.
-let hub = IrohConnector::bind_with(Some(seed), Relay::Enabled).await?;
-let ticket = hub.id_ticket();             // stable across restarts (id only, no addrs)
+| Locator | Contents | Reaches |
+| --- | --- | --- |
+| `ticket()` | `EndpointId` + the addresses iroh knows: this machine's interface (LAN) addresses, loopback, and with `Relay::Enabled` its relay | same host, same LAN; with `Relay::Enabled` on both ends, the internet |
+| `id_ticket()` / `endpoint_id_string()` | the `EndpointId` only, stable with a persistent identity | needs `Relay::Enabled` on both ends: iroh looks the id up in n0's pkarr/DNS |
 
-// Peer: also bind with Relay::Enabled, then dial by ticket or by raw EndpointId.
-let peer = IrohConnector::bind_with(None, Relay::Enabled).await?;
-let mut ch = peer.connect_to_ticket(&ticket).await?;
-// …or, if the id was learned via mDNS/discovery:
-// let mut ch = peer.connect_to_endpoint_id(&hub_id).await?;
-```
+`Relay::Disabled` (what `bind()` uses) is direct connections only: no relay, no address lookup,
+and no port mapping. `Relay::Enabled` uses n0's public relays and address lookup (this endpoint's
+relay URL is published under its `EndpointId`), and port mapping (UPnP / NAT-PMP / PCP) may ask
+the local router to open a port for direct connections. There is no mDNS in this crate: an
+application that wants LAN discovery advertises a ticket itself.
 
-`endpoint_id_from_seed(&seed)` derives the same `EndpointId` string offline (no
-endpoint bound), useful to print or distribute a hub locator ahead of time.
+A ticket lists every interface address of the machine (VPN and container bridges included):
+share it like any other network detail.
 
-See `examples/login.rs` (`cargo run --example login`) for the full flow, and
-`tests/` for the low-level, login, and transaction/pre-auth tests. Error messages are
-localized to the system language.
+**Identity.** `bind()` uses an ephemeral key; `Builder::secret(seed)` (or
+`bind_with(Some(seed), …)`) a persistent one, so the `EndpointId` and `id_ticket` survive
+restarts, and `endpoint_id_from_seed(&seed)` derives the id offline. Use a key dedicated to the
+endpoint, not a Radix account's key: the `EndpointId` is public (peers and relays see it, and
+with `Relay::Enabled` it is published with this endpoint's relay), so reusing an account key ties
+that account to the machine's network presence; and one key would sign in two protocols (the QUIC
+handshake and Radix transactions). PamAuthority deliberately makes its *server's* `EndpointId` its
+signing key, so machines that dial it already hold the key that signs what it sends them: that is
+a public server identity by design, not a person's account, and the trade-off is documented
+there.
 
-The wire protocol (transport, framing, pairing, message schema and per-interaction
-sequence diagrams) is specified in [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
-([Español](docs/PROTOCOL.es.md)).
+See `examples/login.rs` (`cargo run --example login`) for the full flow, and `tests/` for the
+channel, login, and transaction/pre-auth tests. Error messages are localized to the system
+language.
 
 ## License
 

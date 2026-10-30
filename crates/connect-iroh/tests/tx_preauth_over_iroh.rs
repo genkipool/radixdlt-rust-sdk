@@ -5,9 +5,25 @@
 //! ignored by default. Run with:
 //!   cargo test --test tx_preauth_over_iroh -- --ignored
 
-use radixdlt_connect_iroh::protocol::{request_pre_authorization, request_transaction, DappContext, Wallet};
+use radixdlt_connect_iroh::protocol::{
+    request_pre_authorization, request_transaction, Approver, DappContext, PreAuthorizationRequest,
+    Requester, TransactionRequest, Wallet,
+};
 use radixdlt_connect_iroh::IrohConnector;
 use radixdlt_keystore::KeyFile;
+
+/// Approves the transactions and pre-authorizations of these tests (and nothing else).
+struct ThisTest;
+
+impl Approver for ThisTest {
+    async fn approve_transaction(&self, from: &Requester, _: &TransactionRequest) -> bool {
+        from.dapp_definition == DAPP
+    }
+
+    async fn approve_pre_authorization(&self, from: &Requester, request: &PreAuthorizationRequest) -> bool {
+        from.dapp_definition == DAPP && request.expire_after_seconds <= 600
+    }
+}
 
 const DAPP: &str = "account_tdx_2_129grv2vv4q3w7aqzzwesc5k0xp4lg5dj4p78q80ca79rj5rct8mujk";
 const ORIGIN: &str = "iroh://radixdlt-connect-iroh";
@@ -25,15 +41,15 @@ async fn pre_authorization_over_iroh() {
 
     let signer_fut = async {
         let mut ch = signer.accept().await.unwrap();
-        wallet.answer(&mut ch).await.unwrap();
-        ch.wait_closed().await;
+        wallet.answer(&mut ch, &ThisTest).await.unwrap();
+        ch.close().await;
     };
     let dapp_fut = async {
         let mut ch = dapp.connect_to_ticket(&ticket).await.unwrap();
         let spt = request_pre_authorization(&mut ch, "YIELD_TO_PARENT;", 600, &ctx)
             .await
             .unwrap();
-        ch.close();
+        ch.close().await;
         spt
     };
 
@@ -61,13 +77,13 @@ async fn transaction_over_iroh() {
 
     let signer_fut = async {
         let mut ch = signer.accept().await.unwrap();
-        wallet.answer(&mut ch).await.unwrap();
-        ch.wait_closed().await;
+        wallet.answer(&mut ch, &ThisTest).await.unwrap();
+        ch.close().await;
     };
     let dapp_fut = async {
         let mut ch = dapp.connect_to_ticket(&ticket).await.unwrap();
         let txid = request_transaction(&mut ch, &manifest, &ctx).await.unwrap();
-        ch.close();
+        ch.close().await;
         txid
     };
 
