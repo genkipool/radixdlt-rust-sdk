@@ -88,16 +88,18 @@ const USAGE: &str = "\
 radix-connector-mcp — local MCP server that gets Radix transactions signed on the phone.
 
 Usage:
-  radix-connector-mcp [--transport webrtc|iroh|auto] [--iroh-relay <url>]
+  radix-connector-mcp [--transport auto|webrtc|iroh] [--iroh-relay <url>]
                                       run as an MCP server over stdio (what MCP clients launch).
                                       --transport (or RADIX_CONNECTOR_TRANSPORT) says how NEW
-                                      wallets are paired: webrtc (default), or iroh / auto for
-                                      Radix Connect over iroh (wallet: Settings › Preferences ›
-                                      Radix Connect › Automatic or iroh). Each wallet keeps the
-                                      transport it was paired over; iroh also sends every
-                                      wallet's requests over iroh. --iroh-relay (or
-                                      RADIX_CONNECTOR_IROH_RELAY): one relay of your own instead
-                                      of n0's public relays (the wallet must use the same).
+                                      wallets are paired: auto (default) shows one QR for WebRTC
+                                      and Radix Connect over iroh at once, so any Radix Wallet
+                                      links — over iroh when it has iroh on (Settings ›
+                                      Preferences › Radix Connect › Automatic or iroh), over
+                                      WebRTC otherwise; webrtc or iroh pair over that one only.
+                                      Each wallet keeps the transport it was paired over; iroh
+                                      also sends every wallet's requests over iroh. --iroh-relay
+                                      (or RADIX_CONNECTOR_IROH_RELAY): one relay of your own
+                                      instead of n0's public relays (the wallet must use the same).
   radix-connector-mcp version         print the installed version
   radix-connector-mcp check-update    tell whether a newer release is published
   radix-connector-mcp relay [--listen 127.0.0.1:8787] [--turn 127.0.0.1:3478 --turn-password <pw>]
@@ -364,6 +366,21 @@ mod tests {
         let mut given = args(&["relay", "--listen", "127.0.0.1:8787"]);
         server_options(&mut given).unwrap();
         assert_eq!(given, args(&["relay", "--listen", "127.0.0.1:8787"]));
+
+        let mut given = args(&["--transport=webrtc"]);
+        assert_eq!(
+            server_options(&mut given).unwrap().transport,
+            iroh::Setting::Webrtc
+        );
+
+        // Neither flag nor variable: auto, both transports at once.
+        assert_eq!(Options::default().transport, iroh::Setting::Auto);
+        if std::env::var_os(iroh::TRANSPORT_ENV).is_none() {
+            assert_eq!(
+                server_options(&mut args(&[])).unwrap().transport,
+                iroh::Setting::Auto
+            );
+        }
 
         assert!(server_options(&mut args(&["--transport", "pigeon"])).is_err());
         assert!(server_options(&mut args(&["--iroh-relay", "http://relay.example.com"])).is_err());

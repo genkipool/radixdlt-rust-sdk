@@ -230,6 +230,71 @@ async fn a_pairing_its_caller_abandons_leaves_no_session_behind() {
     assert!(connector.diagnostics(&password).is_none());
 }
 
+/// One QR for several transports: the caller makes the password and its QR, shown here BEFORE the
+/// session starts, and the wallet that scans it links over iroh; the session stays for requests.
+#[tokio::test(flavor = "multi_thread")]
+async fn pairing_over_the_callers_password_links_the_wallet_that_scans_its_qr() {
+    let relay = LocalRelay::start().await;
+    let connector = connector(&relay);
+    let (private, public) = linking::generate_identity().unwrap();
+    let password = linking::generate_password().unwrap();
+    let qr = linking::pairing_qr(&password, &private, &public).unwrap();
+    let wallet = Arc::new(SimWallet::default());
+    let steps = Steps::default();
+    let mut observer = steps.observer();
+
+    let pairing = connector.pair_with_password(&password, WAIT, &mut observer);
+    let phone = async {
+        let scanned = wallet.scan_and_link(&qr, &relay.url, LinkSignature::Valid).await;
+        assert_eq!(scanned, password);
+        wallet.connect(&scanned, &relay.url, answers_rola()).await
+    };
+    let (paired, running) = tokio::join!(pairing, phone);
+    assert_eq!(paired.unwrap(), wallet.public_key_hex());
+    let ignored = wallet.ignored_while_linking.lock().unwrap().clone();
+    assert!(ignored.is_empty(), "{ignored:?}");
+
+    let challenge = challenge();
+    let answer = connector
+        .request_account_proof(&password, &challenge, &ctx(), false, WAIT)
+        .await
+        .unwrap();
+    assert_eq!(verified_account(&answer, &challenge), wallet.account_address());
+    running.close().await;
+    connector.close().await;
+}
+
+/// Pairing over the caller's password keeps no session when it fails — a password of the wrong
+/// length, a forged linking signature — or when its caller drops it, as a program pairing over
+/// several transports does once the wallet linked over another one.
+#[tokio::test(flavor = "multi_thread")]
+async fn pairing_over_the_callers_password_keeps_no_session_when_it_fails_or_is_dropped() {
+    let relay = LocalRelay::start().await;
+    let connector = connector(&relay);
+    let (private, public) = linking::generate_identity().unwrap();
+    let mut quiet = |_: Progress| {};
+
+    let short = connector.pair_with_password(&[1, 2, 3], WAIT, &mut quiet).await;
+    assert_eq!(short, Err(MobileError::InvalidPassword));
+
+    let forged = linking::generate_password().unwrap();
+    let qr = linking::pairing_qr(&forged, &private, &public).unwrap();
+    let wallet = SimWallet::default();
+    let (paired, _) = tokio::join!(
+        connector.pair_with_password(&forged, WAIT, &mut quiet),
+        wallet.scan_and_link(&qr, &relay.url, LinkSignature::Forged),
+    );
+    assert!(matches!(paired, Err(MobileError::Crypto(_))), "{paired:?}");
+    assert!(connector.diagnostics(&forged).is_none());
+
+    let dropped = linking::generate_password().unwrap();
+    let pairing = connector.pair_with_password(&dropped, WAIT, &mut quiet);
+    assert!(tokio::time::timeout(Duration::from_secs(1), pairing)
+        .await
+        .is_err());
+    assert!(connector.diagnostics(&dropped).is_none());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_requests_on_one_link_each_get_their_own_answer() {
     let relay = LocalRelay::start().await;

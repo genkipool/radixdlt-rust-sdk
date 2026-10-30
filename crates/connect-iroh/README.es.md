@@ -69,6 +69,12 @@ cuando la wallet la ha cerrado (como mucho 5 s después): una petición enviada 
 del emparejamiento va por la conexión normal de la wallet. Un enlace emparejado aquí también
 funciona con `radixdlt-connect` (WebRTC) cuando la wallet está en Automatic.
 
+Para mostrar UN QR para los dos transportes, genera tú la contraseña y su QR
+(`linking::generate_password`, `linking::pairing_qr`) y empareja por cada uno con ella:
+`connector.pair_with_password(&password, timeout, &mut on)` aquí y
+`radixdlt_connect::Connector::pair_with_password` por WebRTC; quédate con el primero que
+devuelva la clave pública de la wallet y descarta el otro (descartar este cierra su sesión).
+
 ### Peticiones
 
 La API refleja `radixdlt_connect::Connector` método a método — cambiar de transporte es
@@ -204,10 +210,10 @@ Las pruebas de `tests/mobile_wallet_over_iroh.rs` ejecutan el conector contra un
 simulada (construida sobre la misma biblioteca de protocolo que la real) a través de un
 relé dentro del proceso.
 
-> **Nota de compilación.** La biblioteca del protocolo, `radix-connect-iroh`, es una
-> dependencia por ruta a su repositorio hermano (`../../../../radix-connect-iroh`) mientras
-> ambos se desarrollan juntos: clónalo junto a este repositorio para compilar. Pasará a ser
-> una dependencia de crates.io (o git) antes de publicar esta crate.
+> **Nota de compilación.** La biblioteca del protocolo, `radix-connect-iroh`, viene de su
+> etiqueta publicada (`git`, `v0.1.0`, github.com/genkipool/radix-connect-iroh): un clon
+> nuevo compila sin nada al lado. Pasará a ser una dependencia de crates.io antes de publicar
+> esta crate.
 
 ## SDK-a-SDK (peers en Rust puro)
 

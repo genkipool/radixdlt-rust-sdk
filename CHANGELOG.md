@@ -7,6 +7,37 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Changed — `radixdlt-connector-mcp`: any Radix Wallet pairs, with one QR
+
+- **`auto` is the default transport setting** (unset or empty `--transport` /
+  `RADIX_CONNECTOR_TRANSPORT`), and it now pairs over **WebRTC and Radix Connect over iroh at
+  once**, with ONE password and ONE QR: the official wallet (WebRTC only) links over WebRTC as
+  before; a wallet with iroh on (Automatic or iroh) links over iroh. **iroh is preferred**: iroh
+  linking first is kept at once; WebRTC linking first gives iroh 5 more seconds (`IROH_GRACE`; the
+  wallet waits for iroh the same way, so both ends settle on iroh whenever it works), and only
+  then is WebRTC kept. A transport that fails leaves the other waiting; when both fail, the error
+  names both reasons. The one not kept is dropped right then (its signaling connection, or its
+  iroh session, closed; nothing stays locked). The link is recorded with the transport it was
+  paired over, as before, and `connector_log` records the decision (`paired` with `transport` and
+  `why`; `pairing_attempt_failed` per transport). Requests on existing links keep their recorded
+  transport (no record: WebRTC); `webrtc` and `iroh` keep their meaning.
+- `pair_wallet`'s `transport` takes `auto` too. A new `pair_wallet` stops the pairing it replaces,
+  over every transport, instead of leaving it waiting for its QR until the timeout.
+- An unused iroh session is kept 30 minutes instead of 5 (`RADIX_CONNECTOR_IROH_IDLE_SECONDS`):
+  once released, the wallet takes up to ~15 s to reach a new one.
+- Tests (offline): the decision itself; end to end through the tools, a wallet linking over iroh
+  while the WebRTC half waits at a signaling server on 127.0.0.1 (iroh recorded, the WebRTC
+  connection closed, a ROLA request straight after, the link's lock released on
+  `remove_wallet`); the grace both ways with the real iroh half; iroh unable to start (the pairing
+  goes on over WebRTC) and both failing.
+
+### Changed — build
+
+- `radixdlt-connect-iroh` and `radixdlt-connector-mcp` take the protocol library
+  `radix-connect-iroh` from its published tag (`git`, `v0.1.0`) instead of a path to a sibling
+  checkout, so a fresh clone builds (and CI can build them). `deny.toml` allows that one git
+  source.
+
 ### Changed (breaking) — `radixdlt-connect-iroh`, SDK-to-SDK transport
 
 - **Protocol version 1** (ALPN `radixdlt-connect-iroh/1`; a v0 peer now fails at the handshake
@@ -66,13 +97,20 @@ minor versions may contain breaking changes.
 
 ### Added
 
+- `radixdlt-connect` — `Connector::pair_with_password(password, timeout)` and
+  `radixdlt-connect-iroh` — `MobileWalletConnector::pair_with_password(password, timeout, on)`:
+  pairing over a password the caller made and showed (`linking::generate_password`,
+  `linking::pairing_qr`), returning the wallet's public key — so one QR serves both transports.
+  `pair` / `pair_with_progress` are now these with a password of their own, unchanged (the iroh
+  session closed on failure or when the future is dropped, kept on success).
+
 - `radixdlt-connector-mcp` — **Radix Connect over iroh as a second transport**, behind the same
-  tools. `--transport webrtc|iroh|auto` (or `RADIX_CONNECTOR_TRANSPORT`; default `webrtc`, so
-  nothing changes unless asked) says how new wallets are paired, and `pair_wallet` takes a
+  tools. `--transport webrtc|iroh|auto` (or `RADIX_CONNECTOR_TRANSPORT`; now `auto` by default,
+  see above) says how new wallets are paired, and `pair_wallet` takes a
   `transport` per call; each wallet keeps the transport it was paired over (recorded in
   `transports.json`, by link hash — `connector.json` keeps its format), and `iroh` also sends
   every wallet's requests over iroh. n0's public relays by default, or `--iroh-relay <url>`. One
-  connector process per wallet link over iroh (an OS lock, released after 5 idle minutes; others
+  connector process per wallet link over iroh (an OS lock, released after 30 idle minutes; others
   get `LINK_BUSY`). Failures keep the WebRTC codes where they mean the same, plus `NOT_CONFIRMED`,
   `LINK_BUSY` and `IROH_UNAVAILABLE`; the iroh timeouts, `check_wallet_connection`,
   `list_wallets` and `connector_log` carry the link's diagnostics line (no secrets). Built with

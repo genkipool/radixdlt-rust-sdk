@@ -68,6 +68,12 @@ later): a request sent right after pairing goes over the wallet's regular connec
 paired here also works with
 `radixdlt-connect` (WebRTC) when the wallet is on Automatic.
 
+To show ONE QR for both transports, make the password and its QR yourself
+(`linking::generate_password`, `linking::pairing_qr`) and pair over each with it:
+`connector.pair_with_password(&password, timeout, &mut on)` here and
+`radixdlt_connect::Connector::pair_with_password` over WebRTC; keep the first that returns
+the wallet's public key and drop the other (dropping this one closes its session).
+
 ### Requests
 
 The API mirrors `radixdlt_connect::Connector` method for method — switching transport is
@@ -196,10 +202,9 @@ RUST_LOG=radix_connect_iroh=debug,radixdlt_connect_iroh=debug cargo run --exampl
 The tests in `tests/mobile_wallet_over_iroh.rs` run the connector against a simulated
 wallet (built on the same protocol library as the real one) over an in-process relay.
 
-> **Build note.** The protocol library, `radix-connect-iroh`, is a path dependency on
-> its sibling repository (`../../../../radix-connect-iroh`) while both are developed
-> together: check it out next to this repository to build. It becomes a crates.io (or
-> git) dependency before this crate is published.
+> **Build note.** The protocol library, `radix-connect-iroh`, comes from its published
+> tag (`git`, `v0.1.0`, github.com/genkipool/radix-connect-iroh): a fresh clone builds
+> with nothing beside it. It becomes a crates.io dependency before this crate is published.
 
 ## SDK-to-SDK (pure-Rust peers)
 

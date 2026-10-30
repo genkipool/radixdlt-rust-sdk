@@ -853,16 +853,41 @@ impl Connector {
         let qr = linking::pairing_qr(&password, identity_private_key_hex, identity_public_key_hex)?;
         on_qr(qr);
 
+        let wallet_pk = self.pair_with_password(&password, timeout).await?;
+        Ok((wallet_pk, password.to_vec()))
+    }
+
+    /// Pairing over a password the CALLER made and showed: establishes the channel with the
+    /// wallet that scanned its QR, waits for its `linkClient`, verifies its signature and returns
+    /// the wallet's public key (hex). [`pair`](Self::pair) is this with a password of its own.
+    ///
+    /// For a program that shows ONE QR for several transports — e.g. this one and Radix Connect
+    /// over iroh, whichever the wallet links over: make the password with
+    /// [`linking::generate_password`](radixdlt_connect_types::linking::generate_password), its QR
+    /// with [`linking::pairing_qr`](radixdlt_connect_types::linking::pairing_qr), and pair over
+    /// each transport with it. Dropping the future stops waiting and closes the channel, if one
+    /// was open. As over [`pair`](Self::pair), a `linkClient` without a signature is accepted.
+    ///
+    /// `timeout` bounds opening the channel, and then again waiting for the `linkClient` on it.
+    ///
+    /// # Errors
+    /// [`ConnectError::Crypto`] for a wallet signature that does not verify, plus the transport
+    /// errors of [`exchange`](Self::exchange) — [`ConnectError::Signaling`] when no signaling
+    /// server could be reached, [`ConnectError::ChannelTimeout`] when no wallet came in time.
+    pub async fn pair_with_password(
+        &self,
+        password: &[u8; radixdlt_connect_types::linking::PASSWORD_LENGTH],
+        timeout: Duration,
+    ) -> Result<String, ConnectError> {
         // Establish the channel with the scanning wallet and await its linkClient.
-        let mut channel = self.establish(&password, timeout).await?;
+        let mut channel = self.establish(password, timeout).await?;
         let (wallet_pk, sig) = await_link_client(&mut channel, timeout).await?;
 
         // Verify the wallet's linking signature.
         if let Some(sig_hex) = sig {
-            linking::verify_link_signature(&password, &wallet_pk, &sig_hex)?;
+            radixdlt_connect_types::linking::verify_link_signature(password, &wallet_pk, &sig_hex)?;
         }
-
-        Ok((wallet_pk, password.to_vec()))
+        Ok(wallet_pk)
     }
 }
 
@@ -987,6 +1012,54 @@ mod tests {
         assert!(!channel_lost(&ConnectError::WalletRejected(
             "rejectedByUser".into()
         )));
+    }
+
+    /// A connector that reaches nothing outside this machine: one signaling server on 127.0.0.1,
+    /// no STUN/TURN servers to gather from.
+    fn local_connector(port: u16) -> Connector {
+        Connector::new()
+            .with_ice_servers(Vec::new())
+            .with_signaling_base(format!("ws://127.0.0.1:{port}"))
+    }
+
+    /// The caller's password, with no signaling server to reach: a signaling error, at once —
+    /// what a program pairing over several transports needs, to keep waiting on the others.
+    #[tokio::test]
+    async fn pairing_with_a_password_and_no_signaling_server_fails_at_once() {
+        let port = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let started = Instant::now();
+        let result = local_connector(port)
+            .pair_with_password(&[7; 32], Duration::from_secs(20))
+            .await;
+        assert!(matches!(result, Err(ConnectError::Signaling(_))), "{result:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The caller's password, a signaling server, and no wallet on it (it linked over another
+    /// transport, or nobody scanned): it waits for its timeout, and says no channel opened.
+    #[tokio::test]
+    async fn pairing_with_a_password_nobody_answers_times_out() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(relay::serve_relay(listener));
+        let password = radixdlt_connect_types::linking::generate_password().unwrap();
+        let started = Instant::now();
+        let result = local_connector(port)
+            .pair_with_password(&password, Duration::from_secs(2))
+            .await;
+        assert_eq!(result, Err(ConnectError::ChannelTimeout));
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_secs(2) && took < Duration::from_secs(10),
+            "{took:?}"
+        );
     }
 
     #[test]

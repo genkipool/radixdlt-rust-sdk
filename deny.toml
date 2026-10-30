@@ -156,3 +156,6 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# The protocol library of the iroh transport (connect-iroh, connector-mcp), pinned to its published
+# tag until it is on crates.io. Nothing else may come from git.
+allow-git = ["https://github.com/genkipool/radix-connect-iroh"]

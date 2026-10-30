@@ -76,37 +76,37 @@ If the binary is not on your `PATH`, use its absolute path as `command`.
 
 ## Two transports: WebRTC and iroh
 
-> **Experimental — keep the default (`webrtc`) for now.** iroh needs a Radix Wallet with
-> Radix Connect over iroh, which the official wallet and Connector Extension do not ship
-> yet. Until they do, `--transport iroh|auto` is only for testing with development builds.
+**Any Radix Wallet pairs, with nothing to configure.** By default (`auto`) the connector shows
+ONE QR and listens for it over **WebRTC** (the Radix signaling server, as the official wallet and
+Connector Extension use) and over **Radix Connect over iroh** (QUIC through iroh relays — no
+signaling server, and no UDP needed: the relay connection is HTTPS) at the same time. The wallet
+links over whichever it uses, and that wallet keeps it:
 
-The connector reaches the wallet over **WebRTC** (the Radix signaling server; the default,
-unchanged) or over **Radix Connect over iroh** (QUIC through iroh relays — no signaling server,
-and no UDP needed: the relay connection is HTTPS). Choose with `--transport` (or
-`RADIX_CONNECTOR_TRANSPORT`):
+- the official wallet (WebRTC only) links over **WebRTC**, as always;
+- a wallet with iroh on — Settings → Preferences → Radix Connect → **Automatic** or **iroh** —
+  links over **iroh**. iroh is preferred: when WebRTC links first, iroh still has 5 seconds to
+  link (the wallet waits for iroh the same way), so both ends settle on iroh whenever it works.
+  A wallet that linked over iroh reaches that link over either transport afterwards.
 
-```sh
-claude mcp add radix-connector -- radix-connector-mcp --transport auto
-```
-
-```json
-{ "mcpServers": { "radix-connector": { "command": "radix-connector-mcp", "args": ["--transport", "auto"] } } }
-```
+`connector_log` records the decision (`paired`, with the `transport` and `why`).
 
 The setting decides how **new** wallets are paired; each wallet then keeps the transport it was
-paired over (`list_wallets` shows it):
+paired over (`list_wallets` shows it). Choose with `--transport` (or
+`RADIX_CONNECTOR_TRANSPORT`); there is no need to, unless you want one transport only:
+
+```sh
+claude mcp add radix-connector -- radix-connector-mcp                    # auto
+claude mcp add radix-connector -- radix-connector-mcp --transport webrtc # WebRTC only
+```
 
 | `--transport` | new pairings | wallets paired over iroh | wallets paired over WebRTC (and every earlier one) |
 |---|---|---|---|
-| `webrtc` (default) | WebRTC | iroh | WebRTC |
-| `auto` | iroh | iroh | WebRTC |
+| `auto` (default) | WebRTC and iroh at once, one QR: the one the wallet links over (iroh preferred) | iroh | WebRTC |
+| `webrtc` | WebRTC | iroh | WebRTC |
 | `iroh` | iroh | iroh | iroh (for a wallet set to "iroh" only) |
 
-`pair_wallet { "transport": "iroh" }` pairs one wallet over iroh whatever the setting.
-
-**Pairing over iroh, on the phone:** Radix Wallet → **Settings → Preferences → Radix Connect →
-Automatic** (or **iroh**), keeping its default iroh relay; then Settings → Linked Connectors →
-Link New Connector and scan the QR as usual. The wallet only connects while its app is open.
+`pair_wallet { "transport": "webrtc" | "iroh" | "auto" }` pairs one wallet that way whatever the
+setting. The wallet only connects while its app is open.
 
 **Relays.** By default both ends use n0's public iroh relays — nothing to host or configure; the
 connector publishes which relay it uses (the URL only, never an IP address) through n0's address
@@ -116,8 +116,9 @@ URL as the wallet's iroh relay. Both ends must make the same choice.
 
 **One connector process per wallet over iroh.** A wallet link over iroh is one endpoint; two
 connector processes (two MCP clients) holding it at once would take the wallet from each other.
-So a process locks the link while it uses it and for 5 minutes after
-(`RADIX_CONNECTOR_IROH_IDLE_SECONDS`); another process waits for it within its call's timeout and
+So a process locks the link while it uses it and for 30 minutes after
+(`RADIX_CONNECTOR_IROH_IDLE_SECONDS`) — long, because once the session is released the wallet
+takes up to ~15 s to find a new one; another process waits for it within its call's timeout and
 then fails with `LINK_BUSY`, naming the holder's pid.
 
 **Diagnostics.** Over iroh, `check_wallet_connection` and `list_wallets` show the link's
@@ -134,7 +135,7 @@ request — it may be on the phone, so it is not resent), `LINK_BUSY`, `IROH_UNA
 
 | Tool | What it does |
 |---|---|
-| `pair_wallet` | Returns a QR (terminal art + PNG + raw payload) to link a wallet. Once per device. `transport`: `webrtc` or `iroh` (default: `--transport`). |
+| `pair_wallet` | Returns a QR (terminal art + PNG + raw payload) to link a wallet — any Radix Wallet, over WebRTC or iroh. Once per device. `transport`: `auto`, `webrtc` or `iroh` (default: `--transport`, i.e. `auto`). |
 | `pair_status` | Waits for the scan/approval and saves the link. |
 | `list_wallets` / `remove_wallet` | Manage paired devices (with each one's transport and, over iroh, its live connection). |
 | `request_accounts` | Asks the wallet to **share its account address(es)** — no signature/proof. Use it to learn which account to fund or transfer from. |
@@ -259,8 +260,8 @@ RADIX_DAPP_ORIGIN=https://radix-community.genkipool.com \
 1. Build and preview a manifest with the web portal's HTTP MCP server
    (`radix-community`).
 2. `pair_wallet` → show the QR → user scans from the Radix Wallet app
-   (Settings → Linked Connectors → Link New Connector) → `pair_status`. Over iroh the wallet
-   first needs Settings → Preferences → Radix Connect → Automatic (or iroh).
+   (Settings → Linked Connectors → Link New Connector) → `pair_status`. Nothing to set up on
+   the phone first: it links over iroh when the wallet has iroh on, over WebRTC otherwise.
 3. `send_transaction { manifest, network }` → the user approves on the phone.
 4. `transaction_status { intent_hash, network }` → confirm the commit.
 

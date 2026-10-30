@@ -136,28 +136,40 @@ vea un fallo de herramienta.
 
 ### 5.1 Emparejamiento (asíncrono, por sondeo)
 
-`pair_wallet` devuelve el QR **inmediatamente** y ejecuta el handshake Radix
-Connect (que bloquea hasta el escaneo) en una tarea de fondo `spawn_local`;
-`pair_status` lee el slot de resultado compartido.
+`pair_wallet` genera UNA contraseña de enlace y su QR, devuelve el QR
+**inmediatamente** y ejecuta el handshake en una tarea de fondo `spawn_local`;
+`pair_status` lee el slot de resultado compartido. Con el ajuste por defecto (`auto`)
+esa tarea empareja por **los dos** transportes a la vez con la misma contraseña —
+`Connector::pair_with_password` (WebRTC) y `MobileWalletConnector::pair_with_password`
+(iroh) — y `choose_link` se queda con uno, prefiriendo iroh: si iroh enlaza primero,
+gana al momento; si WebRTC enlaza primero, iroh tiene aún `IROH_GRACE` (5 s). Un
+transporte que falla deja esperando al otro; el que no se conserva se descarta (se
+cierra su conexión de señalización o su sesión iroh). El enlace queda registrado en
+`transports.json` con el transporte por el que se emparejó.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant A as Agente
     participant T as tools.rs
-    participant C as radixdlt-connect
+    participant C as radixdlt-connect (WebRTC)
+    participant I as radixdlt-connect-iroh
     participant W as Wallet (móvil)
 
-    A->>T: tools/call pair_wallet { label? }
-    T->>T: carga/inicia connector.json (identity)
-    T->>C: Connector::pair(...) [spawn_local, timeout 600 s]
-    C-->>T: carga del QR (vía oneshot, antes de bloquear)
+    A->>T: tools/call pair_wallet { label?, transport? }
+    T->>T: carga/inicia connector.json (identity), contraseña + QR
     T-->>A: QR (unicode + PNG) — mostrar al usuario
-    W->>C: el usuario escanea el QR → linkClient
-    C-->>T: PairOutcome { walletPublicKey, password } → slot de resultado
+    par spawn_local, timeout 600 s
+        T->>C: pair_with_password(contraseña)
+    and
+        T->>I: pair_with_password(contraseña)
+    end
+    W->>I: el usuario escanea el QR → linkClient (por iroh si la wallet lo tiene activado)
+    I-->>T: clave pública de la wallet — se conserva iroh, se descarta WebRTC
+    T->>T: PairOutcome { walletPublicKey, password, paired_over } → slot de resultado
     A->>T: tools/call pair_status
-    T->>T: persiste el Link en connector.json
-    T-->>A: emparejado ✓ (walletPublicKey)
+    T->>T: persiste el Link en connector.json y el transporte en transports.json
+    T-->>A: emparejado ✓ (walletPublicKey, transporte)
 ```
 
 ### 5.2 Firma de una transacción

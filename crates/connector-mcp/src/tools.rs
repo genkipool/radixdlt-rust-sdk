@@ -6,11 +6,14 @@
 //! it needs to be scanned.
 
 use std::cell::RefCell;
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use tokio::sync::oneshot;
+use zeroize::Zeroizing;
 
 use radixdlt_connect::crypto::blake2b_256;
 use radixdlt_connect::state::Link;
@@ -18,15 +21,16 @@ use radixdlt_connect::{
     account_proof_request_sharing, account_request, authorized_request, extract_accounts,
     extract_persona_email, extract_persona_name, extract_proofs, extract_signed_partial_transaction,
     extract_transaction_intent_hash, pre_authorization_request, transaction_request, unauthorized_request,
-    Auth, AuthorizedRequest, Connector, OwnershipWanted, PersonaRequest,
+    Auth, AuthorizedRequest, OwnershipWanted, PersonaRequest,
 };
 use radixdlt_connect_iroh::mobile::Progress as IrohProgress;
+use radixdlt_connect_types::linking;
 use radixdlt_rola::{verify_account_proof, AccountProof};
 
 use crate::diag::Failure;
 use crate::exchange::{self, failed, interact, manifest_summary, short, target, Ask, Target};
 use crate::gateway;
-use crate::iroh::{self, LinkRecord, Route, Transport};
+use crate::iroh::{self, LinkRecord, Route, Setting, Transport};
 use crate::requests::{
     check_challenge, parse_accounts, parse_persona_data, random_challenge, render_answer, Verifier,
 };
@@ -41,10 +45,13 @@ const DEFAULT_ORIGIN: &str = "https://radix-community.genkipool.com";
 /// Default and maximum wallet-approval timeouts (seconds).
 const DEFAULT_SIGN_TIMEOUT: u64 = 300;
 const MAX_TIMEOUT: u64 = 900;
-/// How long to wait for the background pairing task to hand us the QR string.
-const QR_READY_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long a pairing waits for the wallet to scan its QR.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(600);
+/// Pairing over both transports, how long iroh still has once the wallet linked over WebRTC.
+/// iroh is preferred: a wallet with iroh on links over it, and then reaches the link over either
+/// transport. The wallet waits as long for iroh after its WebRTC connects, so both ends settle on
+/// iroh whenever it works; a wallet without iroh costs these seconds once, at pairing.
+pub const IROH_GRACE: Duration = Duration::from_secs(5);
 
 /// The two Radix networks this connector talks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,13 +202,13 @@ pub fn list_json() -> Vec<Value> {
         tool(
             "pair_wallet",
             "Pair a Radix Wallet",
-            "Starts pairing with a Radix Wallet and returns a QR code (as a terminal drawing, a PNG image, and the raw payload). Show it to the user and ask them to scan it from the Radix Wallet app: Settings > Linked Connectors > Link New Connector. Then call pair_status. Only needed once per device. Over iroh the wallet must have Settings > Preferences > Radix Connect set to Automatic or iroh; the link then keeps using iroh.",
+            "Starts pairing with a Radix Wallet and returns a QR code (as a terminal drawing, a PNG image, and the raw payload). Show it to the user and ask them to scan it from the Radix Wallet app: Settings > Linked Connectors > Link New Connector. Then call pair_status. Only needed once per device. Works with any Radix Wallet, nothing to set up on the phone: by default the QR is listened for over WebRTC and Radix Connect over iroh at once, and the wallet links over iroh when it has iroh on (Settings > Preferences > Radix Connect: Automatic or iroh), over WebRTC otherwise. The link keeps the transport it was paired over.",
             true,
             json!({
                 "type": "object",
                 "properties": {
                     "label": { "type": "string", "description": "Optional human label for this device, e.g. \"my phone\"." },
-                    "transport": { "type": "string", "enum": ["webrtc", "iroh"], "description": "How to pair and then reach this wallet: \"iroh\" (Radix Connect over iroh; the wallet set to Automatic or iroh) or \"webrtc\". Default: the connector's --transport setting (webrtc unless configured)." }
+                    "transport": { "type": "string", "enum": ["auto", "webrtc", "iroh"], "description": "How to pair this wallet: \"auto\" (WebRTC and iroh at once, one QR; the one the wallet links over is kept, iroh preferred — any Radix Wallet), \"webrtc\" only, or \"iroh\" only (Radix Connect over iroh; the wallet set to Automatic or iroh). Default: the connector's --transport setting (auto unless configured)." }
                 }
             }),
         ),
@@ -551,94 +558,74 @@ pub async fn call(app: &Rc<App>, name: &str, args: Value) -> Value {
 
 async fn pair_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
     let label = opt_str(args, "label");
-    let transport = match opt_str(args, "transport") {
-        Some(transport) => match Transport::parse(&transport) {
-            Ok(transport) => transport,
+    let setting = match opt_str(args, "transport") {
+        Some(transport) => match Setting::parse(&transport) {
+            Ok(setting) => setting,
             Err(e) => return ToolResult::error(e),
         },
-        None => app.iroh.setting.pairing(),
+        None => app.iroh.setting,
     };
 
     let state = match Store::load_or_init(app.config_path()) {
         Ok(state) => state,
         Err(e) => return ToolResult::error(format!("could not open the connector state: {e}")),
     };
-    let priv_hex = state.identity.private_key.clone();
-    let pub_hex = state.identity.public_key.clone();
-
-    let (qr_tx, qr_rx) = oneshot::channel::<String>();
-    let result_slot: Rc<RefCell<Option<Result<PairOutcome, String>>>> = Rc::new(RefCell::new(None));
-    let task_slot = result_slot.clone();
-
-    // Run the (blocking-until-scanned) handshake in the background. `pair` invokes the
-    // callback with the QR payload BEFORE it starts waiting, so we get the QR back immediately
-    // over the oneshot channel.
-    match transport {
-        Transport::Webrtc => {
-            tokio::task::spawn_local(async move {
-                let connector = Connector::new();
-                let outcome = connector
-                    .pair(
-                        &priv_hex,
-                        &pub_hex,
-                        move |qr| {
-                            let _ = qr_tx.send(qr);
-                        },
-                        PAIRING_TIMEOUT,
-                    )
-                    .await;
-                *task_slot.borrow_mut() = Some(
-                    outcome
-                        .map(|(wallet_public_key, password)| PairOutcome {
-                            wallet_public_key,
-                            password,
-                            paired_over: LinkRecord {
-                                transport: Transport::Webrtc,
-                                iroh_relay: None,
-                            },
-                        })
-                        .map_err(|e| e.to_string()),
-                );
-            });
-        }
-        Transport::Iroh => {
-            tokio::task::spawn_local(pair_over_iroh(app.clone(), priv_hex, pub_hex, qr_tx, task_slot));
-        }
-    }
-
-    let payload = match tokio::time::timeout(QR_READY_TIMEOUT, qr_rx).await {
-        Ok(Ok(payload)) => payload,
-        _ => {
-            let why = result_slot
-                .borrow_mut()
-                .take()
-                .and_then(Result::err)
-                .map(|e| format!(" ({e})"))
-                .unwrap_or_default();
-            return ToolResult::error(format!(
-                "could not start pairing (the QR payload was not produced){why}. Try again."
-            ));
-        }
+    // ONE password and ONE QR for every transport the setting pairs over: the wallet links over
+    // whichever it uses, and the link keeps that one.
+    let password = match linking::generate_password() {
+        Ok(password) => Zeroizing::new(password),
+        Err(e) => return ToolResult::error(format!("could not start pairing: {e}")),
     };
-
+    let payload = match linking::pairing_qr(
+        password.as_slice(),
+        &state.identity.private_key,
+        &state.identity.public_key,
+    ) {
+        Ok(payload) => payload,
+        Err(e) => return ToolResult::error(format!("could not start pairing: {e}")),
+    };
     let rendered = match crate::qr::render(&payload) {
         Ok(rendered) => rendered,
         Err(e) => return ToolResult::error(e),
     };
 
-    *app.pairing.borrow_mut() = Some(Pending {
-        result: result_slot,
-        label,
+    // The handshake runs in the background until the wallet links (or the pairing times out);
+    // `pair_status` collects its outcome.
+    let result: Rc<RefCell<Option<Result<PairOutcome, String>>>> = Rc::new(RefCell::new(None));
+    let (task_app, slot, plan) = (app.clone(), result.clone(), setting.pairing());
+    let task = tokio::task::spawn_local(async move {
+        let outcome = pair_in_background(&task_app, password, plan).await;
+        *slot.borrow_mut() = Some(outcome);
     });
+    let replaced = app.pairing.borrow_mut().replace(Pending {
+        result,
+        label,
+        task: task.abort_handle(),
+    });
+    if let Some(earlier) = replaced {
+        // Its QR is not shown any more: stop waiting for it, over every transport.
+        earlier.task.abort();
+    }
 
-    let wallet_setup = match transport {
-        Transport::Webrtc => String::new(),
-        Transport::Iroh => format!(
-            "Over iroh: in the Radix Wallet first set Settings > Preferences > Radix Connect to Automatic (or iroh){relay}.\n",
-            relay = match &app.iroh.relay {
-                None => ", keeping its default iroh relay".to_string(),
-                Some(url) => format!(", with the iroh relay {url}"),
-            }
+    let relay = |keep_default: &str| match &app.iroh.relay {
+        None => keep_default.to_string(),
+        Some(url) => format!(", with the iroh relay {url}"),
+    };
+    let (transport, wallet_setup) = match setting {
+        Setting::Auto => (
+            "auto — WebRTC and iroh at once",
+            format!(
+                "Works with any Radix Wallet, nothing to set up on the phone first: it links over iroh when the wallet has iroh on (Settings > Preferences > Radix Connect: Automatic or iroh{relay}), over WebRTC otherwise.\n",
+                relay = relay("")
+            ),
+        ),
+        Setting::Webrtc => ("webrtc", String::new()),
+        Setting::Iroh => (
+            "iroh",
+            format!(
+                "Over iroh: in the Radix Wallet first set Settings > Preferences > Radix Connect to Automatic (or iroh){relay}.\n",
+                relay = relay(", keeping its default iroh relay")
+            ),
         ),
     };
     let text = format!(
@@ -651,77 +638,209 @@ async fn pair_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
          If the terminal QR does not scan (dark themes can invert it), use the PNG image\n\
          in this result, or paste the raw payload below into a LOCAL QR generator:\n\n\
          ```json\n{payload}\n```",
-        transport = transport.label(),
         unicode = rendered.unicode,
-        payload = payload,
     );
 
     ToolResult::text(text).with_image(rendered.png_base64, "image/png")
 }
 
-/// Pairs over iroh in the background; the outcome lands in `slot` for `pair_status`. The
-/// session it started is kept (and its link locked to this process) for the first requests.
-async fn pair_over_iroh(
-    app: Rc<App>,
-    identity_private: String,
-    identity_public: String,
-    qr_tx: oneshot::Sender<String>,
-    slot: Rc<RefCell<Option<Result<PairOutcome, String>>>>,
-) {
-    let relay = app.iroh.relay.clone();
-    let connector = match app.iroh.connector(&relay) {
-        Ok(connector) => connector,
-        Err(e) => {
-            *slot.borrow_mut() = Some(Err(e));
-            return;
+/// One transport's pairing: the wallet's public key once the wallet linked over it.
+pub type Attempt<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + 'a>>;
+
+/// Pairs over every transport of `plan` at once, all with the password of the one QR shown; which
+/// one the link keeps is [`choose_link`]'s decision.
+async fn pair_in_background(
+    app: &Rc<App>,
+    password: Zeroizing<[u8; linking::PASSWORD_LENGTH]>,
+    plan: &[Transport],
+) -> Result<PairOutcome, String> {
+    let labels: Vec<&str> = plan.iter().map(|t| t.label()).collect();
+    app.log.event("pairing_started", json!({ "transports": labels }));
+    let attempts = plan
+        .iter()
+        .map(|&transport| (transport, attempt(app, transport, &password)))
+        .collect();
+    let chosen = choose_link(attempts, IROH_GRACE).await;
+    concluded(app, password.as_slice(), chosen)
+}
+
+/// Pairing over `transport`, logging why when it fails (the others go on).
+pub fn attempt<'a>(
+    app: &'a Rc<App>,
+    transport: Transport,
+    password: &'a [u8; linking::PASSWORD_LENGTH],
+) -> Attempt<'a> {
+    Box::pin(async move {
+        let outcome = match transport {
+            Transport::Webrtc => pair_over_webrtc(app, password).await,
+            Transport::Iroh => pair_over_iroh(app, password).await,
+        };
+        if let Err(detail) = &outcome {
+            app.log.event(
+                "pairing_attempt_failed",
+                json!({ "transport": transport.label(), "detail": detail }),
+            );
         }
-    };
+        outcome
+    })
+}
+
+/// The transport a pairing settled on, the wallet that linked over it, and why that one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Linked {
+    pub transport: Transport,
+    pub wallet_public_key: String,
+    pub why: &'static str,
+}
+
+/// Which transport the link keeps, iroh preferred:
+///
+/// - iroh links first: iroh, at once ("iroh first");
+/// - WebRTC links first: iroh still has `grace` — linking within it, iroh is kept ("iroh within
+///   grace after webrtc"); otherwise WebRTC ("webrtc: no iroh within grace"), or as soon as iroh
+///   fails ("only webrtc completed");
+/// - an attempt that fails leaves the others waiting; when every one failed, each one's reason,
+///   in the order they failed.
+///
+/// The attempts not kept are dropped right then: a WebRTC one closes its signaling connection
+/// (one that linked has closed its channel already), an iroh one its session.
+pub async fn choose_link(
+    mut attempts: Vec<(Transport, Attempt<'_>)>,
+    grace: Duration,
+) -> Result<Linked, Vec<(Transport, String)>> {
+    let alone = attempts.len() == 1;
+    let mut failures = Vec::new();
+    // The WebRTC link waiting for iroh's grace to run out.
+    let mut provisional: Option<(String, Pin<Box<tokio::time::Sleep>>)> = None;
+    std::future::poll_fn(move |cx| {
+        let mut i = 0;
+        while let Some((transport, attempt)) = attempts.get_mut(i) {
+            let transport = *transport;
+            match attempt.as_mut().poll(cx) {
+                Poll::Ready(Ok(wallet_public_key)) => {
+                    let why = match (transport, &provisional) {
+                        _ if alone => "the only transport tried",
+                        (Transport::Iroh, None) => "iroh first",
+                        (Transport::Iroh, Some(_)) => "iroh within grace after webrtc",
+                        (Transport::Webrtc, _) => {
+                            // Done: its channel closed when it returned.
+                            drop(attempts.remove(i));
+                            provisional = Some((wallet_public_key, Box::pin(tokio::time::sleep(grace))));
+                            continue;
+                        }
+                    };
+                    return Poll::Ready(Ok(Linked {
+                        transport,
+                        wallet_public_key,
+                        why,
+                    }));
+                }
+                Poll::Ready(Err(reason)) => {
+                    drop(attempts.remove(i));
+                    failures.push((transport, reason));
+                }
+                Poll::Pending => i += 1,
+            }
+        }
+        if let Some((_, grace_over)) = &mut provisional {
+            let why = if attempts.is_empty() {
+                "only webrtc completed"
+            } else if grace_over.as_mut().poll(cx).is_ready() {
+                "webrtc: no iroh within grace"
+            } else {
+                return Poll::Pending;
+            };
+            if let Some((wallet_public_key, _)) = provisional.take() {
+                return Poll::Ready(Ok(Linked {
+                    transport: Transport::Webrtc,
+                    wallet_public_key,
+                    why,
+                }));
+            }
+        }
+        if attempts.is_empty() {
+            Poll::Ready(Err(std::mem::take(&mut failures)))
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
+}
+
+/// What a pairing came to: the link, recorded with the transport it was paired over (an iroh one
+/// keeps its session, for the first requests), or why it failed over every transport.
+pub fn concluded(
+    app: &Rc<App>,
+    password: &[u8],
+    chosen: Result<Linked, Vec<(Transport, String)>>,
+) -> Result<PairOutcome, String> {
+    match chosen {
+        Ok(Linked {
+            transport,
+            wallet_public_key,
+            why,
+        }) => {
+            let mut fields = json!({
+                "transport": transport.label(),
+                "why": why,
+                "wallet": short(&wallet_public_key),
+            });
+            let iroh_relay = match transport {
+                Transport::Webrtc => None,
+                Transport::Iroh => {
+                    let relay = app.iroh.relay.clone();
+                    iroh::adopt(app, password, &relay);
+                    fields["relays"] = json!(iroh::relay_label(&relay));
+                    relay
+                }
+            };
+            app.log.event("paired", fields);
+            Ok(PairOutcome {
+                wallet_public_key,
+                password: Zeroizing::new(password.to_vec()),
+                paired_over: LinkRecord {
+                    transport,
+                    iroh_relay,
+                },
+            })
+        }
+        Err(failures) => {
+            let detail = failures
+                .iter()
+                .map(|(transport, reason)| format!("over {}: {reason}", transport.label()))
+                .collect::<Vec<_>>()
+                .join("; ");
+            app.log.event("pairing_failed", json!({ "detail": detail }));
+            Err(detail)
+        }
+    }
+}
+
+/// Pairs over WebRTC, through the signaling servers of the connector `App` makes.
+async fn pair_over_webrtc(app: &App, password: &[u8; linking::PASSWORD_LENGTH]) -> Result<String, String> {
+    let connector = app.webrtc_connector();
+    connector
+        .pair_with_password(password, PAIRING_TIMEOUT)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Pairs over iroh, on the configured relays, logging how the wallet's connection goes.
+async fn pair_over_iroh(app: &App, password: &[u8]) -> Result<String, String> {
+    let connector = app.iroh.connector(&app.iroh.relay)?;
     // The library reports progress through a `Send` callback; the log is not `Send`.
     let (step_tx, mut step_rx) = tokio::sync::mpsc::unbounded_channel::<IrohProgress>();
     let mut on = move |step: IrohProgress| {
         let _ = step_tx.send(step);
     };
-    let pairing = connector.pair_with_progress(
-        &identity_private,
-        &identity_public,
-        move |qr| {
-            let _ = qr_tx.send(qr);
-        },
-        PAIRING_TIMEOUT,
-        &mut on,
-    );
+    let pairing = connector.pair_with_password(password, PAIRING_TIMEOUT, &mut on);
     tokio::pin!(pairing);
-    let outcome = loop {
+    loop {
         tokio::select! {
-            outcome = &mut pairing => break outcome,
-            Some(step) = step_rx.recv() => log_pairing_step(&app, &step),
+            outcome = &mut pairing => return outcome.map_err(|e| e.to_string()),
+            Some(step) = step_rx.recv() => log_pairing_step(app, &step),
         }
-    };
-    let outcome = match outcome {
-        Ok((wallet_public_key, password)) => {
-            iroh::adopt(&app, &password, &relay);
-            app.log.event(
-                "paired",
-                json!({ "transport": "iroh", "relays": iroh::relay_label(&relay), "wallet": short(&wallet_public_key) }),
-            );
-            Ok(PairOutcome {
-                wallet_public_key,
-                password,
-                paired_over: LinkRecord {
-                    transport: Transport::Iroh,
-                    iroh_relay: relay,
-                },
-            })
-        }
-        Err(error) => {
-            app.log.event(
-                "pairing_failed",
-                json!({ "transport": "iroh", "detail": error.to_string() }),
-            );
-            Err(error.to_string())
-        }
-    };
-    *slot.borrow_mut() = Some(outcome);
+    }
 }
 
 /// What a pairing over iroh reports while it waits: the wallet's connection, with diagnostics.
@@ -778,7 +897,7 @@ fn finish_pairing(app: &Rc<App>, outcome: PairOutcome, label: Option<String>) ->
         Err(e) => return ToolResult::error(format!("paired, but could not open the state file: {e}")),
     };
     state.add_or_replace_link(Link {
-        password: hex::encode(&outcome.password),
+        password: hex::encode(outcome.password.as_slice()),
         wallet_public_key: outcome.wallet_public_key.clone(),
         linked_at: now_unix_seconds(),
         label: label.clone(),
@@ -791,8 +910,8 @@ fn finish_pairing(app: &Rc<App>, outcome: PairOutcome, label: Option<String>) ->
     let recorded = app
         .iroh
         .records
-        .set(&outcome.password, outcome.paired_over.clone());
-    let route = app.iroh.route(&outcome.password);
+        .set(outcome.password.as_slice(), outcome.paired_over.clone());
+    let route = app.iroh.route(outcome.password.as_slice());
     let mut text = format!(
         "WALLET PAIRED ✓\n\
          Label:      {label}\n\
@@ -1749,6 +1868,127 @@ pub fn opt_bool(args: &Value, key: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pairing attempt that ends after `after` with `outcome`, and flags when it is dropped.
+    fn attempt_ending(
+        after: Duration,
+        outcome: Option<Result<String, String>>,
+        dropped: Rc<std::cell::Cell<bool>>,
+    ) -> Attempt<'static> {
+        struct Flag(Rc<std::cell::Cell<bool>>);
+        impl Drop for Flag {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        Box::pin(async move {
+            let _flag = Flag(dropped);
+            tokio::time::sleep(after).await;
+            match outcome {
+                Some(outcome) => outcome,
+                None => std::future::pending().await,
+            }
+        })
+    }
+
+    /// What [`choose_link`] made of two attempts (WebRTC's, iroh's), and whether each was dropped.
+    async fn choose(
+        webrtc: (u64, Option<Result<&str, &str>>),
+        iroh: (u64, Option<Result<&str, &str>>),
+        grace_ms: u64,
+    ) -> (Result<Linked, Vec<(Transport, String)>>, bool, bool) {
+        let to_attempt = |(ms, outcome): (u64, Option<Result<&str, &str>>),
+                          flag: &Rc<std::cell::Cell<bool>>| {
+            let outcome = outcome.map(|o| o.map(str::to_string).map_err(str::to_string));
+            attempt_ending(Duration::from_millis(ms), outcome, flag.clone())
+        };
+        let (webrtc_dropped, iroh_dropped) = (Rc::default(), Rc::default());
+        let chosen = choose_link(
+            vec![
+                (Transport::Webrtc, to_attempt(webrtc, &webrtc_dropped)),
+                (Transport::Iroh, to_attempt(iroh, &iroh_dropped)),
+            ],
+            Duration::from_millis(grace_ms),
+        )
+        .await;
+        (chosen, webrtc_dropped.get(), iroh_dropped.get())
+    }
+
+    fn linked(
+        transport: Transport,
+        wallet: &str,
+        why: &'static str,
+    ) -> Result<Linked, Vec<(Transport, String)>> {
+        Ok(Linked {
+            transport,
+            wallet_public_key: wallet.to_string(),
+            why,
+        })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn iroh_is_preferred_and_webrtc_waits_out_its_grace() {
+        // iroh first: kept at once, WebRTC (still waiting) dropped.
+        let (chosen, webrtc_dropped, _) = choose((10_000, None), (20, Some(Ok("i"))), 5_000).await;
+        assert_eq!(chosen, linked(Transport::Iroh, "i", "iroh first"));
+        assert!(webrtc_dropped);
+
+        // WebRTC first, iroh within the grace: iroh.
+        let started = Instant::now();
+        let (chosen, _, _) = choose((10, Some(Ok("w"))), (200, Some(Ok("i"))), 5_000).await;
+        assert_eq!(
+            chosen,
+            linked(Transport::Iroh, "i", "iroh within grace after webrtc")
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        // WebRTC first and no iroh within the grace: WebRTC, once it is over; iroh dropped.
+        let started = Instant::now();
+        let (chosen, _, iroh_dropped) = choose((10, Some(Ok("w"))), (0, None), 300).await;
+        assert_eq!(
+            chosen,
+            linked(Transport::Webrtc, "w", "webrtc: no iroh within grace")
+        );
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(iroh_dropped);
+
+        // WebRTC first, then iroh fails: WebRTC, without waiting out the grace.
+        let started = Instant::now();
+        let (chosen, _, _) = choose((10, Some(Ok("w"))), (50, Some(Err("relay"))), 5_000).await;
+        assert_eq!(chosen, linked(Transport::Webrtc, "w", "only webrtc completed"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_transport_that_fails_leaves_the_other_and_all_failing_name_each() {
+        // WebRTC fails at once (no internet, say): the pairing goes on and iroh links.
+        let (chosen, _, _) = choose((0, Some(Err("offline"))), (30, Some(Ok("i"))), 5_000).await;
+        assert_eq!(chosen, linked(Transport::Iroh, "i", "iroh first"));
+        // iroh fails at once: WebRTC links, with nothing left to wait for.
+        let (chosen, _, _) = choose((30, Some(Ok("w"))), (0, Some(Err("relay"))), 5_000).await;
+        assert_eq!(chosen, linked(Transport::Webrtc, "w", "only webrtc completed"));
+
+        // Both fail: each reason, in the order they failed.
+        let (chosen, _, _) = choose((30, Some(Err("timeout"))), (0, Some(Err("bad relay"))), 5_000).await;
+        assert_eq!(
+            chosen,
+            Err(vec![
+                (Transport::Iroh, "bad relay".to_string()),
+                (Transport::Webrtc, "timeout".to_string())
+            ])
+        );
+
+        // One transport only: no grace, whichever it is.
+        let alone = choose_link(
+            vec![(
+                Transport::Webrtc,
+                attempt_ending(Duration::ZERO, Some(Ok("w".into())), Rc::default()),
+            )],
+            Duration::from_secs(60),
+        )
+        .await;
+        assert_eq!(alone, linked(Transport::Webrtc, "w", "the only transport tried"));
+    }
 
     #[test]
     fn network_parsing_and_ids() {

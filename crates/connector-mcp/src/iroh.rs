@@ -10,17 +10,23 @@
 //!
 //! | setting | new pairings | links paired over iroh | links paired over WebRTC |
 //! |---|---|---|---|
-//! | `webrtc` (default) | WebRTC | iroh | WebRTC |
-//! | `auto` | iroh | iroh | WebRTC |
+//! | `auto` (default) | WebRTC and iroh at once, one QR: the one the wallet links over, iroh preferred | iroh | WebRTC |
+//! | `webrtc` | WebRTC | iroh | WebRTC |
 //! | `iroh` | iroh | iroh | iroh |
+//!
+//! `auto` pairs with ANY Radix Wallet, as the wallet itself races its transports: one without
+//! iroh (the official one) links over WebRTC; one with iroh on (Automatic or iroh) over iroh,
+//! and then reaches that link over either transport, so the one recorded keeps working. iroh is
+//! preferred: when WebRTC links first, iroh still has a few seconds (`tools::IROH_GRACE`).
 //!
 //! **One process per link.** A link's iroh session owns an endpoint key derived from the link
 //! password; two connector processes (two MCP clients) running one for the same link would
 //! compete at the relay and pass the wallet back and forth. So a process takes an OS file lock
 //! per link before starting its session, keeps it while it uses the link and for a while after
-//! (the wallet stays connected between requests), and releases it after five idle minutes
-//! (`RADIX_CONNECTOR_IROH_IDLE_SECONDS`),
-//! closing the session first. Another process waits for the lock within its own timeout.
+//! (the wallet stays connected between requests), and releases it after thirty idle minutes
+//! (`RADIX_CONNECTOR_IROH_IDLE_SECONDS`), closing the session first — long, because a wallet
+//! takes up to ~15 s to find a session started again. Another process waits for the lock within
+//! its own timeout.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -46,8 +52,9 @@ pub const IROH_RELAY_ENV: &str = "RADIX_CONNECTOR_IROH_RELAY";
 /// Environment variable overriding how long an unused link's iroh session is kept, in seconds.
 pub const IDLE_ENV: &str = "RADIX_CONNECTOR_IROH_IDLE_SECONDS";
 
-/// How long an unused link's iroh session is kept by default.
-const DEFAULT_IDLE: Duration = Duration::from_secs(300);
+/// How long an unused link's iroh session is kept by default: reaching the wallet again after
+/// a release costs it up to ~15 s (it re-dials with a back-off), so be generous.
+const DEFAULT_IDLE: Duration = Duration::from_secs(30 * 60);
 /// How often a process waiting for another one to release a link checks again.
 const TURN_POLL: Duration = Duration::from_millis(250);
 
@@ -62,16 +69,6 @@ pub enum Transport {
 }
 
 impl Transport {
-    pub fn parse(value: &str) -> Result<Self, String> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "webrtc" => Ok(Transport::Webrtc),
-            "iroh" => Ok(Transport::Iroh),
-            other => Err(format!(
-                "unknown transport \"{other}\" — use \"webrtc\" or \"iroh\""
-            )),
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Transport::Webrtc => "webrtc",
@@ -80,22 +77,25 @@ impl Transport {
     }
 }
 
-/// The transport setting of this connector process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The transport setting of this connector process (or of one `pair_wallet` call).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Setting {
+    /// Pairs over both transports at once and keeps the one the wallet linked over.
+    #[default]
+    Auto,
     Webrtc,
     Iroh,
-    Auto,
 }
 
 impl Setting {
+    /// Unset or empty: [`Setting::Auto`].
     pub fn parse(value: &str) -> Result<Self, String> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "" | "webrtc" => Ok(Setting::Webrtc),
+            "" | "auto" => Ok(Setting::Auto),
+            "webrtc" => Ok(Setting::Webrtc),
             "iroh" => Ok(Setting::Iroh),
-            "auto" => Ok(Setting::Auto),
             other => Err(format!(
-                "unknown transport \"{other}\" — use \"webrtc\", \"iroh\" or \"auto\""
+                "unknown transport \"{other}\" — use \"auto\", \"webrtc\" or \"iroh\""
             )),
         }
     }
@@ -108,11 +108,13 @@ impl Setting {
         }
     }
 
-    /// How a new link is paired.
-    pub fn pairing(self) -> Transport {
+    /// The transports a new link is paired over, all at once with one QR; which one the link
+    /// keeps is `tools::choose_link`'s decision (iroh preferred).
+    pub fn pairing(self) -> &'static [Transport] {
         match self {
-            Setting::Webrtc => Transport::Webrtc,
-            Setting::Iroh | Setting::Auto => Transport::Iroh,
+            Setting::Auto => &[Transport::Webrtc, Transport::Iroh],
+            Setting::Webrtc => &[Transport::Webrtc],
+            Setting::Iroh => &[Transport::Iroh],
         }
     }
 
@@ -575,13 +577,18 @@ mod tests {
 
     #[test]
     fn the_setting_decides_new_pairings_and_only_iroh_overrides_a_links_record() {
-        assert_eq!(Setting::parse("").unwrap(), Setting::Webrtc);
+        // Unset, the connector pairs over both transports.
+        assert_eq!(Setting::parse("").unwrap(), Setting::Auto);
+        assert_eq!(Setting::parse("  ").unwrap(), Setting::Auto);
+        assert_eq!(Setting::default(), Setting::Auto);
         assert_eq!(Setting::parse(" Auto ").unwrap(), Setting::Auto);
+        assert_eq!(Setting::parse("WebRTC").unwrap(), Setting::Webrtc);
+        assert_eq!(Setting::parse("iroh").unwrap(), Setting::Iroh);
         assert!(Setting::parse("carrier-pigeon").is_err());
 
-        assert_eq!(Setting::Webrtc.pairing(), Transport::Webrtc);
-        assert_eq!(Setting::Auto.pairing(), Transport::Iroh);
-        assert_eq!(Setting::Iroh.pairing(), Transport::Iroh);
+        assert_eq!(Setting::Auto.pairing(), [Transport::Webrtc, Transport::Iroh]);
+        assert_eq!(Setting::Webrtc.pairing(), [Transport::Webrtc]);
+        assert_eq!(Setting::Iroh.pairing(), [Transport::Iroh]);
 
         // Unchanged by default: every link paired before keeps WebRTC.
         assert_eq!(Setting::Webrtc.for_link(None), Transport::Webrtc);
@@ -608,7 +615,7 @@ mod tests {
     #[test]
     fn records_name_links_by_hash_and_route_their_requests() {
         let dir = std::env::temp_dir().join(format!("connector_mcp_iroh_{}", std::process::id()));
-        let iroh = Iroh::new(Setting::Webrtc, None, &dir);
+        let iroh = Iroh::new(Setting::Auto, None, &dir);
         let (old, paired_over_iroh) = ([1u8; 32], [2u8; 32]);
         assert_eq!(iroh.route(&old), Route::Webrtc);
         iroh.records

@@ -383,29 +383,84 @@ impl MobileWalletConnector {
         on: &mut (dyn FnMut(Progress) + Send),
     ) -> Result<(String, Vec<u8>), MobileError> {
         let started = Instant::now();
-        let deadline = started + timeout;
         let password = Zeroizing::new(linking::generate_password()?);
         let qr = Zeroizing::new(linking::pairing_qr(
             password.as_slice(),
             identity_private_key_hex,
             identity_public_key_hex,
         )?);
-        let id = LinkId::of(password.as_slice());
-        // Nobody else will ever hold this password: if the caller stops waiting, its session goes.
+        // The QR is shown once the session listens, so the wallet that scans it finds it there.
+        let wallet_public_key = self
+            .pair_on(
+                password.as_slice(),
+                started,
+                started + timeout,
+                move || on_qr(qr.as_str().to_owned()),
+                on,
+            )
+            .await?;
+        Ok((wallet_public_key, password.to_vec()))
+    }
+
+    /// Pairing over a password the CALLER made and showed: waits for the wallet that scanned its
+    /// QR to answer with its `linkClient`, verifies the wallet's signature and returns its public
+    /// key (hex). [`pair_with_progress`](Self::pair_with_progress) is this with a password of its
+    /// own, reporting to `on` in the same way.
+    ///
+    /// For a program that shows ONE QR for several transports — e.g. this one and WebRTC
+    /// (`radixdlt_connect::Connector::pair_with_password`), whichever the wallet links over: make
+    /// the password with [`linking::generate_password`], its QR with [`linking::pairing_qr`],
+    /// and pair over each transport with it. The QR may be shown before this is called: the
+    /// session starts at once, and a wallet that scanned sooner dials again until it is there.
+    ///
+    /// As with [`pair`](Self::pair), the session is KEPT on success (the wallet's regular
+    /// connection reaches it, so the first request needs no new one) and the call returns once
+    /// the wallet closed the connection it linked over (up to 5 s). On any error — and when the
+    /// future is dropped, e.g. because the wallet linked over the other transport — the link's
+    /// session is closed. A `linkClient` without a valid signature is refused.
+    ///
+    /// # Errors
+    /// [`MobileError::InvalidPassword`] for a password that is not 32 bytes;
+    /// [`MobileError::Crypto`] for a wallet whose signature does not verify (a missing one
+    /// included); [`MobileError::WalletUnreachable`] when no wallet connected in time and
+    /// [`MobileError::ResponseTimeout`] when one connected but did not link; plus
+    /// [`MobileError::Session`] and [`MobileError::InvalidRelayUrl`].
+    pub async fn pair_with_password(
+        &self,
+        password: &[u8],
+        timeout: Duration,
+        on: &mut (dyn FnMut(Progress) + Send),
+    ) -> Result<String, MobileError> {
+        let started = Instant::now();
+        self.pair_on(password, started, started + timeout, || {}, on)
+            .await
+    }
+
+    /// The pairing itself, over `password`'s session: `listening` runs once it is started.
+    async fn pair_on(
+        &self,
+        password: &[u8],
+        started: Instant,
+        deadline: Instant,
+        listening: impl FnOnce(),
+        on: &mut (dyn FnMut(Progress) + Send),
+    ) -> Result<String, MobileError> {
+        let id = LinkId::of(password);
+        // Nobody uses this link yet: if the caller stops waiting, its session goes.
         let mut abandoned = Abandoned {
             links: &self.links,
             id,
             armed: true,
         };
-        let link = self.link(password.as_slice(), deadline).await?;
+        let link = self.link(password, deadline).await?;
         let mut messages = link.subscribe();
         log::pairing_started(id, &self.relays);
-        on_qr(qr.as_str().to_owned());
+        listening();
 
         let linked = await_link_client(&link, &mut messages, started, deadline, on)
             .await
             .and_then(|(client, linked_at)| {
-                client.verify(password.as_slice())?;
+                client.verify(password)?;
                 Ok((client.public_key, linked_at))
             });
         match linked {
@@ -413,7 +468,7 @@ impl MobileWalletConnector {
                 await_linking_closed(&link, linked_at).await;
                 abandoned.armed = false;
                 log::paired(id, started);
-                Ok((wallet_public_key, password.to_vec()))
+                Ok(wallet_public_key)
             }
             Err(error) => {
                 abandoned.armed = false;

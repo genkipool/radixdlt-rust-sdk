@@ -17,7 +17,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use radixdlt_connect::{check_failure, ConnectError, Connector, DappContext, Progress};
+use radixdlt_connect::{check_failure, ConnectError, DappContext, Progress};
 use radixdlt_connect_iroh::mobile::{MobileError, Progress as IrohProgress};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
@@ -426,7 +426,7 @@ async fn run_webrtc(
     let mut on = move |step: Progress| {
         let _ = step_tx.send(step);
     };
-    let connector = Connector::new();
+    let connector = app.webrtc_connector();
     let started = Instant::now();
     let outcome = {
         let exchange = async {
@@ -1039,7 +1039,7 @@ pub async fn check_wallet_connection(app: &Rc<App>, args: &Value) -> ToolResult 
         return probe_iroh(app, &wallet, &password, &relay, timeout, &pending).await;
     }
     settle_across_processes(app, &wallet, "").await;
-    let probed = Connector::new().probe(&password, timeout).await;
+    let probed = app.webrtc_connector().probe(&password, timeout).await;
     let _ = app.outbox.mark_link_closed(&wallet);
     match probed {
         Ok(took) => {

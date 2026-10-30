@@ -134,28 +134,39 @@ Dispatch is a single `match` in `tools::call`; an unknown tool returns an
 
 ### 5.1 Pairing (async, poll-based)
 
-`pair_wallet` returns the QR **immediately** and runs the blocking-until-scanned
-Radix Connect handshake in a background `spawn_local` task; `pair_status` reads
-the shared result slot.
+`pair_wallet` makes ONE link password and its QR, returns the QR **immediately**, and
+runs the handshake in a background `spawn_local` task; `pair_status` reads the shared
+result slot. With the default setting (`auto`) that task pairs over **both** transports
+at once with the same password — `Connector::pair_with_password` (WebRTC) and
+`MobileWalletConnector::pair_with_password` (iroh) — and `choose_link` keeps one, iroh
+preferred: iroh linking first wins at once; WebRTC linking first gives iroh
+`IROH_GRACE` (5 s) more. A transport that fails leaves the other waiting; the one not
+kept is dropped (its signaling connection or iroh session closed). The link is recorded
+in `transports.json` with the transport it was paired over.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant A as Agent
     participant T as tools.rs
-    participant C as radixdlt-connect
+    participant C as radixdlt-connect (WebRTC)
+    participant I as radixdlt-connect-iroh
     participant W as Wallet (phone)
 
-    A->>T: tools/call pair_wallet { label? }
-    T->>T: load/init connector.json (identity)
-    T->>C: Connector::pair(...) [spawn_local, 600 s timeout]
-    C-->>T: QR payload (via oneshot, before it blocks)
+    A->>T: tools/call pair_wallet { label?, transport? }
+    T->>T: load/init connector.json (identity), password + QR
     T-->>A: QR (unicode + PNG) — show to user
-    W->>C: user scans QR → linkClient
-    C-->>T: PairOutcome { walletPublicKey, password } → result slot
+    par spawn_local, 600 s timeout
+        T->>C: pair_with_password(password)
+    and
+        T->>I: pair_with_password(password)
+    end
+    W->>I: user scans QR → linkClient (over iroh when the wallet has it on)
+    I-->>T: wallet public key — iroh kept, WebRTC dropped
+    T->>T: PairOutcome { walletPublicKey, password, paired_over } → result slot
     A->>T: tools/call pair_status
-    T->>T: persist Link into connector.json
-    T-->>A: paired ✓ (walletPublicKey)
+    T->>T: persist Link into connector.json, transport into transports.json
+    T-->>A: paired ✓ (walletPublicKey, transport)
 ```
 
 ### 5.2 Signing a transaction

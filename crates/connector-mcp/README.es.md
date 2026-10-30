@@ -77,39 +77,38 @@ Si el binario no está en tu `PATH`, usa su ruta absoluta como `command`.
 
 ## Dos transportes: WebRTC e iroh
 
-> **Experimental: de momento deja el valor por defecto (`webrtc`).** iroh necesita una
-> Radix Wallet con Radix Connect over iroh, que la wallet y la Connector Extension
-> oficiales aún no incluyen. Hasta entonces, `--transport iroh|auto` es solo para pruebas
-> con compilaciones de desarrollo.
+**Se empareja cualquier Radix Wallet, sin configurar nada.** Por defecto (`auto`) el conector
+muestra UN QR y lo escucha a la vez por **WebRTC** (el servidor de señalización de Radix, el que
+usan la wallet y la Connector Extension oficiales) y por **Radix Connect over iroh** (QUIC a
+través de relés iroh — sin servidor de señalización y sin necesidad de UDP: la conexión con el
+relé es HTTPS). La wallet se enlaza por el que use, y esa wallet lo conserva:
 
-El conector llega a la wallet por **WebRTC** (el servidor de señalización de Radix; por
-defecto, sin cambios) o por **Radix Connect over iroh** (QUIC a través de relés iroh — sin
-servidor de señalización y sin necesidad de UDP: la conexión con el relé es HTTPS). Se elige con
-`--transport` (o `RADIX_CONNECTOR_TRANSPORT`):
+- la wallet oficial (solo WebRTC) se enlaza por **WebRTC**, como siempre;
+- una wallet con iroh activado — Settings → Preferences → Radix Connect → **Automatic** o
+  **iroh** — se enlaza por **iroh**. Se prefiere iroh: si WebRTC enlaza primero, iroh aún tiene
+  5 segundos para enlazar (la wallet espera a iroh del mismo modo), así que los dos extremos
+  acaban en iroh siempre que funcione. Una wallet enlazada por iroh llega después a ese enlace
+  por cualquiera de los dos transportes.
 
-```sh
-claude mcp add radix-connector -- radix-connector-mcp --transport auto
-```
-
-```json
-{ "mcpServers": { "radix-connector": { "command": "radix-connector-mcp", "args": ["--transport", "auto"] } } }
-```
+`connector_log` registra la decisión (`paired`, con el `transport` y el `why`).
 
 El ajuste decide cómo se emparejan las wallets **nuevas**; cada wallet conserva después el
-transporte con el que se emparejó (`list_wallets` lo muestra):
+transporte con el que se emparejó (`list_wallets` lo muestra). Se elige con `--transport` (o
+`RADIX_CONNECTOR_TRANSPORT`); no hace falta, salvo que quieras un solo transporte:
+
+```sh
+claude mcp add radix-connector -- radix-connector-mcp                    # auto
+claude mcp add radix-connector -- radix-connector-mcp --transport webrtc # solo WebRTC
+```
 
 | `--transport` | emparejamientos nuevos | wallets emparejadas por iroh | wallets emparejadas por WebRTC (y todas las anteriores) |
 |---|---|---|---|
-| `webrtc` (por defecto) | WebRTC | iroh | WebRTC |
-| `auto` | iroh | iroh | WebRTC |
+| `auto` (por defecto) | WebRTC e iroh a la vez, un QR: el que use la wallet para enlazarse (iroh preferido) | iroh | WebRTC |
+| `webrtc` | WebRTC | iroh | WebRTC |
 | `iroh` | iroh | iroh | iroh (para una wallet configurada solo con "iroh") |
 
-`pair_wallet { "transport": "iroh" }` empareja una wallet por iroh sea cual sea el ajuste.
-
-**Emparejar por iroh, en el móvil:** Radix Wallet → **Settings → Preferences → Radix Connect →
-Automatic** (o **iroh**), dejando su relé iroh por defecto; después Settings → Linked Connectors →
-Link New Connector y escanea el QR como siempre. La wallet solo se conecta mientras su app está
-abierta.
+`pair_wallet { "transport": "webrtc" | "iroh" | "auto" }` empareja una wallet así sea cual sea el
+ajuste. La wallet solo se conecta mientras su app está abierta.
 
 **Relés.** Por defecto los dos extremos usan los relés iroh públicos de n0 — nada que alojar ni
 configurar; el conector publica qué relé usa (solo la URL, nunca una dirección IP) en el servicio
@@ -119,8 +118,9 @@ la misma URL como relé iroh de la wallet. Los dos extremos deben elegir lo mism
 
 **Un proceso del conector por wallet en iroh.** Un enlace con una wallet por iroh es un único
 endpoint; dos procesos del conector (dos clientes MCP) usándolo a la vez se quitarían la wallet el
-uno al otro. Así que un proceso bloquea el enlace mientras lo usa y durante 5 minutos después
-(`RADIX_CONNECTOR_IROH_IDLE_SECONDS`); otro proceso lo espera dentro del timeout de su llamada y
+uno al otro. Así que un proceso bloquea el enlace mientras lo usa y durante 30 minutos después
+(`RADIX_CONNECTOR_IROH_IDLE_SECONDS`) — mucho, porque una vez liberada la sesión la wallet tarda
+hasta ~15 s en encontrar una nueva; otro proceso lo espera dentro del timeout de su llamada y
 después falla con `LINK_BUSY`, indicando el pid de quien lo tiene.
 
 **Diagnóstico.** Por iroh, `check_wallet_connection` y `list_wallets` muestran la línea de
@@ -138,7 +138,7 @@ confirmó la petición — puede estar en el móvil, así que no se reenvía), `
 
 | Herramienta | Qué hace |
 |---|---|
-| `pair_wallet` | Devuelve un QR (arte de terminal + PNG + payload crudo) para enlazar una wallet. Una vez por dispositivo. `transport`: `webrtc` o `iroh` (por defecto: `--transport`). |
+| `pair_wallet` | Devuelve un QR (arte de terminal + PNG + payload crudo) para enlazar una wallet — cualquier Radix Wallet, por WebRTC o iroh. Una vez por dispositivo. `transport`: `auto`, `webrtc` o `iroh` (por defecto: `--transport`, es decir, `auto`). |
 | `pair_status` | Espera el escaneo/aprobación y guarda el enlace. |
 | `list_wallets` / `remove_wallet` | Gestiona los dispositivos emparejados (con el transporte de cada uno y, por iroh, su conexión en vivo). |
 | `request_accounts` | Pide a la wallet que **comparta su(s) dirección(es) de cuenta** — sin firma/prueba. Útil para saber qué cuenta fondear o desde cuál transferir. |
@@ -265,8 +265,9 @@ RADIX_DAPP_ORIGIN=https://radix-community.genkipool.com \
 1. Construye y previsualiza un manifiesto con el servidor MCP HTTP del portal web
    (`radix-community`).
 2. `pair_wallet` → muestra el QR → el usuario lo escanea desde la app Radix Wallet
-   (Ajustes → Conectores enlazados → Enlazar nuevo conector) → `pair_status`. Por iroh la
-   wallet necesita antes Settings → Preferences → Radix Connect → Automatic (o iroh).
+   (Ajustes → Conectores enlazados → Enlazar nuevo conector) → `pair_status`. No hay nada que
+   preparar antes en el móvil: se enlaza por iroh si la wallet tiene iroh activado, y si no por
+   WebRTC.
 3. `send_transaction { manifest, network }` → el usuario aprueba en el móvil.
 4. `transaction_status { intent_hash, network }` → confirma el commit.
 

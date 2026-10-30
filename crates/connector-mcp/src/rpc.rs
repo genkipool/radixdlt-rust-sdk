@@ -8,9 +8,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
+use radixdlt_connect::Connector;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
+use zeroize::Zeroizing;
 
 use crate::diag::Log;
 use crate::iroh::{Iroh, LinkRecord, Setting};
@@ -37,32 +39,27 @@ const METHOD_NOT_FOUND: i64 = -32601;
 pub struct Pending {
     pub result: Rc<RefCell<Option<Result<PairOutcome, String>>>>,
     pub label: Option<String>,
+    /// The background task: a newer `pair_wallet` stops it (and with it every transport it was
+    /// pairing over), as its QR is no longer shown.
+    pub task: AbortHandle,
 }
 
 /// Successful pairing: the wallet's public key, the raw 32-byte link password, and how the link
 /// was paired (recorded with it).
 pub struct PairOutcome {
     pub wallet_public_key: String,
-    pub password: Vec<u8>,
+    pub password: Zeroizing<Vec<u8>>,
     pub paired_over: LinkRecord,
 }
 
 /// How this connector process reaches wallets: from `--transport` / `--iroh-relay` or their
 /// environment variables.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Options {
+    /// Default: [`Setting::Auto`].
     pub transport: Setting,
     /// A custom iroh relay; `None`: n0's public relays.
     pub iroh_relay: Option<String>,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Options {
-            transport: Setting::Webrtc,
-            iroh_relay: None,
-        }
-    }
 }
 
 /// A wallet request running in this process: how to stop it, and which wallet it went to.
@@ -88,6 +85,9 @@ pub struct App {
     pub dapp_checks: RefCell<HashMap<(u8, String, String), Instant>>,
     /// The transport setting, and the iroh sessions of the links that use iroh.
     pub iroh: Iroh,
+    /// Makes the WebRTC connector of every pairing and request: `Connector::new` (the public
+    /// signaling server and the machine's relays). Tests point it at servers on 127.0.0.1.
+    webrtc: Box<dyn Fn() -> Connector>,
 }
 
 impl App {
@@ -108,7 +108,20 @@ impl App {
             inflight: RefCell::new(HashMap::new()),
             calls: RefCell::new(HashMap::new()),
             dapp_checks: RefCell::new(HashMap::new()),
+            webrtc: Box::new(Connector::new),
         }
+    }
+
+    /// Makes WebRTC connectors with `make` instead of `Connector::new`.
+    #[cfg(test)]
+    pub fn with_webrtc(mut self, make: impl Fn() -> Connector + 'static) -> Self {
+        self.webrtc = Box::new(make);
+        self
+    }
+
+    /// A WebRTC connector, for one pairing or request.
+    pub fn webrtc_connector(&self) -> Connector {
+        (self.webrtc)()
     }
 
     pub fn config_path(&self) -> &Path {
@@ -242,9 +255,10 @@ const SERVER_INSTRUCTIONS: &str = concat!(
     "transactions signed there — the private key never leaves the phone; this server only holds ",
     "the channel password. First-time use: call pair_wallet, show the returned QR to the user, ask ",
     "them to scan it from the Radix Wallet app (Settings > Linked Connectors), then call pair_status. ",
-    "It reaches the wallet over WebRTC or Radix Connect over iroh (pair_wallet transport: \"iroh\"; ",
-    "the wallet then needs Settings > Preferences > Radix Connect set to Automatic or iroh); each ",
-    "wallet keeps the transport it was paired over (see list_wallets). ",
+    "Any Radix Wallet pairs, with nothing to set up on the phone: the one QR is listened for over ",
+    "WebRTC and Radix Connect over iroh at once, and the wallet links over iroh when it has iroh on ",
+    "(Settings > Preferences > Radix Connect: Automatic or iroh), over WebRTC otherwise. Each ",
+    "wallet keeps the transport it linked over (see list_wallets). ",
     "After that, use send_transaction / request_pre_authorization / request_account_proof with a ",
     "manifest (build and preview manifests with the radix-community HTTP MCP server first), or ",
     "request_login / request_authorized / request_data / request_ownership_proof for personas, ",
