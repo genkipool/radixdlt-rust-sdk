@@ -18,11 +18,13 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use radixdlt_connect::{check_failure, ConnectError, Connector, DappContext, Progress};
+use radixdlt_connect_iroh::mobile::{MobileError, Progress as IrohProgress};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use crate::diag::{iso_secs, now_secs, Failure};
 use crate::gateway;
+use crate::iroh::{self, Route};
 use crate::outbox::{Outbox, Record, State};
 use crate::requests::describe_answer;
 use crate::rpc::{App, InFlight};
@@ -43,6 +45,8 @@ pub struct Target {
     /// Public key of the paired wallet.
     pub wallet: String,
     pub timeout: Duration,
+    /// How the request reaches the wallet: the transport the link was paired over.
+    pub route: Route,
 }
 
 impl Target {
@@ -98,12 +102,14 @@ pub fn target(app: &App, args: &Value, default_timeout: u64) -> Result<Target, F
     let timeout = Duration::from_secs(clamp_timeout(
         opt_u64(args, "timeout_seconds").unwrap_or(default_timeout),
     ));
+    let route = app.iroh.route(&password);
     Ok(Target {
         network,
         ctx,
         password,
         wallet,
         timeout,
+        route,
     })
 }
 
@@ -208,7 +214,7 @@ pub async fn interact(
         json!({
             "tool": ask.tool, "kind": ask.kind, "interaction_id": id, "network": target.network.label(),
             "wallet": short(&target.wallet), "dapp_definition": target.dapp_definition(), "origin": target.origin(),
-            "timeout_s": target.timeout.as_secs(), "summary": ask.summary,
+            "timeout_s": target.timeout.as_secs(), "summary": ask.summary, "transport": target.route.label(),
         }),
     );
 
@@ -299,9 +305,20 @@ async fn run(
     interaction: Option<&Value>,
     notes: &mut Vec<String>,
 ) -> Result<Value, Failure> {
-    settle_across_processes(app, &target.wallet, id).await;
-    let _marks = MarksLink(app, &target.wallet);
-    let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+    match &target.route {
+        Route::Webrtc => run_webrtc(app, target, id, interaction, notes).await,
+        Route::Iroh { relay } => run_iroh(app, target, relay, id, interaction, notes).await,
+    }
+}
+
+/// A call in flight: registered for `cancel_request`, and its fate recorded if it is dropped.
+fn start_call<'a>(
+    app: &'a App,
+    target: &Target,
+    id: &'a str,
+    sending: bool,
+) -> (Unfinished<'a>, oneshot::Receiver<()>) {
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
     app.inflight.borrow_mut().insert(
         id.to_string(),
         InFlight {
@@ -309,14 +326,99 @@ async fn run(
             stop: stop_tx,
         },
     );
-    let delivered = Rc::new(Cell::new(interaction.is_none()));
-    let mut unfinished = Unfinished {
+    let unfinished = Unfinished {
         app,
         id,
-        delivered: delivered.clone(),
-        sending: interaction.is_some(),
+        delivered: Rc::new(Cell::new(!sending)),
+        sending,
         done: false,
     };
+    (unfinished, stop_rx)
+}
+
+/// How a call ended, whatever the transport.
+enum Ended {
+    /// The transport returned this answer.
+    Answer(Value),
+    /// The transport failed: the failure, and the state the request is left in.
+    Failed(Failure, State),
+    /// `cancel_request` stopped it.
+    Cancelled,
+}
+
+/// Records how a call ended and returns its result. Shared by both transports.
+fn conclude(
+    app: &App,
+    id: &str,
+    sending: bool,
+    delivered: bool,
+    elapsed_ms: u64,
+    ended: Ended,
+) -> Result<Value, Failure> {
+    match ended {
+        Ended::Cancelled => {
+            app.log.event(
+                "request_cancelled",
+                json!({ "interaction_id": id, "delivered": delivered }),
+            );
+            Err(cancelled_failure(delivered).with_interaction(id))
+        }
+        Ended::Answer(response) => match check_failure(&response) {
+            Ok(()) => {
+                let outcome = describe_answer(&response);
+                let _ = app.outbox.set(id, State::Answered, Some(outcome.clone()), None);
+                app.log.event(
+                    "answered",
+                    json!({ "interaction_id": id, "outcome": outcome, "elapsed_ms": elapsed_ms }),
+                );
+                Ok(response)
+            }
+            Err(wallet) => {
+                let failure = Failure::from_wallet(&wallet_detail(&wallet)).with_interaction(id);
+                let _ = app.outbox.set(
+                    id,
+                    State::Answered,
+                    Some(format!("FAILURE — {}", failure.detail)),
+                    Some(failure.code),
+                );
+                app.log.event(
+                    "wallet_failure",
+                    json!({ "interaction_id": id, "code": failure.code, "detail": failure.detail, "elapsed_ms": elapsed_ms }),
+                );
+                Err(failure)
+            }
+        },
+        Ended::Failed(failure, state) => {
+            let failure = failure.with_interaction(id);
+            // An await that times out leaves the request as it was: still waiting on the phone.
+            if sending || state == State::Answered {
+                let _ = app
+                    .outbox
+                    .set(id, state, Some(failure.detail.clone()), Some(failure.code));
+            }
+            app.log.event(
+                "request_failed",
+                json!({
+                    "interaction_id": id, "code": failure.code, "stage": failure.stage, "delivered": delivered,
+                    "detail": failure.detail, "elapsed_ms": elapsed_ms,
+                }),
+            );
+            Err(failure)
+        }
+    }
+}
+
+async fn run_webrtc(
+    app: &Rc<App>,
+    target: &Target,
+    id: &str,
+    interaction: Option<&Value>,
+    notes: &mut Vec<String>,
+) -> Result<Value, Failure> {
+    settle_across_processes(app, &target.wallet, id).await;
+    let _marks = MarksLink(app, &target.wallet);
+    let (mut unfinished, mut stop_rx) = start_call(app, target, id, interaction.is_some());
+    let delivered = unfinished.delivered.clone();
 
     // The library reports progress through a `Send` callback; the bookkeeping here is not
     // `Send`, so the steps cross over a channel and are handled as they arrive.
@@ -356,43 +458,10 @@ async fn run(
     unfinished.done = true;
     let delivered = delivered.get();
     let elapsed_ms = started.elapsed().as_millis() as u64;
-
-    let Some(result) = outcome else {
-        app.log.event(
-            "request_cancelled",
-            json!({ "interaction_id": id, "delivered": delivered }),
-        );
-        return Err(cancelled_failure(delivered).with_interaction(id));
-    };
-
-    match result {
-        Ok(response) => match check_failure(&response) {
-            Ok(()) => {
-                let outcome = describe_answer(&response);
-                let _ = app.outbox.set(id, State::Answered, Some(outcome.clone()), None);
-                app.log.event(
-                    "answered",
-                    json!({ "interaction_id": id, "outcome": outcome, "elapsed_ms": elapsed_ms }),
-                );
-                Ok(response)
-            }
-            Err(wallet) => {
-                let failure = Failure::from_wallet(&wallet_detail(&wallet)).with_interaction(id);
-                let _ = app.outbox.set(
-                    id,
-                    State::Answered,
-                    Some(format!("FAILURE — {}", failure.detail)),
-                    Some(failure.code),
-                );
-                app.log.event(
-                    "wallet_failure",
-                    json!({ "interaction_id": id, "code": failure.code, "detail": failure.detail, "elapsed_ms": elapsed_ms }),
-                );
-                Err(failure)
-            }
-        },
-        Err(error) => {
-            let failure = Failure::from_connect(&error, delivered).with_interaction(id);
+    let ended = match outcome {
+        None => Ended::Cancelled,
+        Some(Ok(response)) => Ended::Answer(response),
+        Some(Err(error)) => {
             let state = match (&error, delivered) {
                 (ConnectError::WalletRejected(_), _) => State::Answered,
                 // Every attempt went unconfirmed: the wallet most likely never got it, and
@@ -401,21 +470,105 @@ async fn run(
                 (_, true) => State::Delivered,
                 (_, false) => State::NotDelivered,
             };
-            // An await that times out leaves the request as it was: still waiting on the phone.
-            if interaction.is_some() || state == State::Answered {
-                let _ = app
-                    .outbox
-                    .set(id, state, Some(failure.detail.clone()), Some(failure.code));
-            }
-            app.log.event(
-                "request_failed",
-                json!({
-                    "interaction_id": id, "code": failure.code, "stage": failure.stage, "delivered": delivered,
-                    "detail": failure.detail, "elapsed_ms": elapsed_ms,
-                }),
-            );
-            Err(failure)
+            Ended::Failed(Failure::from_connect(&error, delivered), state)
         }
+    };
+    conclude(app, id, interaction.is_some(), delivered, elapsed_ms, ended)
+}
+
+/// The request over iroh: the link's session (taken from any other connector process first),
+/// one exchange on it, and the same bookkeeping as over WebRTC.
+async fn run_iroh(
+    app: &Rc<App>,
+    target: &Target,
+    relay: &Option<String>,
+    id: &str,
+    interaction: Option<&Value>,
+    notes: &mut Vec<String>,
+) -> Result<Value, Failure> {
+    let started = Instant::now();
+    let deadline = started + target.timeout;
+    let sending = interaction.is_some();
+    let (mut unfinished, mut stop_rx) = start_call(app, target, id, sending);
+    let delivered = unfinished.delivered.clone();
+
+    let turn = tokio::select! {
+        turn = iroh::acquire(app, &target.password, relay, deadline) => turn,
+        _ = &mut stop_rx => {
+            unfinished.done = true;
+            return conclude(app, id, sending, false, 0, Ended::Cancelled);
+        }
+    };
+    let turn = match turn {
+        Ok(turn) => turn,
+        Err(failure) => {
+            unfinished.done = true;
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            return conclude(
+                app,
+                id,
+                sending,
+                false,
+                elapsed_ms,
+                Ended::Failed(failure, State::NotDelivered),
+            );
+        }
+    };
+    let left = deadline.saturating_duration_since(Instant::now());
+
+    let (step_tx, mut step_rx) = tokio::sync::mpsc::unbounded_channel::<IrohProgress>();
+    let mut on = move |step: IrohProgress| {
+        let _ = step_tx.send(step);
+    };
+    let outcome = {
+        let exchange = async {
+            match interaction {
+                Some(interaction) => {
+                    turn.connector
+                        .exchange(&target.password, interaction, left, &mut on)
+                        .await
+                }
+                None => {
+                    turn.connector
+                        .await_response(&target.password, id, left, &mut on)
+                        .await
+                }
+            }
+        };
+        tokio::pin!(exchange);
+        loop {
+            tokio::select! {
+                result = &mut exchange => break Some(result),
+                Some(step) = step_rx.recv() => on_iroh_step(app, id, step, &delivered, notes),
+                _ = &mut stop_rx => break None,
+            }
+        }
+    };
+    while let Ok(step) = step_rx.try_recv() {
+        on_iroh_step(app, id, step, &delivered, notes);
+    }
+    unfinished.done = true;
+    let delivered = delivered.get();
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let ended = match outcome {
+        None => Ended::Cancelled,
+        Some(Ok(response)) => Ended::Answer(response),
+        Some(Err(error)) => {
+            let state = iroh_state(&error, delivered);
+            Ended::Failed(Failure::from_mobile(&error, delivered), state)
+        }
+    };
+    conclude(app, id, sending, delivered, elapsed_ms, ended)
+}
+
+/// The state an iroh failure leaves a request in.
+fn iroh_state(error: &MobileError, delivered: bool) -> State {
+    match error {
+        MobileError::WalletRejected(_) => State::Answered,
+        // It may be on the phone: it keeps blocking new requests until it is answered or cleared.
+        MobileError::ConfirmationTimeout { .. } => State::Unconfirmed,
+        _ if delivered => State::Delivered,
+        _ => State::NotDelivered,
     }
 }
 
@@ -424,6 +577,68 @@ fn wallet_detail(error: &radixdlt_connect::WalletInteractionError) -> String {
     match error {
         radixdlt_connect::WalletInteractionError::WalletRejected(detail) => detail.clone(),
         other => other.to_string(),
+    }
+}
+
+fn on_iroh_step(app: &App, id: &str, step: IrohProgress, delivered: &Cell<bool>, notes: &mut Vec<String>) {
+    match step {
+        IrohProgress::WaitingForWallet { waited, diagnostics } => {
+            app.log.event(
+                "waiting_for_wallet",
+                json!({ "interaction_id": id, "waited_ms": waited.as_millis() as u64, "diagnostics": diagnostics.to_string() }),
+            );
+        }
+        IrohProgress::Connected { elapsed, diagnostics } => {
+            app.log.event(
+                "wallet_connected",
+                json!({ "interaction_id": id, "elapsed_ms": elapsed.as_millis() as u64, "diagnostics": diagnostics.to_string() }),
+            );
+        }
+        IrohProgress::Delivered { elapsed } => {
+            delivered.set(true);
+            let _ = app.outbox.set(id, State::Delivered, None, None);
+            app.log.event(
+                "delivered",
+                json!({ "interaction_id": id, "elapsed_ms": elapsed.as_millis() as u64 }),
+            );
+        }
+        IrohProgress::Resending { attempt, reason } => {
+            app.log.event(
+                "resending",
+                json!({ "interaction_id": id, "attempt": attempt, "reason": reason }),
+            );
+            notes.push(format!(
+                "attempt {prev} found no connection to the wallet ({reason}), so nothing was sent; it was sent again once the wallet reconnected (attempt {attempt}, same interaction id).",
+                prev = attempt - 1
+            ));
+        }
+        IrohProgress::Unconfirmed { reason } => {
+            let _ = app.outbox.set(id, State::Unconfirmed, None, None);
+            app.log
+                .event("unconfirmed", json!({ "interaction_id": id, "reason": reason }));
+            notes.push(format!(
+                "the wallet did not confirm the request ({reason}): it may or may not be on the phone, so it was NOT sent again."
+            ));
+        }
+        IrohProgress::WalletDisconnected { diagnostics } => {
+            app.log.event(
+                "wallet_disconnected",
+                json!({ "interaction_id": id, "diagnostics": diagnostics.to_string() }),
+            );
+            notes.push(
+                "the wallet disconnected after receiving the request (app closed or network change); the answer arrives when it reconnects — nothing was sent twice."
+                    .to_string(),
+            );
+        }
+        // The wallet's account list after each connection: no answer to anything.
+        IrohProgress::OtherMessage(message) if message.get("interactionId").is_none() => {
+            app.log.event(
+                "wallet_message",
+                json!({ "interaction_id": id, "discriminator": message.get("discriminator").and_then(Value::as_str) }),
+            );
+        }
+        IrohProgress::OtherMessage(message) => late_answer(&app.outbox, app, id, &message, notes),
+        _ => {}
     }
 }
 
@@ -774,12 +989,14 @@ pub async fn await_response(app: &Rc<App>, args: &Value) -> ToolResult {
         Err(f) => return failed(app, "await_response", &f, None),
     };
     let network = Network::parse(&record.network).unwrap_or(Network::Stokenet);
+    let route = app.iroh.route(&password);
     let target = Target {
         network,
         ctx: DappContext::new(network.id(), String::new(), String::new()),
         password,
         wallet,
         timeout: Duration::from_secs(clamp_timeout(opt_u64(args, "timeout_seconds").unwrap_or(120))),
+        route,
     };
     let (reply, result) = collect(app, &target, &record.interaction_id).await;
     match result {
@@ -818,6 +1035,9 @@ pub async fn check_wallet_connection(app: &Rc<App>, args: &Value) -> ToolResult 
     } else {
         format!("{} (see pending_requests)", open.len())
     };
+    if let Route::Iroh { relay } = app.iroh.route(&password) {
+        return probe_iroh(app, &wallet, &password, &relay, timeout, &pending).await;
+    }
     settle_across_processes(app, &wallet, "").await;
     let probed = Connector::new().probe(&password, timeout).await;
     let _ = app.outbox.mark_link_closed(&wallet);
@@ -840,6 +1060,59 @@ pub async fn check_wallet_connection(app: &Rc<App>, args: &Value) -> ToolResult 
             );
             let mut result = failed(app, "check_wallet_connection", &failure, None);
             result.push_text(format!("\n\nPending requests: {pending}"));
+            result
+        }
+    }
+}
+
+/// `check_wallet_connection` over iroh: waits for the wallet to connect to the link's session
+/// and reports the connection — or, when it does not come, what the link looked like.
+async fn probe_iroh(
+    app: &Rc<App>,
+    wallet: &str,
+    password: &[u8],
+    relay: &Option<String>,
+    timeout: Duration,
+    pending: &str,
+) -> ToolResult {
+    let route = Route::Iroh { relay: relay.clone() };
+    let started = Instant::now();
+    let probed = match iroh::acquire(app, password, relay, started + timeout).await {
+        Ok(turn) => {
+            let left = (started + timeout).saturating_duration_since(Instant::now());
+            turn.connector
+                .probe(password, left)
+                .await
+                .map_err(|e| Failure::from_mobile(&e, false))
+        }
+        Err(failure) => Err(failure),
+    };
+    let diagnostics = app
+        .iroh
+        .diagnostics(password)
+        .map_or_else(|| "(no session)".to_string(), |d| d.to_string());
+    match probed {
+        Ok(took) => {
+            app.log.event(
+                "probe_ok",
+                json!({ "wallet": short(wallet), "elapsed_ms": took.as_millis() as u64, "transport": route.label(), "diagnostics": diagnostics }),
+            );
+            ToolResult::text(format!(
+                "WALLET REACHABLE ✓\nWallet:     {wallet}\nTransport:  {transport}\nConnected:  after {ms} ms (nothing was shown on the phone)\nConnection: {diagnostics}\nPending:    {pending}",
+                transport = route.label(),
+                ms = took.as_millis(),
+            ))
+        }
+        Err(failure) => {
+            app.log.event(
+                "probe_failed",
+                json!({ "wallet": short(wallet), "code": failure.code, "detail": failure.detail, "transport": route.label() }),
+            );
+            let mut result = failed(app, "check_wallet_connection", &failure, None);
+            result.push_text(format!(
+                "\n\nTransport: {transport}\nConnection now: {diagnostics}\nPending requests: {pending}",
+                transport = route.label()
+            ));
             result
         }
     }

@@ -13,6 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
 
 use crate::diag::Log;
+use crate::iroh::{Iroh, LinkRecord, Setting};
 use crate::outbox::Outbox;
 use crate::store::Store;
 use crate::tools;
@@ -38,10 +39,30 @@ pub struct Pending {
     pub label: Option<String>,
 }
 
-/// Successful pairing: the wallet's public key and the raw 32-byte link password.
+/// Successful pairing: the wallet's public key, the raw 32-byte link password, and how the link
+/// was paired (recorded with it).
 pub struct PairOutcome {
     pub wallet_public_key: String,
     pub password: Vec<u8>,
+    pub paired_over: LinkRecord,
+}
+
+/// How this connector process reaches wallets: from `--transport` / `--iroh-relay` or their
+/// environment variables.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Options {
+    pub transport: Setting,
+    /// A custom iroh relay; `None`: n0's public relays.
+    pub iroh_relay: Option<String>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            transport: Setting::Webrtc,
+            iroh_relay: None,
+        }
+    }
 }
 
 /// A wallet request running in this process: how to stop it, and which wallet it went to.
@@ -65,18 +86,21 @@ pub struct App {
     calls: RefCell<HashMap<String, AbortHandle>>,
     /// dApp identities already verified, by (network, dApp definition, origin), and when.
     pub dapp_checks: RefCell<HashMap<(u8, String, String), Instant>>,
+    /// The transport setting, and the iroh sessions of the links that use iroh.
+    pub iroh: Iroh,
 }
 
 impl App {
-    pub fn new() -> Result<Self, String> {
+    pub fn new(options: Options) -> Result<Self, String> {
         let config_path = Store::default_path()?;
-        Ok(App::at(config_path))
+        Ok(App::at(config_path, options))
     }
 
     /// State kept beside `config_path` (`connector.json`).
-    pub fn at(config_path: PathBuf) -> Self {
+    pub fn at(config_path: PathBuf, options: Options) -> Self {
         let dir = config_path.parent().map(Path::to_path_buf).unwrap_or_default();
         App {
+            iroh: Iroh::new(options.transport, options.iroh_relay, &dir),
             outbox: Outbox::new(dir.join("requests.json")),
             log: Log::new(dir.join("connector.log")),
             config_path,
@@ -218,6 +242,9 @@ const SERVER_INSTRUCTIONS: &str = concat!(
     "transactions signed there — the private key never leaves the phone; this server only holds ",
     "the channel password. First-time use: call pair_wallet, show the returned QR to the user, ask ",
     "them to scan it from the Radix Wallet app (Settings > Linked Connectors), then call pair_status. ",
+    "It reaches the wallet over WebRTC or Radix Connect over iroh (pair_wallet transport: \"iroh\"; ",
+    "the wallet then needs Settings > Preferences > Radix Connect set to Automatic or iroh); each ",
+    "wallet keeps the transport it was paired over (see list_wallets). ",
     "After that, use send_transaction / request_pre_authorization / request_account_proof with a ",
     "manifest (build and preview manifests with the radix-community HTTP MCP server first), or ",
     "request_login / request_authorized / request_data / request_ownership_proof for personas, ",

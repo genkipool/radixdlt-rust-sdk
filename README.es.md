@@ -24,7 +24,7 @@ integraciones de wallet en Rust puro.
 | [`radixdlt-gateway-tx`](crates/gateway-tx) | Cliente del Gateway + firma local de transacciones |
 | [`radixdlt-connect`](crates/connect) | Radix Connect sobre **WebRTC** (habla con la wallet del móvil), con TURN sobre TCP/TLS para redes sin UDP |
 | [`radixdlt-connect-iroh`](crates/connect-iroh) | Radix Connect sobre **iroh/QUIC**: la wallet móvil directamente desde un servidor (Radix Connect over iroh v1, sin navegador), y SDK-a-SDK en Rust puro |
-| [`radixdlt-connector-mcp`](crates/connector-mcp) | **Servidor MCP** local (binario): permite a agentes de IA emparejar una wallet y firmar transacciones vía `radixdlt-connect` |
+| [`radixdlt-connector-mcp`](crates/connector-mcp) | **Servidor MCP** local (binario): permite a agentes de IA emparejar una wallet y firmar transacciones vía `radixdlt-connect` (WebRTC) o `radixdlt-connect-iroh` (iroh) |
 | [`radixdlt-i18n`](crates/i18n) | Detección del idioma del sistema + textos bilingües |
 
 ## Inicio rápido
@@ -41,9 +41,11 @@ radixdlt-sdk = { version = "0.1", features = ["full"] }
 
 - **Bilingüe en tiempo de ejecución.** Todo el texto de error visible se localiza al
   idioma del sistema (`es*` → español; si no, inglés) mediante `radixdlt-i18n`.
-- **Dos transportes, por diseño.** `webrtc` y el árbol de `radix-engine` (que usa
-  `gateway`) no se pueden resolver en el mismo binario; tampoco `webrtc` e `iroh`.
-  Por eso los transportes son crates separados: elige el que necesite tu herramienta.
+- **Dos transportes, por diseño.** `webrtc` y el árbol de `radix-engine` (que usan
+  `gateway` y la feature `wallet` por defecto de `radixdlt-connect-iroh`) no se pueden resolver
+  en el mismo binario. Por eso los transportes son crates separados; `webrtc` e `iroh` sí
+  conviven con la feature `wallet` de `radixdlt-connect-iroh` desactivada, que es como el
+  conector MCP lleva ambos.
 - **Los agentes de IA pueden firmar.** `radixdlt-connector-mcp` es un servidor MCP
   local (stdio) que empareja una Radix Wallet y consigue que las transacciones se
   firmen en la máquina del usuario: el móvil aprueba y la clave privada nunca sale de

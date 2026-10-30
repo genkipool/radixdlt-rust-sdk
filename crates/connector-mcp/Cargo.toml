@@ -27,6 +27,13 @@ radixdlt-connect = { path = "../connect", version = "0.3.0" }
 # `qr`: the QR encoder and terminal renderer shared with every program that pairs a wallet.
 radixdlt-connect-types = { path = "../connect-types", version = "0.3.0", features = ["qr"] }
 radixdlt-rola = { path = "../rola", version = "0.3.0" }
+# Radix Connect over iroh, the second transport (`src/iroh.rs`). Without its `wallet` feature:
+# that one pulls the Scrypto engine, whose exact `regex` pin cannot resolve with webrtc's.
+radixdlt-connect-iroh = { path = "../connect-iroh", version = "0.3.0", default-features = false }
+# One connector process per wallet link over iroh (an OS file lock), as `radixdlt-connect` does
+# for WebRTC turns.
+fs4 = { version = "0.13", features = ["sync"] }
+zeroize = "1.8"
 ed25519-dalek = "3"
 getrandom = "0.4"
 hex = "0.4"
@@ -50,3 +57,8 @@ strip = true
 
 [dev-dependencies]
 radixdlt-address = { path = "../address", version = "0.3.0" }
+# The end-to-end test over iroh (`src/e2e_iroh.rs`) reuses connect-iroh's simulated wallet and
+# in-process relay (`../connect-iroh/tests/support`), which need these. The protocol library is a
+# path dependency on its sibling repository, like in connect-iroh.
+radix-connect-iroh = { path = "../../../../radix-connect-iroh/crates/radix-connect-iroh" }
+iroh-relay = { version = "1.4.1", default-features = false, features = ["server", "tls-ring"] }

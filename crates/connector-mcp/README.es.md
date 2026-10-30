@@ -9,8 +9,8 @@ móvil aprueba y la clave privada nunca sale de él.
 
 ## Por qué un binario local (y no el MCP web)
 
-Firmar una transacción de Radix implica mantener abierto un canal Radix Connect
-(WebRTC) con el móvil durante toda la aprobación. Un backend serverless sin estado (el
+Firmar una transacción de Radix implica mantener abierto un canal Radix Connect (WebRTC,
+o iroh — ver abajo) con el móvil durante toda la aprobación. Un backend serverless sin estado (el
 portal web en Vercel) no puede hacerlo, y los secretos del enlace nunca deben tocar un
 servidor. Por eso esta pieza corre en local y habla MCP por **stdio** con el agente que
 la lanzó. El MCP HTTP del portal web sigue haciendo todo lo de solo lectura (docs,
@@ -75,13 +75,67 @@ Configuración JSON genérica (Claude Desktop / Antigravity / Cursor):
 
 Si el binario no está en tu `PATH`, usa su ruta absoluta como `command`.
 
+## Dos transportes: WebRTC e iroh
+
+El conector llega a la wallet por **WebRTC** (el servidor de señalización de Radix; por
+defecto, sin cambios) o por **Radix Connect over iroh** (QUIC a través de relés iroh — sin
+servidor de señalización y sin necesidad de UDP: la conexión con el relé es HTTPS). Se elige con
+`--transport` (o `RADIX_CONNECTOR_TRANSPORT`):
+
+```sh
+claude mcp add radix-connector -- radix-connector-mcp --transport auto
+```
+
+```json
+{ "mcpServers": { "radix-connector": { "command": "radix-connector-mcp", "args": ["--transport", "auto"] } } }
+```
+
+El ajuste decide cómo se emparejan las wallets **nuevas**; cada wallet conserva después el
+transporte con el que se emparejó (`list_wallets` lo muestra):
+
+| `--transport` | emparejamientos nuevos | wallets emparejadas por iroh | wallets emparejadas por WebRTC (y todas las anteriores) |
+|---|---|---|---|
+| `webrtc` (por defecto) | WebRTC | iroh | WebRTC |
+| `auto` | iroh | iroh | WebRTC |
+| `iroh` | iroh | iroh | iroh (para una wallet configurada solo con "iroh") |
+
+`pair_wallet { "transport": "iroh" }` empareja una wallet por iroh sea cual sea el ajuste.
+
+**Emparejar por iroh, en el móvil:** Radix Wallet → **Settings → Preferences → Radix Connect →
+Automatic** (o **iroh**), dejando su relé iroh por defecto; después Settings → Linked Connectors →
+Link New Connector y escanea el QR como siempre. La wallet solo se conecta mientras su app está
+abierta.
+
+**Relés.** Por defecto los dos extremos usan los relés iroh públicos de n0 — nada que alojar ni
+configurar; el conector publica qué relé usa (solo la URL, nunca una dirección IP) en el servicio
+de búsqueda de direcciones de n0, donde la wallet lo encuentra. Para usar un relé propio, arranca
+el conector con `--iroh-relay https://relay.example.com` (o `RADIX_CONNECTOR_IROH_RELAY`) y pon
+la misma URL como relé iroh de la wallet. Los dos extremos deben elegir lo mismo.
+
+**Un proceso del conector por wallet en iroh.** Un enlace con una wallet por iroh es un único
+endpoint; dos procesos del conector (dos clientes MCP) usándolo a la vez se quitarían la wallet el
+uno al otro. Así que un proceso bloquea el enlace mientras lo usa y durante 5 minutos después
+(`RADIX_CONNECTOR_IROH_IDLE_SECONDS`); otro proceso lo espera dentro del timeout de su llamada y
+después falla con `LINK_BUSY`, indicando el pid de quien lo tiene.
+
+**Diagnóstico.** Por iroh, `check_wallet_connection` y `list_wallets` muestran la línea de
+conexión del enlace, p. ej.
+`connector 55e138fbc3 → 0f63fb2de4 state=connected path=relay rtt=42ms relay=https://euc1-1.relay.n0.iroh.link./ (connected, public)`;
+los fallos `WALLET_UNREACHABLE`, `NOT_CONFIRMED` y `NO_ANSWER` terminan con ella, y
+`connector_log` la registra en cada cambio de conexión. `relay … (NOT connected)` durante más de
+unos segundos significa que esta máquina no alcanza su relé; `state=disconnected` con el relé
+conectado significa que el móvil no está (app cerrada, iroh desactivado, otra elección de relé).
+Nunca contiene la contraseña del enlace. Códigos solo de iroh: `NOT_CONFIRMED` (la wallet nunca
+confirmó la petición — puede estar en el móvil, así que no se reenvía), `LINK_BUSY`,
+`IROH_UNAVAILABLE`.
+
 ## Herramientas
 
 | Herramienta | Qué hace |
 |---|---|
-| `pair_wallet` | Devuelve un QR (arte de terminal + PNG + payload crudo) para enlazar una wallet. Una vez por dispositivo. |
+| `pair_wallet` | Devuelve un QR (arte de terminal + PNG + payload crudo) para enlazar una wallet. Una vez por dispositivo. `transport`: `webrtc` o `iroh` (por defecto: `--transport`). |
 | `pair_status` | Espera el escaneo/aprobación y guarda el enlace. |
-| `list_wallets` / `remove_wallet` | Gestiona los dispositivos emparejados. |
+| `list_wallets` / `remove_wallet` | Gestiona los dispositivos emparejados (con el transporte de cada uno y, por iroh, su conexión en vivo). |
 | `request_accounts` | Pide a la wallet que **comparta su(s) dirección(es) de cuenta** — sin firma/prueba. Útil para saber qué cuenta fondear o desde cuál transferir. |
 | `send_transaction` | Envía un manifiesto para firmar **y enviar**; devuelve el intent hash. Admite `blobs` (hex en línea) y `blob_files` (rutas locales). Antes lo simula en el Gateway y **no** llega al móvil si la simulación falla (`PREVIEW_FAILED`); `preview_only: true` devuelve la simulación sin enviar. |
 | `deploy_package` | Publica un paquete Scrypto: lee el `.wasm` de una ruta local, **hace dry-run en el Gateway primero** (aborta si fallaría), lo adjunta como blob, firma y envía. |
@@ -94,7 +148,7 @@ Si el binario no está en tu `PATH`, usa su ruta absoluta como `command`.
 | `pending_requests` | Qué puede seguir esperando en la cola de la wallet, y qué hacer. |
 | `await_response` | Recoge la respuesta a una petición anterior **sin volver a enviarla**. |
 | `cancel_request` | Detiene una petición aquí y deja de bloquear las nuevas (la wallet no permite retirar una a distancia: el resultado dice si sigue en el móvil). |
-| `check_wallet_connection` | Abre y cierra un canal sin enviar nada: ¿se llega ahora a la app? |
+| `check_wallet_connection` | Abre y cierra un canal (por iroh: espera a que la wallet se conecte) sin enviar nada: ¿se llega ahora a la app? Por iroh muestra el diagnóstico de la conexión. |
 | `check_dapp_identity` | Hace la misma verificación de la dApp que la wallet (dApp definition ↔ origin ↔ `radix.json`). |
 | `connector_log` | La traza del conector de cada petición, paso a paso. |
 | `transaction_status` | Lee el estado de commit de una transacción desde el Gateway. |
@@ -206,7 +260,8 @@ RADIX_DAPP_ORIGIN=https://radix-community.genkipool.com \
 1. Construye y previsualiza un manifiesto con el servidor MCP HTTP del portal web
    (`radix-community`).
 2. `pair_wallet` → muestra el QR → el usuario lo escanea desde la app Radix Wallet
-   (Ajustes → Conectores enlazados → Enlazar nuevo conector) → `pair_status`.
+   (Ajustes → Conectores enlazados → Enlazar nuevo conector) → `pair_status`. Por iroh la
+   wallet necesita antes Settings → Preferences → Radix Connect → Automatic (o iroh).
 3. `send_transaction { manifest, network }` → el usuario aprueba en el móvil.
 4. `transaction_status { intent_hash, network }` → confirma el commit.
 
@@ -215,7 +270,9 @@ RADIX_DAPP_ORIGIN=https://radix-community.genkipool.com \
 - Las wallets emparejadas y la identidad del conector viven en `connector.json` dentro
   del directorio de configuración del SO (`~/.config/radix-connector/` en Linux; los
   equivalentes de cada plataforma en macOS/Windows), `0600` en Unix. Se puede
-  sobreescribir con `RADIX_CONNECTOR_HOME`.
+  sobreescribir con `RADIX_CONNECTOR_HOME`. A su lado, `transports.json` registra cómo se
+  emparejó cada wallet (por un hash de su enlace, sin secretos) e `iroh-links/` guarda los
+  bloqueos por enlace.
 - La contraseña del enlace y la identidad nunca salen de la máquina; el QR se genera en
   local.
 - El móvil es lo único que firma. Cada acción se aprueba ahí por una persona.

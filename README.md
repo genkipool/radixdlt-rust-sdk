@@ -23,7 +23,7 @@ off-ledger primitives that, until now, only existed in JavaScript/TypeScript. Bu
 | [`radixdlt-gateway-tx`](crates/gateway-tx) | Gateway client + local transaction signing |
 | [`radixdlt-connect`](crates/connect) | Radix Connect over **WebRTC** (talks to the mobile wallet), including TURN over TCP/TLS for networks with no UDP |
 | [`radixdlt-connect-iroh`](crates/connect-iroh) | Radix Connect over **iroh/QUIC**: the mobile wallet directly from a server (Radix Connect over iroh v1, no browser), and pure-Rust SDK-to-SDK |
-| [`radixdlt-connector-mcp`](crates/connector-mcp) | Local **MCP server** (binary): lets AI agents pair a wallet and sign transactions via `radixdlt-connect` |
+| [`radixdlt-connector-mcp`](crates/connector-mcp) | Local **MCP server** (binary): lets AI agents pair a wallet and sign transactions via `radixdlt-connect` (WebRTC) or `radixdlt-connect-iroh` (iroh) |
 | [`radixdlt-i18n`](crates/i18n) | System-locale detection + bilingual text helpers |
 
 ## Quick start
@@ -41,8 +41,9 @@ radixdlt-sdk = { version = "0.1", features = ["full"] }
 - **Bilingual at runtime.** All user-facing error text is localized to the system
   language (`es*` → Spanish, otherwise English) via `radixdlt-i18n`.
 - **Two transports, by design.** `webrtc` and the `radix-engine` tree (used by
-  `gateway`) cannot be resolved in the same binary; neither can `webrtc` and `iroh`.
-  So the transports are separate crates — pick the one your tool needs.
+  `gateway`, and by `radixdlt-connect-iroh`'s default `wallet` feature) cannot be resolved in
+  the same binary. So the transports are separate crates; `webrtc` and `iroh` do coexist with
+  `radixdlt-connect-iroh`'s `wallet` feature off, which is how the MCP connector carries both.
 - **AI agents can sign.** `radixdlt-connector-mcp` is a local MCP server (stdio)
   that pairs a Radix Wallet and gets transactions signed on the user's machine:
   the phone approves and the private key never leaves it. It installs from GitHub

@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use radixdlt_connect::ConnectError;
+use radixdlt_connect_iroh::mobile::MobileError;
 use serde_json::{json, Value};
 
 /// The log file rolls over to `connector.log.1` beyond this size.
@@ -160,6 +161,75 @@ impl Failure {
                 true,
                 detail,
                 "Unexpected message from the wallet before delivery. Nothing reached the wallet; retry, and report it if it repeats.",
+            ),
+        }
+    }
+
+    /// Maps an iroh transport error, knowing whether the wallet had already received the request.
+    ///
+    /// The codes are the WebRTC ones where the meaning is the same, so an agent handles both
+    /// transports alike. The timeouts' detail ends with the link's diagnostics line (relay
+    /// reachable?, connection state, path, last error) — never a secret.
+    pub fn from_mobile(error: &MobileError, delivered: bool) -> Self {
+        let detail = error.to_string();
+        match error {
+            MobileError::WalletRejected(wallet) => Failure::from_wallet(wallet),
+            MobileError::WalletUnreachable { .. } => Failure::new(
+                "WALLET_UNREACHABLE",
+                "connect",
+                true,
+                detail,
+                "The wallet never connected over iroh, so the request was NOT delivered. Ask the person to open the Radix Wallet app (it only connects while open) with iroh on: Settings › Preferences › Radix Connect › Automatic or iroh, and the same iroh relay choice as this connector (both public by default). If the diagnostics say `relay … (NOT connected)`, this machine cannot reach its relay. Then retry; if it keeps failing, check with list_wallets that the link exists, and pair again.",
+            ),
+            MobileError::ConfirmationTimeout { .. } => Failure::new(
+                "NOT_CONFIRMED",
+                "deliver",
+                false,
+                detail,
+                "The wallet never confirmed the request: it may or may not be on the phone, so it was NOT sent again. Ask the person to look at the Radix Wallet: if the request shows, they answer it and await_response {interaction_id} collects the answer; if nothing shows, clear it with cancel_request {interaction_id} and send it again.",
+            ),
+            MobileError::ResponseTimeout { .. } => Failure::new(
+                "NO_ANSWER",
+                "awaiting_approval",
+                false,
+                detail,
+                "The wallet RECEIVED the request but nobody approved or rejected it in time. It is still in the wallet's queue: do NOT send it again. Ask the person to open the Radix Wallet; they approve or reject it and await_response {interaction_id} collects the answer (it is kept here even if it arrives before). If nothing shows, force-close and reopen the app, then cancel_request {interaction_id}.",
+            ),
+            MobileError::MessageTooLarge { .. } => Failure::new(
+                "REQUEST_TOO_LARGE",
+                "input",
+                true,
+                detail,
+                "The request is larger than a Radix Connect message may be. Nothing was sent; make it smaller (blobs above all).",
+            ),
+            MobileError::MessageRefused => Failure::new(
+                "NOT_DELIVERED",
+                "deliver",
+                true,
+                detail,
+                "The wallet refused the message itself, so it is not on the phone. Retry; report it if it repeats.",
+            ),
+            MobileError::Session(_) | MobileError::InvalidRelayUrl(_) => Failure::new(
+                "IROH_UNAVAILABLE",
+                "connect",
+                true,
+                detail,
+                "This connector could not start its iroh endpoint. Nothing reached the wallet. Check the network, and the iroh relay setting (RADIX_CONNECTOR_IROH_RELAY / --iroh-relay), then retry.",
+            ),
+            MobileError::InvalidPassword => Failure::local(format!("{detail} (the stored link is damaged: pair again)")),
+            _ if delivered => Failure::new(
+                "CHANNEL_LOST",
+                "awaiting_approval",
+                false,
+                detail,
+                "The link closed AFTER the wallet received the request, so it is still on the phone. Do not send it again: ask the person to answer it and collect the answer with await_response {interaction_id}, or clear it with cancel_request.",
+            ),
+            _ => Failure::new(
+                "CONNECTION_FAILED",
+                "connect",
+                true,
+                detail,
+                "The iroh link failed before the request was sent. Nothing reached the wallet; retry.",
             ),
         }
     }
@@ -427,6 +497,66 @@ mod tests {
         assert_eq!((lost.code, lost.retry_safe), ("CHANNEL_LOST", false));
         let unconfirmed = Failure::from_connect(&ConnectError::ConfirmationTimeout, false);
         assert_eq!(unconfirmed.code, "NOT_DELIVERED");
+    }
+
+    /// Over iroh the same rule holds, with two differences: an unconfirmed request may be on the
+    /// phone (never resent), and the timeouts carry the link's diagnostics — nothing secret.
+    #[test]
+    fn iroh_failures_say_how_far_the_request_got_and_what_the_link_looked_like() {
+        use radix_connect_iroh::ConnectionPassword;
+        use radixdlt_connect_iroh::mobile::{ConnectionState, Diagnostics, Role};
+
+        let password = ConnectionPassword::from_bytes([0x5a; 32]);
+        let diagnostics = Box::new(Diagnostics {
+            role: Role::Connector,
+            local_id: password.endpoint_id(Role::Connector),
+            peer_id: password.endpoint_id(Role::Wallet),
+            relay_url: None,
+            public_relays: true,
+            relay_connected: false,
+            relay_error: None,
+            state: ConnectionState::Disconnected,
+            path: None,
+            rtt: None,
+            failed_attempts: 0,
+            last_error: None,
+            connected_for: None,
+        });
+        let line = diagnostics.to_string();
+
+        let unreachable = Failure::from_mobile(
+            &MobileError::WalletUnreachable {
+                diagnostics: diagnostics.clone(),
+            },
+            false,
+        );
+        assert_eq!(
+            (unreachable.code, unreachable.retry_safe),
+            ("WALLET_UNREACHABLE", true)
+        );
+        assert!(unreachable.detail.ends_with(&line), "{}", unreachable.detail);
+        assert!(!unreachable.detail.contains(&"5a".repeat(32)));
+
+        let unconfirmed = Failure::from_mobile(
+            &MobileError::ConfirmationTimeout {
+                diagnostics: diagnostics.clone(),
+            },
+            false,
+        );
+        assert_eq!(
+            (unconfirmed.code, unconfirmed.retry_safe),
+            ("NOT_CONFIRMED", false)
+        );
+        let no_answer = Failure::from_mobile(&MobileError::ResponseTimeout { diagnostics }, true);
+        assert_eq!((no_answer.code, no_answer.retry_safe), ("NO_ANSWER", false));
+        assert_eq!(
+            Failure::from_mobile(&MobileError::Closed, true).code,
+            "CHANNEL_LOST"
+        );
+        assert_eq!(
+            Failure::from_mobile(&MobileError::WalletRejected("rejectedByUser".into()), true).code,
+            "REJECTED_BY_USER"
+        );
     }
 
     #[test]

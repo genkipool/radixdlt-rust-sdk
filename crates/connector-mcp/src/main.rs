@@ -3,7 +3,8 @@
 //! Radix Wallet and get transactions **signed on the user's own machine**.
 //!
 //! Why local: signing a Radix transaction means keeping a live Radix Connect
-//! (WebRTC) channel open to the phone during the whole approval. A stateless,
+//! channel (WebRTC, or iroh — see the `iroh` module) open to the phone during the whole
+//! approval. A stateless,
 //! serverless backend (the web portal on Vercel) cannot hold that channel, and
 //! the link secrets must never leave the user's machine. So this piece runs
 //! locally and speaks MCP over **stdio** to whatever agent launched it.
@@ -30,8 +31,11 @@
 )]
 
 mod diag;
+#[cfg(test)]
+mod e2e_iroh;
 mod exchange;
 mod gateway;
+mod iroh;
 mod outbox;
 mod qr;
 mod requests;
@@ -44,7 +48,7 @@ use std::rc::Rc;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::rpc::App;
+use crate::rpc::{App, Options};
 
 fn main() {
     // Pick rustls' crypto provider explicitly, before anything opens a TLS connection.
@@ -65,9 +69,16 @@ fn main() {
         .build()
         .expect("failed to start the Tokio runtime");
     let local = tokio::task::LocalSet::new();
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let options = match server_options(&mut args) {
+        Ok(options) => options,
+        Err(e) => {
+            eprintln!("radix-connector-mcp: {e}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
     let code = match args.first().map(String::as_str) {
-        None => local.block_on(&runtime, run()),
+        None => local.block_on(&runtime, run(options)),
         Some(_) => local.block_on(&runtime, command(&args)),
     };
     std::process::exit(code);
@@ -77,7 +88,16 @@ const USAGE: &str = "\
 radix-connector-mcp — local MCP server that gets Radix transactions signed on the phone.
 
 Usage:
-  radix-connector-mcp                 run as an MCP server over stdio (what MCP clients launch)
+  radix-connector-mcp [--transport webrtc|iroh|auto] [--iroh-relay <url>]
+                                      run as an MCP server over stdio (what MCP clients launch).
+                                      --transport (or RADIX_CONNECTOR_TRANSPORT) says how NEW
+                                      wallets are paired: webrtc (default), or iroh / auto for
+                                      Radix Connect over iroh (wallet: Settings › Preferences ›
+                                      Radix Connect › Automatic or iroh). Each wallet keeps the
+                                      transport it was paired over; iroh also sends every
+                                      wallet's requests over iroh. --iroh-relay (or
+                                      RADIX_CONNECTOR_IROH_RELAY): one relay of your own instead
+                                      of n0's public relays (the wallet must use the same).
   radix-connector-mcp version         print the installed version
   radix-connector-mcp check-update    tell whether a newer release is published
   radix-connector-mcp relay [--listen 127.0.0.1:8787] [--turn 127.0.0.1:3478 --turn-password <pw>]
@@ -88,6 +108,28 @@ Usage:
                                       in place of this binary, keeping a backup beside it
 
 Updating never touches connector.json: a paired wallet stays paired.";
+
+/// Takes the server options out of `args` (`--transport X`, `--iroh-relay X`, or `--name=X`);
+/// their environment variables fill in what the command line does not say.
+fn server_options(args: &mut Vec<String>) -> Result<Options, String> {
+    let mut take = |name: &str| -> Option<String> {
+        if let Some(i) = args.iter().position(|a| a == name) {
+            let value = args.get(i + 1).cloned();
+            let end = (i + 2).min(args.len());
+            args.drain(i..end);
+            return value;
+        }
+        let prefix = format!("{name}=");
+        let i = args.iter().position(|a| a.starts_with(&prefix))?;
+        Some(args.remove(i)[prefix.len()..].to_string())
+    };
+    let transport = take("--transport").or_else(|| std::env::var(iroh::TRANSPORT_ENV).ok());
+    let relay = take("--iroh-relay").or_else(|| std::env::var(iroh::IROH_RELAY_ENV).ok());
+    Ok(Options {
+        transport: iroh::Setting::parse(transport.as_deref().unwrap_or_default())?,
+        iroh_relay: iroh::parse_relay(relay.as_deref()).map_err(|e| format!("--iroh-relay: {e}"))?,
+    })
+}
 
 /// The command-line subcommands. Returns the process exit code.
 async fn command(args: &[String]) -> i32 {
@@ -246,8 +288,8 @@ fn local_ipv4() -> Vec<String> {
 
 /// Reads MCP messages line-by-line from stdin and writes one response line per
 /// request to stdout. Returns the process exit code.
-async fn run() -> i32 {
-    let app = match App::new() {
+async fn run(options: Options) -> i32 {
+    let app = match App::new(options) {
         Ok(app) => Rc::new(app),
         Err(err) => {
             eprintln!("radix-connector-mcp: fatal: {err}");
@@ -255,9 +297,11 @@ async fn run() -> i32 {
         }
     };
     eprintln!(
-        "radix-connector-mcp {} ready (config: {})",
+        "radix-connector-mcp {} ready (config: {}; transport: {}; iroh relays: {})",
         env!("CARGO_PKG_VERSION"),
-        app.config_path().display()
+        app.config_path().display(),
+        app.iroh.setting.label(),
+        iroh::relay_label(&app.iroh.relay),
     );
 
     let mut stdin = BufReader::new(tokio::io::stdin()).lines();
@@ -298,4 +342,30 @@ async fn run() -> i32 {
     drop(out_tx);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), writer).await;
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn server_options_come_out_of_the_command_line_in_either_form() {
+        let mut given = args(&["--transport", "auto", "--iroh-relay=https://relay.example.com"]);
+        let options = server_options(&mut given).unwrap();
+        assert_eq!(options.transport, iroh::Setting::Auto);
+        assert_eq!(options.iroh_relay.as_deref(), Some("https://relay.example.com"));
+        assert!(given.is_empty(), "{given:?}");
+
+        // Subcommands keep their own arguments.
+        let mut given = args(&["relay", "--listen", "127.0.0.1:8787"]);
+        server_options(&mut given).unwrap();
+        assert_eq!(given, args(&["relay", "--listen", "127.0.0.1:8787"]));
+
+        assert!(server_options(&mut args(&["--transport", "pigeon"])).is_err());
+        assert!(server_options(&mut args(&["--iroh-relay", "http://relay.example.com"])).is_err());
+    }
 }

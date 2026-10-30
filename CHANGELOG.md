@@ -9,6 +9,20 @@ minor versions may contain breaking changes.
 
 ### Added
 
+- `radixdlt-connector-mcp` — **Radix Connect over iroh as a second transport**, behind the same
+  tools. `--transport webrtc|iroh|auto` (or `RADIX_CONNECTOR_TRANSPORT`; default `webrtc`, so
+  nothing changes unless asked) says how new wallets are paired, and `pair_wallet` takes a
+  `transport` per call; each wallet keeps the transport it was paired over (recorded in
+  `transports.json`, by link hash — `connector.json` keeps its format), and `iroh` also sends
+  every wallet's requests over iroh. n0's public relays by default, or `--iroh-relay <url>`. One
+  connector process per wallet link over iroh (an OS lock, released after 5 idle minutes; others
+  get `LINK_BUSY`). Failures keep the WebRTC codes where they mean the same, plus `NOT_CONFIRMED`,
+  `LINK_BUSY` and `IROH_UNAVAILABLE`; the iroh timeouts, `check_wallet_connection`,
+  `list_wallets` and `connector_log` carry the link's diagnostics line (no secrets). Built with
+  `radixdlt-connect-iroh` without its `wallet` feature, so webrtc and iroh share one binary.
+  End-to-end test: pairing and a ROLA request through the tools against a simulated wallet over
+  an in-process relay.
+
 - `radixdlt-connect-iroh` — **the Radix mobile wallet over iroh, from a server, no browser.**
   `mobile::MobileWalletConnector` speaks *Radix Connect over iroh v1* (the protocol of the Radix
   Wallet and the Connector Extension, through the `radix-connect-iroh` library) in the connector

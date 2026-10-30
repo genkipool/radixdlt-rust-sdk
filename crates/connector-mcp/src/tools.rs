@@ -20,11 +20,13 @@ use radixdlt_connect::{
     extract_transaction_intent_hash, pre_authorization_request, transaction_request, unauthorized_request,
     Auth, AuthorizedRequest, Connector, OwnershipWanted, PersonaRequest,
 };
+use radixdlt_connect_iroh::mobile::Progress as IrohProgress;
 use radixdlt_rola::{verify_account_proof, AccountProof};
 
 use crate::diag::Failure;
-use crate::exchange::{self, failed, interact, manifest_summary, target, Ask, Target};
+use crate::exchange::{self, failed, interact, manifest_summary, short, target, Ask, Target};
 use crate::gateway;
+use crate::iroh::{self, LinkRecord, Route, Transport};
 use crate::requests::{
     check_challenge, parse_accounts, parse_persona_data, random_challenge, render_answer, Verifier,
 };
@@ -41,6 +43,8 @@ const DEFAULT_SIGN_TIMEOUT: u64 = 300;
 const MAX_TIMEOUT: u64 = 900;
 /// How long to wait for the background pairing task to hand us the QR string.
 const QR_READY_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a pairing waits for the wallet to scan its QR.
+const PAIRING_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// The two Radix networks this connector talks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,12 +195,13 @@ pub fn list_json() -> Vec<Value> {
         tool(
             "pair_wallet",
             "Pair a Radix Wallet",
-            "Starts pairing with a Radix Wallet and returns a QR code (as a terminal drawing, a PNG image, and the raw payload). Show it to the user and ask them to scan it from the Radix Wallet app: Settings > Linked Connectors > Link New Connector. Then call pair_status. Only needed once per device.",
+            "Starts pairing with a Radix Wallet and returns a QR code (as a terminal drawing, a PNG image, and the raw payload). Show it to the user and ask them to scan it from the Radix Wallet app: Settings > Linked Connectors > Link New Connector. Then call pair_status. Only needed once per device. Over iroh the wallet must have Settings > Preferences > Radix Connect set to Automatic or iroh; the link then keeps using iroh.",
             true,
             json!({
                 "type": "object",
                 "properties": {
-                    "label": { "type": "string", "description": "Optional human label for this device, e.g. \"my phone\"." }
+                    "label": { "type": "string", "description": "Optional human label for this device, e.g. \"my phone\"." },
+                    "transport": { "type": "string", "enum": ["webrtc", "iroh"], "description": "How to pair and then reach this wallet: \"iroh\" (Radix Connect over iroh; the wallet set to Automatic or iroh) or \"webrtc\". Default: the connector's --transport setting (webrtc unless configured)." }
                 }
             }),
         ),
@@ -505,7 +510,7 @@ pub async fn call(app: &Rc<App>, name: &str, args: Value) -> Value {
         "pair_wallet" => pair_wallet(app, &args).await,
         "pair_status" => pair_status(app, &args).await,
         "list_wallets" => list_wallets(app),
-        "remove_wallet" => remove_wallet(app, &args),
+        "remove_wallet" => remove_wallet(app, &args).await,
         "request_accounts" => request_accounts(app, &args).await,
         "send_transaction" => send_transaction(app, &args).await,
         "deploy_package" => deploy_package(app, &args).await,
@@ -546,6 +551,13 @@ pub async fn call(app: &Rc<App>, name: &str, args: Value) -> Value {
 
 async fn pair_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
     let label = opt_str(args, "label");
+    let transport = match opt_str(args, "transport") {
+        Some(transport) => match Transport::parse(&transport) {
+            Ok(transport) => transport,
+            Err(e) => return ToolResult::error(e),
+        },
+        None => app.iroh.setting.pairing(),
+    };
 
     let state = match Store::load_or_init(app.config_path()) {
         Ok(state) => state,
@@ -558,35 +570,54 @@ async fn pair_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
     let result_slot: Rc<RefCell<Option<Result<PairOutcome, String>>>> = Rc::new(RefCell::new(None));
     let task_slot = result_slot.clone();
 
-    // Run the (blocking-until-scanned) Radix Connect handshake in the background.
-    // `pair` invokes the callback with the QR payload BEFORE it starts waiting, so
-    // we get the QR back immediately over the oneshot channel.
-    tokio::task::spawn_local(async move {
-        let connector = Connector::new();
-        let outcome = connector
-            .pair(
-                &priv_hex,
-                &pub_hex,
-                move |qr| {
-                    let _ = qr_tx.send(qr);
-                },
-                Duration::from_secs(600),
-            )
-            .await;
-        *task_slot.borrow_mut() = Some(
-            outcome
-                .map(|(wallet_public_key, password)| PairOutcome {
-                    wallet_public_key,
-                    password,
-                })
-                .map_err(|e| e.to_string()),
-        );
-    });
+    // Run the (blocking-until-scanned) handshake in the background. `pair` invokes the
+    // callback with the QR payload BEFORE it starts waiting, so we get the QR back immediately
+    // over the oneshot channel.
+    match transport {
+        Transport::Webrtc => {
+            tokio::task::spawn_local(async move {
+                let connector = Connector::new();
+                let outcome = connector
+                    .pair(
+                        &priv_hex,
+                        &pub_hex,
+                        move |qr| {
+                            let _ = qr_tx.send(qr);
+                        },
+                        PAIRING_TIMEOUT,
+                    )
+                    .await;
+                *task_slot.borrow_mut() = Some(
+                    outcome
+                        .map(|(wallet_public_key, password)| PairOutcome {
+                            wallet_public_key,
+                            password,
+                            paired_over: LinkRecord {
+                                transport: Transport::Webrtc,
+                                iroh_relay: None,
+                            },
+                        })
+                        .map_err(|e| e.to_string()),
+                );
+            });
+        }
+        Transport::Iroh => {
+            tokio::task::spawn_local(pair_over_iroh(app.clone(), priv_hex, pub_hex, qr_tx, task_slot));
+        }
+    }
 
     let payload = match tokio::time::timeout(QR_READY_TIMEOUT, qr_rx).await {
         Ok(Ok(payload)) => payload,
         _ => {
-            return ToolResult::error("could not start pairing (the QR payload was not produced). Try again.")
+            let why = result_slot
+                .borrow_mut()
+                .take()
+                .and_then(Result::err)
+                .map(|e| format!(" ({e})"))
+                .unwrap_or_default();
+            return ToolResult::error(format!(
+                "could not start pairing (the QR payload was not produced){why}. Try again."
+            ));
         }
     };
 
@@ -600,8 +631,19 @@ async fn pair_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
         label,
     });
 
+    let wallet_setup = match transport {
+        Transport::Webrtc => String::new(),
+        Transport::Iroh => format!(
+            "Over iroh: in the Radix Wallet first set Settings > Preferences > Radix Connect to Automatic (or iroh){relay}.\n",
+            relay = match &app.iroh.relay {
+                None => ", keeping its default iroh relay".to_string(),
+                Some(url) => format!(", with the iroh relay {url}"),
+            }
+        ),
+    };
     let text = format!(
-        "PAIR A RADIX WALLET\n\
+        "PAIR A RADIX WALLET (transport: {transport})\n\
+         {wallet_setup}\
          Show this QR to the user and ask them to scan it from the Radix Wallet app:\n\
          Settings > Linked Connectors > Link New Connector.\n\
          Then call `pair_status` to finish (it waits for the scan + approval).\n\n\
@@ -609,11 +651,89 @@ async fn pair_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
          If the terminal QR does not scan (dark themes can invert it), use the PNG image\n\
          in this result, or paste the raw payload below into a LOCAL QR generator:\n\n\
          ```json\n{payload}\n```",
+        transport = transport.label(),
         unicode = rendered.unicode,
         payload = payload,
     );
 
     ToolResult::text(text).with_image(rendered.png_base64, "image/png")
+}
+
+/// Pairs over iroh in the background; the outcome lands in `slot` for `pair_status`. The
+/// session it started is kept (and its link locked to this process) for the first requests.
+async fn pair_over_iroh(
+    app: Rc<App>,
+    identity_private: String,
+    identity_public: String,
+    qr_tx: oneshot::Sender<String>,
+    slot: Rc<RefCell<Option<Result<PairOutcome, String>>>>,
+) {
+    let relay = app.iroh.relay.clone();
+    let connector = match app.iroh.connector(&relay) {
+        Ok(connector) => connector,
+        Err(e) => {
+            *slot.borrow_mut() = Some(Err(e));
+            return;
+        }
+    };
+    // The library reports progress through a `Send` callback; the log is not `Send`.
+    let (step_tx, mut step_rx) = tokio::sync::mpsc::unbounded_channel::<IrohProgress>();
+    let mut on = move |step: IrohProgress| {
+        let _ = step_tx.send(step);
+    };
+    let pairing = connector.pair_with_progress(
+        &identity_private,
+        &identity_public,
+        move |qr| {
+            let _ = qr_tx.send(qr);
+        },
+        PAIRING_TIMEOUT,
+        &mut on,
+    );
+    tokio::pin!(pairing);
+    let outcome = loop {
+        tokio::select! {
+            outcome = &mut pairing => break outcome,
+            Some(step) = step_rx.recv() => log_pairing_step(&app, &step),
+        }
+    };
+    let outcome = match outcome {
+        Ok((wallet_public_key, password)) => {
+            iroh::adopt(&app, &password, &relay);
+            app.log.event(
+                "paired",
+                json!({ "transport": "iroh", "relays": iroh::relay_label(&relay), "wallet": short(&wallet_public_key) }),
+            );
+            Ok(PairOutcome {
+                wallet_public_key,
+                password,
+                paired_over: LinkRecord {
+                    transport: Transport::Iroh,
+                    iroh_relay: relay,
+                },
+            })
+        }
+        Err(error) => {
+            app.log.event(
+                "pairing_failed",
+                json!({ "transport": "iroh", "detail": error.to_string() }),
+            );
+            Err(error.to_string())
+        }
+    };
+    *slot.borrow_mut() = Some(outcome);
+}
+
+/// What a pairing over iroh reports while it waits: the wallet's connection, with diagnostics.
+fn log_pairing_step(app: &App, step: &IrohProgress) {
+    let (event, diagnostics) = match step {
+        IrohProgress::WaitingForWallet { diagnostics, .. } => ("pairing_waiting", diagnostics),
+        IrohProgress::Connected { diagnostics, .. } => ("pairing_wallet_connected", diagnostics),
+        IrohProgress::WalletDisconnected { diagnostics } => ("pairing_wallet_disconnected", diagnostics),
+        _ => return,
+    };
+    app.log
+        .event(event, json!({ "diagnostics": diagnostics.to_string() }));
 }
 
 async fn pair_status(app: &Rc<App>, args: &Value) -> ToolResult {
@@ -666,16 +786,32 @@ fn finish_pairing(app: &Rc<App>, outcome: PairOutcome, label: Option<String>) ->
     if let Err(e) = Store::save(app.config_path(), &state) {
         return ToolResult::error(format!("paired, but could not save the link: {e}"));
     }
-    ToolResult::text(format!(
+    // Without the record a link paired over iroh would be reached over WebRTC, which works only
+    // while the wallet keeps WebRTC on too (Automatic): worth saying, not worth failing for.
+    let recorded = app
+        .iroh
+        .records
+        .set(&outcome.password, outcome.paired_over.clone());
+    let route = app.iroh.route(&outcome.password);
+    let mut text = format!(
         "WALLET PAIRED ✓\n\
          Label:      {label}\n\
          Public key: {pk}\n\
+         Transport:  {transport}\n\
          Saved to:   {path}\n\n\
          You can now sign with send_transaction / request_pre_authorization / request_account_proof.",
         label = label.as_deref().unwrap_or("(none)"),
         pk = outcome.wallet_public_key,
+        transport = route.label(),
         path = app.config_path().display(),
-    ))
+    );
+    if let Err(e) = recorded {
+        text.push_str(&format!(
+            "\n\nNOTE: could not record how this wallet was paired ({e}) in {}: its requests will go over WebRTC.",
+            app.iroh.records.path().display()
+        ));
+    }
+    ToolResult::text(text)
 }
 
 fn list_wallets(app: &Rc<App>) -> ToolResult {
@@ -689,20 +825,33 @@ fn list_wallets(app: &Rc<App>) -> ToolResult {
             "No wallets paired yet. Call pair_wallet to link one (needed once per device).",
         );
     }
-    let mut out = String::from("PAIRED WALLETS\n");
+    let mut out = format!(
+        "PAIRED WALLETS (transport setting: {})\n",
+        app.iroh.setting.label()
+    );
     for (i, link) in links.iter().enumerate() {
+        let password = hex::decode(&link.password).unwrap_or_default();
+        let route = app.iroh.route(&password);
         out.push_str(&format!(
-            "{n}. {label}\n   public key: {pk}\n   linked at:  {at} (unix seconds)\n",
+            "{n}. {label}\n   public key: {pk}\n   linked at:  {at} (unix seconds)\n   transport:  {transport}\n",
             n = i + 1,
             label = link.label.as_deref().unwrap_or("(no label)"),
             pk = link.wallet_public_key,
             at = link.linked_at,
+            transport = route.label(),
         ));
+        if let Route::Iroh { .. } = route {
+            let now = app.iroh.diagnostics(&password).map_or_else(
+                || "no session open in this process".to_string(),
+                |d| d.to_string(),
+            );
+            out.push_str(&format!("   iroh now:   {now}\n"));
+        }
     }
     ToolResult::text(out)
 }
 
-fn remove_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
+async fn remove_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
     let pk = match req_str(args, "wallet_public_key") {
         Ok(pk) => pk,
         Err(e) => return ToolResult::error(e),
@@ -711,11 +860,15 @@ fn remove_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
         Ok(state) => state,
         Err(e) => return ToolResult::error(format!("could not open the connector state: {e}")),
     };
+    let password = state.password_bytes_for(&pk).ok();
     if !state.remove_link(&pk) {
         return ToolResult::error(format!("no paired wallet with public key {pk}."));
     }
     if let Err(e) = Store::save(app.config_path(), &state) {
         return ToolResult::error(format!("could not save the state: {e}"));
+    }
+    if let Some(password) = password {
+        iroh::forget(app, &password).await;
     }
     ToolResult::text(format!("Removed the paired wallet {pk}."))
 }
