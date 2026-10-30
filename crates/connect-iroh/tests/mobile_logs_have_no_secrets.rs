@@ -93,6 +93,13 @@ async fn the_logs_follow_a_link_without_its_secrets_or_its_messages() {
         "the wallet connected over iroh",
         "the wallet answered",
         "relay=",
+        // Durations in ms, and the limit beside the timeout.
+        "first=true",
+        "since_start_ms=",
+        "start_ms=",
+        "elapsed_ms=",
+        "limit_ms=3000",
+        "sending the request to the wallet",
     ] {
         assert!(
             logs.contains(expected),

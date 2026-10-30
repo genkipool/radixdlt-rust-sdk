@@ -31,6 +31,29 @@ minor versions may contain breaking changes.
   `remove_wallet`); the grace both ways with the real iroh half; iroh unable to start (the pairing
   goes on over WebRTC) and both failing.
 
+### Changed — diagnostics: the iroh path, from the logs alone
+
+- `radixdlt-connect-iroh` (`mobile`): durations in whole milliseconds (`*_ms`) and the limit beside
+  every timeout (`limit_ms`) — session start, waiting for the wallet, pairing, unconfirmed and
+  unanswered requests. Sessions log how long they took to start, reuse and restart, why they
+  close (`why`), how long they lived, and how long after (re)starting the wallet first reached
+  them (`first`, `since_start_ms`). Each send is logged and reported (`Progress::Sending`, new).
+  An answer nobody waits for says why it was kept: `late`, `unknown` or `duplicate`. Lines a
+  misbehaving wallet could repeat without end are rate-limited per link.
+- `radixdlt-connector-mcp`: `connector_log` covers what a field problem needs — which transport
+  each request took and why, each change of a request's state, timeouts with their limits,
+  late/duplicate/unknown answers; each pairing transport's progress and failure (with a
+  category) and the time from the QR; each iroh link's life (opened and why, reused, idle release
+  scheduled/cancelled/done, closed and why, how long the wallet took to come back); locks between
+  connector processes (wait, taken, busy with the holder's pid, the lock of a crashed connector
+  recovered); a re-paired wallet's old link closed (`link_replaced`); every tool call with its
+  duration. The iroh libraries' own INFO+ events are bridged in (`iroh_protocol`, `iroh_sdk`),
+  with `link_collision` (another holder of the link's key took this end's place) and
+  `wallet_connection_replaced` carrying the held links' diagnostics. Every line has a `level`;
+  IP addresses are blanked out of all of them; `connector_log` filters by `link` too.
+  `list_wallets` and `check_wallet_connection` show who holds each iroh link, the last request
+  and its outcome, and the last error. The links' sessions are closed when the connector exits.
+
 ### Changed — build
 
 - `radixdlt-connect-iroh` and `radixdlt-connector-mcp` take the protocol library

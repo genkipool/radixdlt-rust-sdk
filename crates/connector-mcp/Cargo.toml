@@ -30,6 +30,10 @@ radixdlt-rola = { path = "../rola", version = "0.3.0" }
 # Radix Connect over iroh, the second transport (`src/iroh.rs`). Without its `wallet` feature:
 # that one pulls the Scrypto engine, whose exact `regex` pin cannot resolve with webrtc's.
 radixdlt-connect-iroh = { path = "../connect-iroh", version = "0.3.0", default-features = false }
+# The iroh libraries' own log events (link collisions, replaced connections, relay state…) into
+# connector.log (`src/trace.rs`). Both are already in the tree through iroh.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 # One connector process per wallet link over iroh (an OS file lock), as `radixdlt-connect` does
 # for WebRTC turns.
 fs4 = { version = "0.13", features = ["sync"] }

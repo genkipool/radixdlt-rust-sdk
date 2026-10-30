@@ -136,6 +136,59 @@ fn link_lock_is_free(dir: &std::path::Path, password: &[u8]) -> bool {
     free
 }
 
+/// The events named `name` in the connector log of `dir`, oldest first.
+fn events(dir: &std::path::Path, name: &str) -> Vec<Value> {
+    std::fs::read_to_string(dir.join("connector.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["event"] == name)
+        .collect()
+}
+
+/// Waits (up to `limit`) until the log of `dir` holds `count` events named `name`; the last one.
+async fn wait_for_event(dir: &std::path::Path, name: &str, count: usize, limit: Duration) -> Value {
+    tokio::time::timeout(limit, async {
+        loop {
+            let found = events(dir, name);
+            if found.len() >= count {
+                return found.last().cloned().unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no {name} event in the log"))
+}
+
+/// Nothing in the connector log of `dir` opens the link, nor names a network address: no line
+/// holds the link password, and blanking IP addresses changes nothing.
+fn assert_log_clean(dir: &std::path::Path, password: &[u8]) {
+    let log = std::fs::read_to_string(dir.join("connector.log")).unwrap_or_default();
+    assert!(!log.is_empty(), "a log was written");
+    assert!(
+        !log.contains(&hex::encode(password)),
+        "the link password is in the log"
+    );
+    assert_eq!(crate::diag::scrub_ips(&log), log, "an IP address is in the log");
+}
+
+/// A `connector.json` with one link, password `password`, to a wallet that is not there.
+fn seed_link(dir: &std::path::Path, password: &[u8]) {
+    std::fs::remove_dir_all(dir).ok();
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        dir.join("connector.json"),
+        json!({
+            "version": 1,
+            "identity": { "privateKey": "00".repeat(32), "publicKey": "11".repeat(32) },
+            "links": [ { "password": hex::encode(password), "walletPublicKey": "ab".repeat(32), "linkedAt": "0" } ],
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
 fn in_local_set(test: impl std::future::Future<Output = ()>) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -207,19 +260,65 @@ fn a_wallet_paired_over_iroh_signs_through_the_tools() {
         assert!(proof_text.contains(&wallet.account_address()), "{proof_text}");
         assert_eq!(running.received().len(), 1, "sent exactly once");
 
-        // The wallet's transport and live connection are visible.
+        // The wallet's transport, live connection and last request are visible.
         let wallets = text(&tools::call(&app, "list_wallets", json!({})).await);
         assert!(wallets.contains("transport:  iroh (relay"), "{wallets}");
+        assert!(
+            wallets.contains("paired over iroh (transports.json)"),
+            "{wallets}"
+        );
         assert!(wallets.contains("state=connected"), "{wallets}");
+        assert!(
+            wallets.contains("Last request: request_account_proof (account_proof)")
+                && wallets.contains("answered"),
+            "{wallets}"
+        );
+        assert!(wallets.contains("Iroh link held by: this process"), "{wallets}");
         let reachable =
             text(&tools::call(&app, "check_wallet_connection", json!({ "timeout_seconds": 20 })).await);
         assert!(reachable.contains("WALLET REACHABLE"), "{reachable}");
         assert!(reachable.contains("Connection: connector "), "{reachable}");
+        assert!(reachable.contains("Last request: "), "{reachable}");
 
-        // The trace follows the request over iroh, and holds no link password.
+        // The trace follows the request over iroh — which transport and why, each step, each
+        // change of its state — and holds no link password.
         let log = std::fs::read_to_string(dir.join("connector.log")).unwrap();
         assert!(log.contains("\"transport\":\"iroh (relay"), "{log}");
         assert!(log.contains("\"event\":\"delivered\""), "{log}");
+        let start = &events(&dir, "request_start")[0];
+        assert_eq!(start["route"], "paired over iroh (transports.json)", "{start}");
+        assert_eq!(start["concurrent"], 0, "{start}");
+        let id = start["interaction_id"].as_str().unwrap();
+        let sending = &events(&dir, "sending")[0];
+        assert_eq!(
+            (sending["interaction_id"].as_str(), sending["attempt"].as_u64()),
+            (Some(id), Some(1))
+        );
+        let states: Vec<(String, String)> = events(&dir, "request_state")
+            .iter()
+            .filter(|e| e["interaction_id"] == id)
+            .map(|e| {
+                (
+                    e["from"].as_str().unwrap().to_string(),
+                    e["to"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            states.first().map(|s| s.0.as_str()),
+            Some("sending"),
+            "{states:?}"
+        );
+        assert_eq!(
+            states.last().map(|s| s.1.as_str()),
+            Some("answered"),
+            "{states:?}"
+        );
+        assert_eq!(
+            events(&dir, "iroh_link_adopted").len(),
+            1,
+            "the pairing's session is kept"
+        );
         let state: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("connector.json")).unwrap()).unwrap();
         let password = state["links"][0]["password"].as_str().unwrap().to_string();
@@ -229,6 +328,7 @@ fn a_wallet_paired_over_iroh_signs_through_the_tools() {
             records.contains("\"transport\": \"iroh\"") && !records.contains(&password),
             "{records}"
         );
+        assert_log_clean(&dir, &hex::decode(&password).unwrap());
 
         running.close().await;
         std::fs::remove_dir_all(&dir).ok();
@@ -450,7 +550,7 @@ fn a_wallet_that_links_over_webrtc_only_is_kept_after_the_grace_and_iroh_goes() 
             "the iroh half's session is closed"
         );
 
-        let outcome = tools::concluded(&app, password.as_slice(), chosen).unwrap();
+        let outcome = tools::concluded(&app, password.as_slice(), chosen, std::time::Instant::now()).unwrap();
         assert_eq!(
             outcome.paired_over,
             LinkRecord {
@@ -503,7 +603,7 @@ fn iroh_linking_within_the_grace_after_webrtc_is_kept() {
                 why: "iroh within grace after webrtc",
             })
         );
-        let outcome = tools::concluded(&app, password.as_slice(), chosen).unwrap();
+        let outcome = tools::concluded(&app, password.as_slice(), chosen, std::time::Instant::now()).unwrap();
         assert_eq!(outcome.paired_over.transport, Transport::Iroh);
         assert!(
             app.iroh.diagnostics(password.as_slice()).is_some(),
@@ -573,6 +673,270 @@ fn a_transport_that_fails_leaves_the_other_and_both_failing_name_both() {
             failure.contains("over webrtc: ") && failure.contains("over iroh: "),
             "{failure}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    });
+}
+
+/// Two connector processes (two `App`s on one state directory) and one wallet link over iroh: the
+/// one that holds it keeps it; the other reports LINK_BUSY naming the holder, how long it waited
+/// and its limit — or, given the time, waits its turn and takes the link once it is let go of.
+#[test]
+fn two_connectors_on_one_link_one_holds_it_the_other_is_busy_or_waits_its_turn() {
+    in_local_set(async {
+        let relay = LocalRelay::start().await;
+        let dir = std::env::temp_dir().join(format!("connector_mcp_e2e_two_{}", std::process::id()));
+        let password = [0x51u8; 32];
+        seed_link(&dir, &password);
+        let options = Options {
+            transport: Setting::Iroh,
+            iroh_relay: Some(relay.url.clone()),
+        };
+        let mut first = App::at(dir.join("connector.json"), options.clone());
+        first.iroh.set_idle(Duration::from_millis(300));
+        let (first, second) = (
+            Rc::new(first),
+            Rc::new(App::at(dir.join("connector.json"), options)),
+        );
+        let relay_choice = Some(relay.url.clone());
+        let soon = || std::time::Instant::now() + Duration::from_secs(15);
+
+        let held = crate::iroh::acquire(&first, &password, &relay_choice, soon())
+            .await
+            .unwrap();
+        let busy = tools::call(
+            &second,
+            "check_wallet_connection",
+            json!({ "timeout_seconds": 1 }),
+        )
+        .await;
+        let failure = &busy["structuredContent"];
+        assert_eq!(failure["code"], "LINK_BUSY", "{busy}");
+        let detail = failure["detail"].as_str().unwrap();
+        assert!(
+            detail.contains(&format!("pid {}", std::process::id())) && detail.contains("of 1000 ms"),
+            "{detail}"
+        );
+        let wait = &events(&dir, "iroh_link_wait")[0];
+        assert_eq!(wait["holder_pid"], std::process::id(), "{wait}");
+        let busy_event = &events(&dir, "iroh_link_busy")[0];
+        assert_eq!(busy_event["limit_ms"], 1000, "{busy_event}");
+        assert!(busy_event["waited_ms"].as_u64().unwrap() >= 1000, "{busy_event}");
+        let probe = &events(&dir, "probe_failed")[0];
+        assert!(
+            probe["holder"].as_str().unwrap().contains("another process"),
+            "{probe}"
+        );
+
+        // Given the time, the second waits behind the first and takes the link once it goes.
+        let letting_go = async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            drop(held);
+        };
+        let (taken, ()) = tokio::join!(
+            crate::iroh::acquire(&second, &password, &relay_choice, soon()),
+            letting_go
+        );
+        let taken = taken.unwrap();
+        let locked = &events(&dir, "iroh_link_locked")[0];
+        assert!(locked["waited_ms"].as_u64().unwrap() >= 500, "{locked}");
+        let released = &events(&dir, "iroh_link_released")[0];
+        assert_eq!(released["uses"], 1, "{released}");
+        assert!(
+            events(&dir, "iroh_link_lock_recovered").is_empty(),
+            "a link let go of cleanly is not a crashed holder"
+        );
+        drop(taken);
+        assert_log_clean(&dir, &password);
+        std::fs::remove_dir_all(&dir).ok();
+    });
+}
+
+/// A connector that crashed holding a link leaves its record in the link's lock file (the OS
+/// frees the lock itself): the next one takes the link and says so.
+#[test]
+fn a_link_left_locked_by_a_crashed_connector_is_recovered_and_logged() {
+    in_local_set(async {
+        let relay = LocalRelay::start().await;
+        let dir = std::env::temp_dir().join(format!("connector_mcp_e2e_stale_{}", std::process::id()));
+        let password = [0x52u8; 32];
+        seed_link(&dir, &password);
+        let key = crate::iroh::connection_id(&password);
+        std::fs::create_dir_all(dir.join("iroh-links")).unwrap();
+        let lock = dir.join("iroh-links").join(format!("{}.lock", &key[..32]));
+        std::fs::write(&lock, "999999 1700000000").unwrap();
+        let app = Rc::new(App::at(
+            dir.join("connector.json"),
+            Options {
+                transport: Setting::Iroh,
+                iroh_relay: Some(relay.url.clone()),
+            },
+        ));
+
+        let turn = crate::iroh::acquire(
+            &app,
+            &password,
+            &Some(relay.url.clone()),
+            std::time::Instant::now() + Duration::from_secs(15),
+        )
+        .await
+        .unwrap();
+        let recovered = &events(&dir, "iroh_link_lock_recovered")[0];
+        assert_eq!(recovered["previous_holder_pid"], 999_999, "{recovered}");
+        assert_eq!(
+            recovered["previous_holder_since"], "2023-11-14T22:13:20Z",
+            "{recovered}"
+        );
+        let record = std::fs::read_to_string(&lock).unwrap();
+        assert!(
+            record.starts_with(&format!("{} ", std::process::id())),
+            "{record}"
+        );
+        assert!(app.iroh.holder(&password).starts_with("this process"));
+        drop(turn);
+        assert_log_clean(&dir, &password);
+        std::fs::remove_dir_all(&dir).ok();
+    });
+}
+
+/// A link's session through its life: opened (first use), the wallet reaching it (timed), let go
+/// of when idle — a release cancelled by a call, then one done — and reopened, timed again until
+/// the wallet is back: what a person feels after an idle release.
+#[test]
+fn an_idle_link_is_released_and_reopening_it_is_timed_until_the_wallet_is_back() {
+    in_local_set(async {
+        let relay = LocalRelay::start().await;
+        let dir = std::env::temp_dir().join(format!("connector_mcp_e2e_idle_{}", std::process::id()));
+        let password = [0x53u8; 32];
+        seed_link(&dir, &password);
+        let mut app = App::at(
+            dir.join("connector.json"),
+            Options {
+                transport: Setting::Iroh,
+                iroh_relay: Some(relay.url.clone()),
+            },
+        );
+        app.iroh.set_idle(Duration::from_millis(300));
+        let app = Rc::new(app);
+        let relay_choice = Some(relay.url.clone());
+        let soon = || std::time::Instant::now() + Duration::from_secs(15);
+
+        let turn = crate::iroh::acquire(&app, &password, &relay_choice, soon())
+            .await
+            .unwrap();
+        let opened = &events(&dir, "iroh_link_open")[0];
+        assert_eq!(opened["why"], "first use in this process", "{opened}");
+        let wallet = Arc::new(SimWallet::default());
+        let running = wallet.connect(&password, &relay.url, answers_rola()).await;
+        let connected = wait_for_event(&dir, "iroh_link_wallet_connected", 1, Duration::from_secs(20)).await;
+        assert_eq!(connected["opened"], "first use in this process", "{connected}");
+
+        // Used again before the idle time is up: the release is cancelled.
+        drop(turn);
+        let again = crate::iroh::acquire(&app, &password, &relay_choice, soon())
+            .await
+            .unwrap();
+        assert_eq!(events(&dir, "iroh_link_release_cancelled").len(), 1);
+        drop(again);
+        let released = wait_for_event(&dir, "iroh_link_released", 1, Duration::from_secs(10)).await;
+        assert_eq!(released["idle_ms"], 300, "{released}");
+        assert!(link_lock_is_free(&dir, &password));
+        assert!(app.iroh.holder(&password) == "nobody");
+
+        // Reopened: why, and how long until the wallet (re-dialing) is back.
+        let reopened = crate::iroh::acquire(&app, &password, &relay_choice, soon())
+            .await
+            .unwrap();
+        let open = events(&dir, "iroh_link_open").last().cloned().unwrap();
+        assert_eq!(open["why"], "reopened after an idle release", "{open}");
+        assert!(open["released_ago_ms"].is_u64(), "{open}");
+        let back = wait_for_event(&dir, "iroh_link_wallet_connected", 2, Duration::from_secs(30)).await;
+        assert_eq!(back["opened"], "reopened after an idle release", "{back}");
+        assert!(
+            back["after_ms"].is_u64() && back["diagnostics"].as_str().unwrap().contains("state=connected"),
+            "{back}"
+        );
+        let idle = events(&dir, "iroh_link_idle");
+        assert!(idle.len() >= 2 && idle[0]["release_after_ms"] == 300, "{idle:?}");
+
+        drop(reopened);
+        running.close().await;
+        assert_log_clean(&dir, &password);
+        std::fs::remove_dir_all(&dir).ok();
+    });
+}
+
+/// The libraries' own events reach the log: a collision (another holder of the link key took this
+/// end's place) as `link_collision` with the held links' diagnostics, a replaced wallet connection,
+/// the rest as `iroh_protocol` / `iroh_sdk`; repeats counted, addresses dropped.
+#[test]
+fn library_events_reach_the_log_and_a_collision_carries_the_links_diagnostics() {
+    in_local_set(async {
+        let relay = LocalRelay::start().await;
+        let dir = std::env::temp_dir().join(format!("connector_mcp_e2e_trace_{}", std::process::id()));
+        let password = [0x54u8; 32];
+        seed_link(&dir, &password);
+        let app = Rc::new(App::at(
+            dir.join("connector.json"),
+            Options {
+                transport: Setting::Iroh,
+                iroh_relay: Some(relay.url.clone()),
+            },
+        ));
+        let _bridge = crate::trace::scoped(app.log.clone(), app.iroh.held_links());
+        let turn = crate::iroh::acquire(
+            &app,
+            &password,
+            &Some(relay.url.clone()),
+            std::time::Instant::now() + Duration::from_secs(15),
+        )
+        .await
+        .unwrap();
+        let link = crate::iroh::short_id(&crate::iroh::connection_id(&password)).to_string();
+
+        // The SDK's lines (named by the same link id as the connector's) and the protocol's.
+        // Lines of this test's own: the libraries' may have been reached first on another test
+        // thread, which `tracing` remembers process-wide (see `trace::scoped`).
+        tracing::info!(target: "radixdlt_connect_iroh::mobile", link = link.as_str(), interaction = "i-1", "the wallet took the request");
+        tracing::info!(target: "radix_connect_iroh::session", relay = "http://127.0.0.1:1/", "connected to the relay");
+        let sdk = &events(&dir, "iroh_sdk")
+            .into_iter()
+            .find(|e| e["message"] == "the wallet took the request")
+            .unwrap();
+        assert_eq!(
+            (sdk["link"].as_str(), sdk["interaction_id"].as_str()),
+            (Some(link.as_str()), Some("i-1")),
+            "{sdk}"
+        );
+        assert!(events(&dir, "iroh_protocol")
+            .iter()
+            .any(|e| e["message"] == "connected to the relay"));
+
+        for _ in 0..3 {
+            tracing::warn!(target: "radix_connect_iroh::session", local = "abc", "displaced at the relay by another holder of the link key");
+        }
+        let collisions = events(&dir, "link_collision");
+        assert_eq!(
+            collisions.len(),
+            1,
+            "repeats are counted, not written: {collisions:?}"
+        );
+        let links = collisions[0]["links"].as_str().unwrap();
+        assert!(
+            links.contains(&format!("link {link}: connector ")) && links.contains("relay="),
+            "{links}"
+        );
+
+        tracing::info!(target: "radix_connect_iroh::session", peer = "f00d", "radix connect iroh session started");
+        tracing::info!(target: "radix_connect_iroh::session", peer = "f00d", "connected to the peer");
+        tracing::info!(target: "radix_connect_iroh::session", peer = "f00d", "connected to the peer");
+        assert_eq!(events(&dir, "wallet_connection_replaced").len(), 1);
+
+        tracing::warn!(target: "radix_connect_iroh::session", addr = "192.168.1.9:1234", "no route to 10.0.0.7");
+        let log = std::fs::read_to_string(dir.join("connector.log")).unwrap();
+        assert!(!log.contains("192.168.1.9") && !log.contains("10.0.0.7"), "{log}");
+
+        drop(turn);
+        assert_log_clean(&dir, &password);
         std::fs::remove_dir_all(&dir).ok();
     });
 }

@@ -131,6 +131,35 @@ connected means the phone is not there (app closed, iroh off, another relay choi
 contains the link password. iroh-only codes: `NOT_CONFIRMED` (the wallet never confirmed the
 request — it may be on the phone, so it is not resent), `LINK_BUSY`, `IROH_UNAVAILABLE`.
 
+**The log tells the whole story.** `connector_log` (`connector.log`, JSON lines, each with a
+`level`) records, besides every request's steps:
+
+- **Requests:** which transport and why (`request_start` `route`: the link's recorded transport or
+  the setting), other requests to the wallet in flight, each send, each change of its state
+  (`request_state`), and every timeout with the time waited and its limit (`*_ms`, `limit_ms`).
+  Answers nobody waits for are told apart: `late_answer`, `duplicate_answer`, `unknown_answer`.
+- **Pairing:** each transport's progress and failure (`pairing_attempt_failed`, with a
+  `category`), the time from the QR to the wallet, the decision (`paired`, `why`), and a pairing a
+  newer `pair_wallet` replaced (`pairing_abandoned`).
+- **iroh links:** opened and why (`iroh_link_open`: first use, reopened after an idle release…),
+  reused, release scheduled / cancelled / done (`iroh_link_idle`, `iroh_link_release_cancelled`,
+  `iroh_link_released`), closed and why, and how long the wallet took to come back
+  (`iroh_link_wallet_connected`, `after_ms`) — what a person feels after an idle release.
+- **Several connector processes:** waiting for another process's link (`iroh_link_wait`,
+  `iroh_link_locked`), giving up (`iroh_link_busy` with the holder's pid), and the lock of a
+  connector that crashed taken back (`iroh_link_lock_recovered`). `list_wallets` and
+  `check_wallet_connection` show who holds each link, its last request and outcome, and its last
+  error.
+- **The iroh libraries' own events** (`iroh_protocol`, `iroh_sdk`), among them
+  `link_collision` — another holder of the link's key took this end's place, e.g. the same
+  `connector.json` on two machines — and `wallet_connection_replaced`, both with the links'
+  diagnostics.
+
+`connector_log { "link": "<link id>" }` follows one wallet link (`list_wallets` shows its id).
+Nothing in it opens a link or names an address: no passwords, keys or message contents, and IP
+addresses (other than loopback) are blanked out of every line. Repeated lines are counted, not
+written (`suppressed`).
+
 ## Tools
 
 | Tool | What it does |
@@ -152,7 +181,7 @@ request — it may be on the phone, so it is not resent), `LINK_BUSY`, `IROH_UNA
 | `cancel_request` | Stops a request here and stops it blocking new ones (the wallet itself has no remote cancel — the result says whether it is still on the phone). |
 | `check_wallet_connection` | Opens and closes a channel (over iroh: waits for the wallet to connect), sending nothing: is the wallet app reachable right now? Over iroh it shows the connection's diagnostics. |
 | `check_dapp_identity` | Runs the wallet's own dApp verification (dApp definition ↔ origin ↔ `radix.json`). |
-| `connector_log` | The connector's trace of every request, step by step. |
+| `connector_log` | The connector's trace: every request step by step, pairings, each iroh link's life, locks between connector processes, collisions. Filter by `interaction_id` or `link`. |
 | `transaction_status` | Reads a transaction's commit status from the Gateway. |
 
 ### With no internet: a local relay over the USB cable

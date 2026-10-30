@@ -134,6 +134,36 @@ Nunca contiene la contraseña del enlace. Códigos solo de iroh: `NOT_CONFIRMED`
 confirmó la petición — puede estar en el móvil, así que no se reenvía), `LINK_BUSY`,
 `IROH_UNAVAILABLE`.
 
+**El log cuenta toda la historia.** `connector_log` (`connector.log`, líneas JSON, cada una con
+su `level`) registra, además de los pasos de cada petición:
+
+- **Peticiones:** por qué transporte y por qué (`request_start` `route`: el transporte registrado
+  del enlace o el ajuste), otras peticiones en curso a esa wallet, cada envío, cada cambio de
+  estado (`request_state`) y cada timeout con lo esperado y su límite (`*_ms`, `limit_ms`). Las
+  respuestas que nadie espera se distinguen: `late_answer`, `duplicate_answer`, `unknown_answer`.
+- **Emparejamiento:** el progreso y el fallo de cada transporte (`pairing_attempt_failed`, con
+  `category`), el tiempo desde el QR hasta la wallet, la decisión (`paired`, `why`) y el
+  emparejamiento que sustituyó un `pair_wallet` más nuevo (`pairing_abandoned`).
+- **Enlaces iroh:** abierto y por qué (`iroh_link_open`: primer uso, reabierto tras liberarse por
+  inactividad…), reutilizado, liberación programada / cancelada / hecha (`iroh_link_idle`,
+  `iroh_link_release_cancelled`, `iroh_link_released`), cerrado y por qué, y cuánto tardó la
+  wallet en volver (`iroh_link_wallet_connected`, `after_ms`) — lo que nota una persona tras una
+  liberación por inactividad.
+- **Varios procesos del conector:** la espera por el enlace de otro proceso (`iroh_link_wait`,
+  `iroh_link_locked`), la renuncia (`iroh_link_busy` con el pid de quien lo tiene) y el bloqueo
+  de un conector que se cayó recuperado (`iroh_link_lock_recovered`). `list_wallets` y
+  `check_wallet_connection` muestran quién tiene cada enlace, su última petición y resultado, y
+  su último error.
+- **Los eventos propios de las bibliotecas iroh** (`iroh_protocol`, `iroh_sdk`), entre ellos
+  `link_collision` — otro poseedor de la clave del enlace ocupó el sitio de este extremo, p. ej.
+  el mismo `connector.json` en dos máquinas — y `wallet_connection_replaced`, ambos con el
+  diagnóstico de los enlaces.
+
+`connector_log { "link": "<id del enlace>" }` sigue un enlace (`list_wallets` muestra su id).
+Nada en él abre un enlace ni nombra una dirección: ni contraseñas, ni claves, ni contenido de
+mensajes, y las direcciones IP (salvo loopback) se borran de cada línea. Las líneas repetidas se
+cuentan en vez de escribirse (`suppressed`).
+
 ## Herramientas
 
 | Herramienta | Qué hace |
@@ -155,7 +185,7 @@ confirmó la petición — puede estar en el móvil, así que no se reenvía), `
 | `cancel_request` | Detiene una petición aquí y deja de bloquear las nuevas (la wallet no permite retirar una a distancia: el resultado dice si sigue en el móvil). |
 | `check_wallet_connection` | Abre y cierra un canal (por iroh: espera a que la wallet se conecte) sin enviar nada: ¿se llega ahora a la app? Por iroh muestra el diagnóstico de la conexión. |
 | `check_dapp_identity` | Hace la misma verificación de la dApp que la wallet (dApp definition ↔ origin ↔ `radix.json`). |
-| `connector_log` | La traza del conector de cada petición, paso a paso. |
+| `connector_log` | La traza del conector: cada petición paso a paso, emparejamientos, la vida de cada enlace iroh, bloqueos entre procesos del conector, colisiones. Filtra por `interaction_id` o `link`. |
 | `transaction_status` | Lee el estado de commit de una transacción desde el Gateway. |
 
 ### Sin internet: un relé local por el cable USB

@@ -21,9 +21,9 @@ use radixdlt_connect::{
     account_proof_request_sharing, account_request, authorized_request, extract_accounts,
     extract_persona_email, extract_persona_name, extract_proofs, extract_signed_partial_transaction,
     extract_transaction_intent_hash, pre_authorization_request, transaction_request, unauthorized_request,
-    Auth, AuthorizedRequest, OwnershipWanted, PersonaRequest,
+    Auth, AuthorizedRequest, ConnectError, OwnershipWanted, PersonaRequest,
 };
-use radixdlt_connect_iroh::mobile::Progress as IrohProgress;
+use radixdlt_connect_iroh::mobile::{MobileError, Progress as IrohProgress};
 use radixdlt_connect_types::linking;
 use radixdlt_rola::{verify_account_proof, AccountProof};
 
@@ -448,12 +448,13 @@ pub fn list_json() -> Vec<Value> {
         tool(
             "connector_log",
             "Read the connector log",
-            "The connector's own trace: every step of every request (sent, delivered, answered, failed with code/stage, late answers, cancellations), oldest first. Filter by interaction_id to follow one request end to end.",
+            "The connector's own trace, oldest first: every step of every request (which transport and why, sent, delivered, answered, failed with code/stage and its limit, late/unknown/duplicate answers, each change of its state, cancellations), pairing (each transport's progress and failure, the decision, the time since the QR was shown), each iroh link's life (opened and why, reused, idle release, how long the wallet took to come back, locks shared with other connector processes, collisions with another holder of the link) and the iroh libraries' own warnings. No secrets, no IP addresses. Filter by interaction_id to follow one request, or by link (the link id list_wallets shows) to follow one wallet link.",
             true,
             json!({
                 "type": "object",
                 "properties": {
                     "interaction_id": { "type": "string", "description": "Only events about this request." },
+                    "link": { "type": "string", "description": "Only events about this wallet link (its link id, from list_wallets)." },
                     "limit": { "type": "integer", "description": "How many of the latest events (default 40, max 500)." }
                 }
             }),
@@ -593,18 +594,29 @@ async fn pair_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
     // `pair_status` collects its outcome.
     let result: Rc<RefCell<Option<Result<PairOutcome, String>>>> = Rc::new(RefCell::new(None));
     let (task_app, slot, plan) = (app.clone(), result.clone(), setting.pairing());
+    let shown = Instant::now();
     let task = tokio::task::spawn_local(async move {
-        let outcome = pair_in_background(&task_app, password, plan).await;
+        let outcome = pair_in_background(&task_app, password, plan, shown).await;
         *slot.borrow_mut() = Some(outcome);
     });
     let replaced = app.pairing.borrow_mut().replace(Pending {
         result,
         label,
+        started: shown,
+        transports: plan.iter().map(|t| t.label()).collect(),
         task: task.abort_handle(),
     });
     if let Some(earlier) = replaced {
         // Its QR is not shown any more: stop waiting for it, over every transport.
+        let finished = earlier.result.borrow().is_some();
         earlier.task.abort();
+        app.log.event(
+            "pairing_abandoned",
+            json!({
+                "why": "a new pair_wallet replaced it", "age_ms": iroh::ms(earlier.started.elapsed()),
+                "transports": earlier.transports, "had_finished": finished,
+            }),
+        );
     }
 
     let relay = |keep_default: &str| match &app.iroh.relay {
@@ -653,35 +665,60 @@ async fn pair_in_background(
     app: &Rc<App>,
     password: Zeroizing<[u8; linking::PASSWORD_LENGTH]>,
     plan: &[Transport],
+    shown: Instant,
 ) -> Result<PairOutcome, String> {
     let labels: Vec<&str> = plan.iter().map(|t| t.label()).collect();
-    app.log.event("pairing_started", json!({ "transports": labels }));
+    app.log.event(
+        "pairing_started",
+        json!({
+            "transports": labels, "link": iroh::short_id(&iroh::connection_id(password.as_slice())),
+            "limit_ms": iroh::ms(PAIRING_TIMEOUT), "iroh_grace_ms": iroh::ms(IROH_GRACE),
+            "iroh_relays": iroh::relay_label(&app.iroh.relay),
+        }),
+    );
     let attempts = plan
         .iter()
         .map(|&transport| (transport, attempt(app, transport, &password)))
         .collect();
     let chosen = choose_link(attempts, IROH_GRACE).await;
-    concluded(app, password.as_slice(), chosen)
+    concluded(app, password.as_slice(), chosen, shown)
 }
 
-/// Pairing over `transport`, logging why when it fails (the others go on).
+/// Pairing over `transport`, logging when it links or fails — with why, as a category — and how
+/// long after the QR was shown (the others go on).
 pub fn attempt<'a>(
     app: &'a Rc<App>,
     transport: Transport,
     password: &'a [u8; linking::PASSWORD_LENGTH],
 ) -> Attempt<'a> {
     Box::pin(async move {
+        let started = Instant::now();
         let outcome = match transport {
             Transport::Webrtc => pair_over_webrtc(app, password).await,
-            Transport::Iroh => pair_over_iroh(app, password).await,
+            Transport::Iroh => pair_over_iroh(app, password, started).await,
         };
-        if let Err(detail) = &outcome {
-            app.log.event(
-                "pairing_attempt_failed",
-                json!({ "transport": transport.label(), "detail": detail }),
-            );
+        match outcome {
+            Ok(wallet_public_key) => {
+                app.log.event(
+                    "pairing_attempt_linked",
+                    json!({
+                        "transport": transport.label(), "wallet": short(&wallet_public_key),
+                        "elapsed_ms": iroh::ms(started.elapsed()),
+                    }),
+                );
+                Ok(wallet_public_key)
+            }
+            Err((category, detail)) => {
+                app.log.event(
+                    "pairing_attempt_failed",
+                    json!({
+                        "transport": transport.label(), "category": category, "detail": detail,
+                        "elapsed_ms": iroh::ms(started.elapsed()), "limit_ms": iroh::ms(PAIRING_TIMEOUT),
+                    }),
+                );
+                Err(detail)
+            }
         }
-        outcome
     })
 }
 
@@ -773,6 +810,7 @@ pub fn concluded(
     app: &Rc<App>,
     password: &[u8],
     chosen: Result<Linked, Vec<(Transport, String)>>,
+    shown: Instant,
 ) -> Result<PairOutcome, String> {
     match chosen {
         Ok(Linked {
@@ -784,6 +822,8 @@ pub fn concluded(
                 "transport": transport.label(),
                 "why": why,
                 "wallet": short(&wallet_public_key),
+                "link": iroh::short_id(&iroh::connection_id(password)),
+                "elapsed_ms": iroh::ms(shown.elapsed()),
             });
             let iroh_relay = match transport {
                 Transport::Webrtc => None,
@@ -810,24 +850,48 @@ pub fn concluded(
                 .map(|(transport, reason)| format!("over {}: {reason}", transport.label()))
                 .collect::<Vec<_>>()
                 .join("; ");
-            app.log.event("pairing_failed", json!({ "detail": detail }));
+            app.log.event(
+                "pairing_failed",
+                json!({ "detail": detail, "elapsed_ms": iroh::ms(shown.elapsed()) }),
+            );
             Err(detail)
         }
     }
 }
 
+/// A pairing attempt that failed: why, as a category for the log, and the error.
+type AttemptFailure = (&'static str, String);
+
 /// Pairs over WebRTC, through the signaling servers of the connector `App` makes.
-async fn pair_over_webrtc(app: &App, password: &[u8; linking::PASSWORD_LENGTH]) -> Result<String, String> {
+async fn pair_over_webrtc(
+    app: &App,
+    password: &[u8; linking::PASSWORD_LENGTH],
+) -> Result<String, AttemptFailure> {
     let connector = app.webrtc_connector();
     connector
         .pair_with_password(password, PAIRING_TIMEOUT)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|error| {
+            let category = match &error {
+                ConnectError::Signaling(_) => "signaling_unreachable",
+                ConnectError::SignalingClosed => "signaling_closed",
+                ConnectError::ChannelTimeout | ConnectError::ResponseTimeout => "no_wallet_in_time",
+                ConnectError::Crypto(_) => "bad_link_signature",
+                ConnectError::WebRtc(_) => "webrtc",
+                ConnectError::Protocol(_) => "protocol",
+                _ => "other",
+            };
+            (category, error.to_string())
+        })
 }
 
-/// Pairs over iroh, on the configured relays, logging how the wallet's connection goes.
-async fn pair_over_iroh(app: &App, password: &[u8]) -> Result<String, String> {
-    let connector = app.iroh.connector(&app.iroh.relay)?;
+/// Pairs over iroh, on the configured relays, logging how the wallet's connection goes (since
+/// `shown`, when the QR was shown).
+async fn pair_over_iroh(app: &App, password: &[u8], shown: Instant) -> Result<String, AttemptFailure> {
+    let connector = app
+        .iroh
+        .connector(&app.iroh.relay)
+        .map_err(|e| ("iroh_unavailable", e))?;
     // The library reports progress through a `Send` callback; the log is not `Send`.
     let (step_tx, mut step_rx) = tokio::sync::mpsc::unbounded_channel::<IrohProgress>();
     let mut on = move |step: IrohProgress| {
@@ -837,22 +901,38 @@ async fn pair_over_iroh(app: &App, password: &[u8]) -> Result<String, String> {
     tokio::pin!(pairing);
     loop {
         tokio::select! {
-            outcome = &mut pairing => return outcome.map_err(|e| e.to_string()),
-            Some(step) = step_rx.recv() => log_pairing_step(app, &step),
+            outcome = &mut pairing => return outcome.map_err(|error| {
+                let category = match &error {
+                    MobileError::WalletUnreachable { .. } => "no_wallet_in_time",
+                    MobileError::ResponseTimeout { .. } => "wallet_connected_but_did_not_link",
+                    MobileError::Crypto(_) => "bad_link_signature",
+                    MobileError::Session(_) | MobileError::InvalidRelayUrl(_) => "iroh_unavailable",
+                    MobileError::Closed => "session_closed",
+                    _ => "other",
+                };
+                (category, error.to_string())
+            }),
+            Some(step) = step_rx.recv() => log_pairing_step(app, &step, shown),
         }
     }
 }
 
-/// What a pairing over iroh reports while it waits: the wallet's connection, with diagnostics.
-fn log_pairing_step(app: &App, step: &IrohProgress) {
+/// What a pairing over iroh reports while it waits: the wallet's connection, with diagnostics and
+/// the time since the QR was shown.
+fn log_pairing_step(app: &App, step: &IrohProgress, shown: Instant) {
     let (event, diagnostics) = match step {
         IrohProgress::WaitingForWallet { diagnostics, .. } => ("pairing_waiting", diagnostics),
         IrohProgress::Connected { diagnostics, .. } => ("pairing_wallet_connected", diagnostics),
         IrohProgress::WalletDisconnected { diagnostics } => ("pairing_wallet_disconnected", diagnostics),
         _ => return,
     };
-    app.log
-        .event(event, json!({ "diagnostics": diagnostics.to_string() }));
+    app.log.event(
+        event,
+        json!({
+            "transport": "iroh", "since_qr_ms": iroh::ms(shown.elapsed()),
+            "limit_ms": iroh::ms(PAIRING_TIMEOUT), "diagnostics": diagnostics.to_string(),
+        }),
+    );
 }
 
 async fn pair_status(app: &Rc<App>, args: &Value) -> ToolResult {
@@ -873,10 +953,11 @@ async fn pair_status(app: &Rc<App>, args: &Value) -> ToolResult {
 
     let deadline = Instant::now() + Duration::from_secs(wait_seconds);
     loop {
-        if let Some(outcome) = slot.borrow_mut().take() {
+        let taken = slot.borrow_mut().take();
+        if let Some(outcome) = taken {
             *app.pairing.borrow_mut() = None; // pairing finished, clear it
             return match outcome {
-                Ok(outcome) => finish_pairing(app, outcome, label),
+                Ok(outcome) => finish_pairing(app, outcome, label).await,
                 Err(e) => ToolResult::error(format!(
                     "pairing failed: {e}\nMake sure the Radix Wallet app is open and try pair_wallet again."
                 )),
@@ -891,11 +972,16 @@ async fn pair_status(app: &Rc<App>, args: &Value) -> ToolResult {
     }
 }
 
-fn finish_pairing(app: &Rc<App>, outcome: PairOutcome, label: Option<String>) -> ToolResult {
+async fn finish_pairing(app: &Rc<App>, outcome: PairOutcome, label: Option<String>) -> ToolResult {
     let mut state = match Store::load_or_init(app.config_path()) {
         Ok(state) => state,
         Err(e) => return ToolResult::error(format!("paired, but could not open the state file: {e}")),
     };
+    // A wallet paired again: its new link replaces the old one, whose session and record go.
+    let replaced = state
+        .password_bytes_for(&outcome.wallet_public_key)
+        .ok()
+        .filter(|old| old.as_slice() != outcome.password.as_slice());
     state.add_or_replace_link(Link {
         password: hex::encode(outcome.password.as_slice()),
         wallet_public_key: outcome.wallet_public_key.clone(),
@@ -904,6 +990,19 @@ fn finish_pairing(app: &Rc<App>, outcome: PairOutcome, label: Option<String>) ->
     });
     if let Err(e) = Store::save(app.config_path(), &state) {
         return ToolResult::error(format!("paired, but could not save the link: {e}"));
+    }
+    if let Some(old) = replaced {
+        app.log.event(
+            "link_replaced",
+            json!({
+                "wallet": short(&outcome.wallet_public_key),
+                "old_link": iroh::short_id(&iroh::connection_id(&old)),
+                "old_transport": app.iroh.route(&old).label(),
+                "new_link": iroh::short_id(&iroh::connection_id(outcome.password.as_slice())),
+                "new_transport": outcome.paired_over.transport.label(),
+            }),
+        );
+        iroh::forget(app, &old, "replaced by a new pairing of the same wallet").await;
     }
     // Without the record a link paired over iroh would be reached over WebRTC, which works only
     // while the wallet keeps WebRTC on too (Automatic): worth saying, not worth failing for.
@@ -950,14 +1049,15 @@ fn list_wallets(app: &Rc<App>) -> ToolResult {
     );
     for (i, link) in links.iter().enumerate() {
         let password = hex::decode(&link.password).unwrap_or_default();
-        let route = app.iroh.route(&password);
+        let (route, why) = app.iroh.route_why(&password);
         out.push_str(&format!(
-            "{n}. {label}\n   public key: {pk}\n   linked at:  {at} (unix seconds)\n   transport:  {transport}\n",
+            "{n}. {label}\n   public key: {pk}\n   linked at:  {at} (unix seconds)\n   transport:  {transport} — {why}\n   link id:    {id}\n",
             n = i + 1,
             label = link.label.as_deref().unwrap_or("(no label)"),
             pk = link.wallet_public_key,
             at = link.linked_at,
             transport = route.label(),
+            id = iroh::short_id(&iroh::connection_id(&password)),
         ));
         if let Route::Iroh { .. } = route {
             let now = app.iroh.diagnostics(&password).map_or_else(
@@ -965,6 +1065,9 @@ fn list_wallets(app: &Rc<App>) -> ToolResult {
                 |d| d.to_string(),
             );
             out.push_str(&format!("   iroh now:   {now}\n"));
+        }
+        for line in exchange::wallet_history(app, &link.wallet_public_key, &password).lines() {
+            out.push_str(&format!("   {line}\n"));
         }
     }
     ToolResult::text(out)
@@ -987,7 +1090,7 @@ async fn remove_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
         return ToolResult::error(format!("could not save the state: {e}"));
     }
     if let Some(password) = password {
-        iroh::forget(app, &password).await;
+        iroh::forget(app, &password, "wallet removed").await;
     }
     ToolResult::text(format!("Removed the paired wallet {pk}."))
 }

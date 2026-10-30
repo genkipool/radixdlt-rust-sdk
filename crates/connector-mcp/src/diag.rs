@@ -8,7 +8,8 @@
 //!
 //! The log is JSON lines (`connector.log`, next to `connector.json`): one line per step of every
 //! request, so a failure can be traced after the fact with `connector_log`. It never holds the
-//! link password, and manifests appear only as a short summary.
+//! link password, and manifests appear only as a short summary. IP addresses (other than this
+//! machine's loopback) are blanked out of every line before it is written: logs get shared.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -375,6 +376,7 @@ impl Failure {
 /* ─────────────────────────────────── log ─────────────────────────────────── */
 
 /// Append-only JSON-lines log, mirrored to stderr.
+#[derive(Debug, Clone)]
 pub struct Log {
     path: PathBuf,
 }
@@ -391,11 +393,13 @@ impl Log {
     /// Records one event. Never fails the caller: a log that cannot be written is reported on
     /// stderr and otherwise ignored.
     pub fn event(&self, event: &str, fields: Value) {
-        let mut line = json!({ "ts": iso_now(), "pid": std::process::id(), "event": event });
+        let mut line =
+            json!({ "ts": iso_now(), "pid": std::process::id(), "event": event, "level": level_of(event) });
         if let (Some(line), Value::Object(fields)) = (line.as_object_mut(), fields) {
+            // The libraries' events bring their own level.
             line.extend(fields);
         }
-        let text = line.to_string();
+        let text = scrub_ips(&line.to_string());
         eprintln!("radix-connector: {text}");
         if let Err(e) = self.append(&text) {
             eprintln!(
@@ -416,22 +420,125 @@ impl Log {
         writeln!(file, "{line}")
     }
 
-    /// The last `limit` events, oldest first, optionally only those about one interaction.
-    pub fn tail(&self, limit: usize, interaction_id: Option<&str>) -> Vec<Value> {
+    /// The last `limit` events, oldest first, optionally only those about one interaction and/or
+    /// one link (its short id, as `list_wallets` shows it).
+    pub fn tail(&self, limit: usize, interaction_id: Option<&str>, link: Option<&str>) -> Vec<Value> {
         let read = |path: &Path| std::fs::read_to_string(path).unwrap_or_default();
         let text = format!("{}{}", read(&self.path.with_extension("log.1")), read(&self.path));
+        let about = |event: &Value, field: &str, want: Option<&str>| match want {
+            Some(want) => event.get(field).and_then(Value::as_str) == Some(want),
+            None => true,
+        };
         let mut events: Vec<Value> = text
             .lines()
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .filter(|event| match interaction_id {
-                Some(id) => event.get("interaction_id").and_then(Value::as_str) == Some(id),
-                None => true,
-            })
+            .filter(|event| about(event, "interaction_id", interaction_id) && about(event, "link", link))
             .collect();
         let skip = events.len().saturating_sub(limit);
         events.drain(..skip);
         events
     }
+}
+
+/// The level of one of the connector's own events: `warn` for what failed or may need a person to
+/// act, `info` for everything else.
+fn level_of(event: &str) -> &'static str {
+    const WARN: &[&str] = &[
+        "request_failed",
+        "wallet_failure",
+        "request_abandoned",
+        "refused_pending",
+        "refused_dapp_identity",
+        "probe_failed",
+        "unconfirmed",
+        "resending",
+        "reconnecting",
+        "unknown_answer",
+        "duplicate_answer",
+        "pairing_failed",
+        "pairing_attempt_failed",
+        "iroh_link_busy",
+        "iroh_link_lock_recovered",
+        "iroh_link_open_failed",
+        "iroh_link_adopt_failed",
+        "iroh_link_wallet_not_connected",
+        "link_collision",
+    ];
+    if WARN.contains(&event) {
+        "warn"
+    } else {
+        "info"
+    }
+}
+
+/// `text` with every IP address but loopback's replaced by `<ip>`: IPv4 (`a.b.c.d`) and IPv6
+/// (with `::`, or at least five `:`-separated hex groups). Timestamps (`06:32:10`), versions
+/// (`0.6.1`) and Rust paths (`a::b` with a non-hex letter) are left alone.
+pub fn scrub_ips(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let at_boundary = i == 0 || !is_address_char(chars[i - 1]);
+        if at_boundary && is_address_char(chars[i]) {
+            let end = chars[i..]
+                .iter()
+                .position(|c| !is_address_char(*c))
+                .map_or(chars.len(), |n| i + n);
+            let token: String = chars[i..end].iter().collect();
+            if is_ip(&token) {
+                out.push_str("<ip>");
+            } else {
+                out.push_str(&token);
+            }
+            i = end;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn is_address_char(c: char) -> bool {
+    c.is_ascii_hexdigit() || c == '.' || c == ':'
+}
+
+/// Whether `token` (hex digits, dots and colons) is an IP address other than loopback, with or
+/// without a port.
+fn is_ip(token: &str) -> bool {
+    let compressed = token.contains("::");
+    let token = token.trim_matches(|c| c == '.' || c == ':');
+    if is_ipv4(token) {
+        return true;
+    }
+    if let Some((head, tail)) = token.rsplit_once(':') {
+        // `a.b.c.d:port`, or an IPv4 inside IPv6 (`::ffff:a.b.c.d`).
+        let port = !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit());
+        if (port && is_ipv4(head)) || (compressed && is_ipv4(tail)) {
+            return true;
+        }
+    }
+    if token.contains('.') {
+        return false;
+    }
+    let groups: Vec<&str> = token.split(':').collect();
+    let hex_groups = groups.iter().filter(|g| !g.is_empty()).count();
+    let looks_v6 = (token.contains("::") && hex_groups >= 1) || groups.len() >= 6;
+    let well_formed = groups
+        .iter()
+        .all(|g| g.len() <= 4 && g.chars().all(|c| c.is_ascii_hexdigit()));
+    looks_v6 && well_formed && token != "::1"
+}
+
+/// A dotted IPv4 address, loopback (`127.…`) excepted.
+fn is_ipv4(token: &str) -> bool {
+    let parts: Vec<&str> = token.split('.').collect();
+    parts.len() == 4
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.len() <= 3 && p.parse::<u8>().is_ok())
+        && !token.starts_with("127.")
 }
 
 /// Unix seconds now.
@@ -477,6 +584,43 @@ pub fn iso_secs(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ip_addresses_never_reach_the_log() {
+        for (text, want) in [
+            (
+                "error connecting to 192.168.1.20:3340",
+                "error connecting to <ip>",
+            ),
+            ("peer at [2001:db8::7]:443 gone", "peer at [<ip>]:443 gone"),
+            ("fe80::1c2b:3a4d:5e6f:7a8b%en0", "<ip>%en0"),
+            ("mapped ::ffff:10.0.0.1 here", "mapped <ip> here"),
+            ("addr=8.8.8.8", "addr=<ip>"),
+        ] {
+            assert_eq!(scrub_ips(text), want);
+        }
+        // What is not an address stays, loopback included (a relay on this machine).
+        for text in [
+            "2026-10-30T06:32:10.123Z",
+            "radix-connector-mcp 0.6.1",
+            "relay=http://127.0.0.1:3340/ (connected)",
+            "radix_connect_iroh::session",
+            "connector 55e138fbc3 → 0f63fb2de4 state=connected rtt=42ms",
+            "::1",
+            "abcdef0123456789abcdef0123456789",
+        ] {
+            assert_eq!(scrub_ips(text), text);
+        }
+        let dir = std::env::temp_dir().join(format!("connector_mcp_scrub_{}", std::process::id()));
+        let log = Log::new(dir.join("connector.log"));
+        log.event("probe_failed", json!({ "detail": "no route to 10.1.2.3:443" }));
+        let written = std::fs::read_to_string(log.path()).unwrap();
+        assert!(
+            written.contains("no route to <ip>") && !written.contains("10.1.2.3"),
+            "{written}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn iso_dates_are_utc_calendar_dates() {
@@ -577,13 +721,19 @@ mod tests {
         for i in 0..5 {
             log.event(
                 "step",
-                json!({ "interaction_id": if i % 2 == 0 { "a" } else { "b" }, "i": i }),
+                json!({ "interaction_id": if i % 2 == 0 { "a" } else { "b" }, "i": i, "link": if i < 2 { "l1" } else { "l2" } }),
             );
         }
-        assert_eq!(log.tail(10, Some("a")).len(), 3);
-        let last_two = log.tail(2, None);
+        assert_eq!(log.tail(10, Some("a"), None).len(), 3);
+        assert_eq!(log.tail(10, None, Some("l1")).len(), 2);
+        assert_eq!(log.tail(10, Some("a"), Some("l2")).len(), 2);
+        let last_two = log.tail(2, None, None);
         assert_eq!(last_two.len(), 2);
         assert_eq!(last_two[1]["i"], 4);
+        // Every line says how much it matters: a failure warns.
+        assert_eq!(last_two[1]["level"], "info");
+        log.event("request_failed", json!({}));
+        assert_eq!(log.tail(1, None, None)[0]["level"], "warn");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

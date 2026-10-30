@@ -16,7 +16,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::diag::now_secs;
+use serde_json::json;
+
+use crate::diag::{now_secs, Log};
 
 /// How many records are kept.
 const KEEP: usize = 200;
@@ -106,11 +108,30 @@ struct File {
 /// The persisted record of requests.
 pub struct Outbox {
     path: PathBuf,
+    /// Where every change of a request's state is logged (`request_state`).
+    log: Option<Log>,
 }
 
 impl Outbox {
     pub fn new(path: PathBuf) -> Self {
-        Outbox { path }
+        Outbox { path, log: None }
+    }
+
+    /// Logs every change of a request's state to `log`.
+    pub fn with_log(mut self, log: Log) -> Self {
+        self.log = Some(log);
+        self
+    }
+
+    /// The newest request to `wallet`, and the newest one that failed (with a code).
+    pub fn last_for(&self, wallet: &str) -> (Option<Record>, Option<Record>) {
+        let all: Vec<Record> = self.all().into_iter().filter(|r| r.wallet == wallet).collect();
+        let failed = all
+            .iter()
+            .rev()
+            .find(|r| r.code.is_some() || r.outcome.as_deref().is_some_and(|o| o.starts_with("FAILURE")))
+            .cloned();
+        (all.last().cloned(), failed)
     }
 
     pub fn path(&self) -> &Path {
@@ -185,9 +206,11 @@ impl Outbox {
         code: Option<&str>,
     ) -> Result<bool, String> {
         let mut found = false;
+        let mut from = None;
         self.modify(|records| {
             if let Some(r) = records.iter_mut().find(|r| r.interaction_id == interaction_id) {
                 found = true;
+                from = Some(r.state);
                 r.state = state;
                 r.updated_at = now_secs();
                 if outcome.is_some() {
@@ -198,6 +221,14 @@ impl Outbox {
                 }
             }
         })?;
+        if let (Some(log), Some(from)) = (&self.log, from) {
+            if from != state {
+                log.event(
+                    "request_state",
+                    json!({ "interaction_id": interaction_id, "from": from.label(), "to": state.label(), "code": code }),
+                );
+            }
+        }
         Ok(found)
     }
 

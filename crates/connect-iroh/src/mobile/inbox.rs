@@ -21,6 +21,8 @@ pub(super) const UNCLAIMED_MAX: usize = 32;
 pub(super) const UNCLAIMED_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// How long an unclaimed answer is kept.
 pub(super) const UNCLAIMED_TTL: Duration = Duration::from_secs(30 * 60);
+/// Interactions remembered as asked for on a link, to tell a late answer from an unknown one.
+const ASKED_MAX: usize = 256;
 
 /// The `interactionId` a message answers, if it carries a non-empty one.
 pub(super) fn interaction_id(message: &Value) -> Option<&str> {
@@ -35,11 +37,34 @@ pub(super) fn interaction_id(message: &Value) -> Option<&str> {
 pub(super) enum Registration {
     /// The answer had already arrived.
     Answered(Value),
-    /// The answer will arrive on `answer`. `token` identifies this registration.
+    /// The answer will arrive on `answer`. `token` identifies this registration;
+    /// `others_in_flight` is how many other interactions wait on the link.
     Waiting {
         token: u64,
         answer: oneshot::Receiver<Value>,
+        others_in_flight: usize,
     },
+}
+
+/// Why an answer nobody waited for was kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kept {
+    /// Its request was asked for here and stopped waiting (timed out, dropped).
+    Late,
+    /// No request on this link asked for it (since the session started).
+    Unknown,
+    /// An answer to the same interaction was already kept; this one replaces it.
+    Duplicate,
+}
+
+impl Kept {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Kept::Late => "late",
+            Kept::Unknown => "unknown",
+            Kept::Duplicate => "duplicate",
+        }
+    }
 }
 
 /// Why a registration was refused.
@@ -65,6 +90,8 @@ pub(super) struct Inbox {
     waiting: HashMap<String, (u64, oneshot::Sender<Value>)>,
     unclaimed: VecDeque<Unclaimed>,
     unclaimed_bytes: usize,
+    /// Interactions asked for on this link, newest last (bounded).
+    asked: VecDeque<String>,
     next_token: u64,
     closed: bool,
 }
@@ -90,7 +117,22 @@ impl Inbox {
         self.next_token = self.next_token.wrapping_add(1);
         let (sender, answer) = oneshot::channel();
         self.waiting.insert(id.to_owned(), (token, sender));
-        Ok(Registration::Waiting { token, answer })
+        if !self.asked.iter().any(|asked| asked == id) {
+            self.asked.push_back(id.to_owned());
+            if self.asked.len() > ASKED_MAX {
+                self.asked.pop_front();
+            }
+        }
+        Ok(Registration::Waiting {
+            token,
+            answer,
+            others_in_flight: self
+                .waiting
+                .values()
+                .filter(|(_, waiter)| !waiter.is_closed())
+                .count()
+                .saturating_sub(1),
+        })
     }
 
     /// Stops waiting. Only the registration `token` is removed: a later one for the same id
@@ -102,21 +144,34 @@ impl Inbox {
     }
 
     /// Hands `message` (of `size` bytes on the wire) to whoever waits for it. Returns it when
-    /// nobody did — for the link's subscribers — keeping a copy if it answers an interaction.
-    pub(super) fn deliver(&mut self, message: Value, size: usize, now: Instant) -> Option<Value> {
+    /// nobody did — for the link's subscribers — keeping a copy if it answers an interaction, and
+    /// why it was kept.
+    pub(super) fn deliver(
+        &mut self,
+        message: Value,
+        size: usize,
+        now: Instant,
+    ) -> (Option<Value>, Option<Kept>) {
         let Some(id) = interaction_id(&message).map(str::to_owned) else {
-            return Some(message);
+            return (Some(message), None);
         };
         let message = match self.waiting.remove(&id) {
             Some((_, waiter)) => match waiter.send(message) {
-                Ok(()) => return None,
+                Ok(()) => return (None, None),
                 // The waiter gave up a moment ago: keep the answer for the next one.
                 Err(message) => message,
             },
             None => message,
         };
+        let kept = if self.unclaimed.iter().any(|kept| kept.id == id) {
+            Kept::Duplicate
+        } else if self.asked.iter().any(|asked| *asked == id) {
+            Kept::Late
+        } else {
+            Kept::Unknown
+        };
         self.keep(id, message.clone(), size, now);
-        Some(message)
+        (Some(message), Some(kept))
     }
 
     /// The link ended: every waiter is woken (their receivers fail) and nothing more is kept.
@@ -185,7 +240,7 @@ mod tests {
 
     fn waiting(registration: Result<Registration, Refused>) -> (u64, oneshot::Receiver<Value>) {
         match registration {
-            Ok(Registration::Waiting { token, answer }) => (token, answer),
+            Ok(Registration::Waiting { token, answer, .. }) => (token, answer),
             other => panic!("expected to wait, got {other:?}"),
         }
     }
@@ -196,7 +251,7 @@ mod tests {
         let mut inbox = Inbox::default();
         let (_, mut a) = waiting(inbox.register("a", now));
         let (_, mut b) = waiting(inbox.register("b", now));
-        assert_eq!(inbox.deliver(answer("b"), 10, now), None);
+        assert_eq!(inbox.deliver(answer("b"), 10, now), (None, None));
         assert_eq!(b.try_recv().unwrap(), answer("b"));
         assert!(a.try_recv().is_err(), "a must still be waiting");
         assert_eq!(inbox.kept(), 0);
@@ -207,7 +262,7 @@ mod tests {
         let now = Instant::now();
         let mut inbox = Inbox::default();
         let accounts = json!({ "discriminator": "accountList", "accounts": [] });
-        assert_eq!(inbox.deliver(accounts.clone(), 10, now), Some(accounts));
+        assert_eq!(inbox.deliver(accounts.clone(), 10, now), (Some(accounts), None));
         assert_eq!(inbox.kept(), 0, "only answers are kept");
     }
 
@@ -215,7 +270,10 @@ mod tests {
     fn a_late_answer_is_kept_for_whoever_asks_next() {
         let now = Instant::now();
         let mut inbox = Inbox::default();
-        assert_eq!(inbox.deliver(answer("late"), 10, now), Some(answer("late")));
+        assert_eq!(
+            inbox.deliver(answer("late"), 10, now),
+            (Some(answer("late")), Some(Kept::Unknown))
+        );
         match inbox.register("late", now).unwrap() {
             Registration::Answered(value) => assert_eq!(value, answer("late")),
             other => panic!("{other:?}"),
@@ -230,8 +288,29 @@ mod tests {
         let mut inbox = Inbox::default();
         let (_, receiver) = waiting(inbox.register("x", now));
         drop(receiver);
-        assert!(inbox.deliver(answer("x"), 10, now).is_some());
+        assert_eq!(inbox.deliver(answer("x"), 10, now).1, Some(Kept::Late));
         assert_eq!(inbox.kept(), 1);
+    }
+
+    /// Why an answer nobody waits for is kept tells a wallet answering late from one answering
+    /// what this link never asked, or answering twice.
+    #[test]
+    fn an_unclaimed_answer_says_whether_it_is_late_unknown_or_a_duplicate() {
+        let now = Instant::now();
+        let mut inbox = Inbox::default();
+        let (_, first) = waiting(inbox.register("asked", now));
+        let (_, second) = waiting(inbox.register("other", now));
+        drop((first, second));
+        assert_eq!(inbox.deliver(answer("asked"), 10, now).1, Some(Kept::Late));
+        assert_eq!(inbox.deliver(answer("asked"), 10, now).1, Some(Kept::Duplicate));
+        assert_eq!(inbox.deliver(answer("never"), 10, now).1, Some(Kept::Unknown));
+        assert_eq!(inbox.kept(), 2, "the duplicate replaced the first");
+
+        let (_, _a) = waiting(inbox.register("a", now));
+        match inbox.register("b", now) {
+            Ok(Registration::Waiting { others_in_flight, .. }) => assert_eq!(others_in_flight, 1),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

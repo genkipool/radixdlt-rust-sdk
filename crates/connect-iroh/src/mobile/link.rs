@@ -72,6 +72,8 @@ pub(super) struct Incoming {
 #[derive(Debug)]
 struct Shared {
     id: LinkId,
+    /// When the session started: the latency to the wallet's first connection is measured from it.
+    started: Instant,
     inbox: Mutex<Inbox>,
     status: watch::Sender<Status>,
     state_changes: AtomicU64,
@@ -88,9 +90,7 @@ impl Shared {
 
     fn on_state(&self, state: ConnectionState, session: &Session) {
         let connected = state == ConnectionState::Connected;
-        if connected {
-            self.seen_wallet.store(true, Ordering::Relaxed);
-        }
+        let first = connected && !self.seen_wallet.swap(true, Ordering::Relaxed);
         // Before the status is published, so whoever wakes on it reads the new count.
         self.state_changes.fetch_add(1, Ordering::SeqCst);
         self.status.send_replace(if connected {
@@ -98,7 +98,7 @@ impl Shared {
         } else {
             Status::Waiting
         });
-        log::state_changed(self.id, connected, &session.diagnostics());
+        log::state_changed(self.id, connected, first, self.started, &session.diagnostics());
     }
 
     fn on_message(&self, text: &str) {
@@ -112,10 +112,10 @@ impl Shared {
             inbox::interaction_id(&message),
             message.get("discriminator").and_then(Value::as_str),
         );
-        let unclaimed = self.inbox().deliver(message, text.len(), Instant::now());
+        let (unclaimed, kept) = self.inbox().deliver(message, text.len(), Instant::now());
         if let Some(message) = unclaimed {
-            if let Some(id) = inbox::interaction_id(&message) {
-                log::kept_unclaimed(self.id, id);
+            if let (Some(id), Some(kept)) = (inbox::interaction_id(&message), kept) {
+                log::kept_unclaimed(self.id, id, kept.label());
             }
             // No subscriber is not an error: most messages (the account list) interest nobody.
             let _ = self.unclaimed.send(Incoming {
@@ -128,7 +128,7 @@ impl Shared {
     fn end(&self) {
         self.inbox().close();
         self.status.send_replace(Status::Ended);
-        log::session_ended(self.id);
+        log::session_ended(self.id, self.started, self.state_changes.load(Ordering::SeqCst));
     }
 }
 
@@ -168,6 +168,7 @@ impl Link {
         config: SessionConfig,
     ) -> Result<Self, MobileError> {
         let relays = config.relays().clone();
+        let started = Instant::now();
         let session = Arc::new(
             Session::start(password, Role::Connector, config)
                 .await
@@ -179,13 +180,14 @@ impl Link {
         let (unclaimed, _) = broadcast::channel(SUBSCRIBER_BUFFER);
         let shared = Arc::new(Shared {
             id,
+            started,
             inbox: Mutex::new(Inbox::default()),
             status: watch::Sender::new(Status::Waiting),
             state_changes: AtomicU64::new(0),
             unclaimed,
             seen_wallet: AtomicBool::new(false),
         });
-        log::session_started(id, &relays, &session.diagnostics());
+        log::session_started(id, &relays, &session.diagnostics(), log::ms(started.elapsed()));
         let reader = tokio::spawn(read_events(session.clone(), shared.clone()));
         Ok(Link {
             session,
@@ -244,12 +246,19 @@ impl Link {
             })?;
         Ok(match registration {
             Registration::Answered(answer) => Pending::Answered(answer),
-            Registration::Waiting { token, answer } => Pending::Waiting(Waiter {
-                shared: self.shared.clone(),
-                id: interaction_id.to_owned(),
+            Registration::Waiting {
                 token,
                 answer,
-            }),
+                others_in_flight,
+            } => {
+                log::registered(self.shared.id, interaction_id, others_in_flight);
+                Pending::Waiting(Waiter {
+                    shared: self.shared.clone(),
+                    id: interaction_id.to_owned(),
+                    token,
+                    answer,
+                })
+            }
         })
     }
 
@@ -329,10 +338,12 @@ impl Registry {
         let slot = self.slot(id);
         let mut current = slot.link.lock().await;
         if let Some(link) = current.as_ref().filter(|link| link.is_running()) {
+            log::session_reused(id);
             return Ok(link.clone());
         }
         // A session that ended still owns its endpoint key until it is fully closed.
         if let Some(stale) = current.take() {
+            log::session_restarting(id);
             stale.close().await;
         }
         let link = Arc::new(Link::start(id, password, config()?).await?);
@@ -347,14 +358,14 @@ impl Registry {
         current.as_ref().filter(|link| link.is_running()).cloned()
     }
 
-    /// Closes the link for `id`, if there is one.
-    pub(super) async fn close(&self, id: LinkId) {
+    /// Closes the link for `id`, if there is one; `why` is for the log.
+    pub(super) async fn close(&self, id: LinkId, why: &'static str) {
         let Some(slot) = self.existing_slot(id) else {
             return;
         };
         let link = slot.link.lock().await.take();
         if let Some(link) = link {
-            log::closing(id);
+            log::closing(id, why);
             link.close().await;
         }
     }
@@ -366,7 +377,7 @@ impl Registry {
             slots.keys().copied().collect()
         };
         for id in ids {
-            self.close(id).await;
+            self.close(id, "closing every link").await;
         }
     }
 

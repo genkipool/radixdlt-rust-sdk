@@ -144,6 +144,15 @@ pub enum Progress {
         /// The link's connectivity now (the path and its round-trip time).
         diagnostics: Box<Diagnostics>,
     },
+    /// The request is being sent (`attempt` 1, or a resend after [`Progress::Resending`]).
+    Sending {
+        /// Which attempt this is.
+        attempt: u32,
+        /// Its size on the wire.
+        bytes: usize,
+        /// Time since the call started.
+        elapsed: Duration,
+    },
     /// The wallet confirmed it took the request. From here on it is on the phone.
     Delivered {
         /// Time since the call started.
@@ -312,6 +321,7 @@ impl MobileWalletConnector {
     async fn link(&self, password: &[u8], deadline: Instant) -> Result<Arc<link::Link>, MobileError> {
         let secret = ConnectionPassword::from_slice(password)?;
         let id = LinkId::of(password);
+        let limit_ms = log::ms(deadline.saturating_duration_since(Instant::now()));
         match timeout_at(
             deadline,
             self.links.get_or_start(&secret, id, || self.session_config()),
@@ -320,7 +330,7 @@ impl MobileWalletConnector {
         {
             Ok(link) => link,
             Err(_) => {
-                log::session_start_timed_out(id, &self.relays);
+                log::session_start_timed_out(id, &self.relays, limit_ms);
                 Err(MobileError::Session(
                     "timed out starting the iroh endpoint".to_string(),
                 ))
@@ -454,7 +464,11 @@ impl MobileWalletConnector {
         };
         let link = self.link(password, deadline).await?;
         let mut messages = link.subscribe();
-        log::pairing_started(id, &self.relays);
+        log::pairing_started(
+            id,
+            &self.relays,
+            log::ms(deadline.saturating_duration_since(started)),
+        );
         listening();
 
         let linked = await_link_client(&link, &mut messages, started, deadline, on)
@@ -472,8 +486,8 @@ impl MobileWalletConnector {
             }
             Err(error) => {
                 abandoned.armed = false;
-                log::pairing_failed(id, &error);
-                self.links.close(id).await;
+                log::pairing_failed(id, started, &error);
+                self.links.close(id, "pairing failed").await;
                 Err(error)
             }
         }
@@ -639,7 +653,7 @@ impl MobileWalletConnector {
     /// Closes the link's session, telling the wallet. Calls waiting on it fail with
     /// [`MobileError::Closed`]; the next call starts a new session.
     pub async fn close_link(&self, password: &[u8]) {
-        self.links.close(LinkId::of(password)).await;
+        self.links.close(LinkId::of(password), "close_link").await;
     }
 
     /// Closes every session, telling the wallets, and waits until they are closed.
@@ -693,10 +707,10 @@ async fn await_link_client(
             }
             () = sleep_until(next_report.min(deadline)) => {
                 if Instant::now() >= deadline {
-                    return Err(pairing_timed_out(link));
+                    return Err(pairing_timed_out(link, started, deadline));
                 }
                 if !link.is_connected() {
-                    report_waiting(link, "pairing", started, on);
+                    report_waiting(link, "pairing", started, deadline, on);
                 }
                 next_report = Instant::now() + WAITING_REPORT_INTERVAL;
             }
@@ -712,6 +726,7 @@ async fn await_link_client(
 /// the link's [`state_changes`](link::Link::state_changes) when the `linkClient` arrived: once it
 /// moves on, that connection is gone.
 async fn await_linking_closed(link: &link::Link, linked_at: u64) {
+    let started = Instant::now();
     let mut status = link.status();
     let closed = timeout(LINKING_GRACE, async {
         while link.state_changes() == linked_at {
@@ -722,7 +737,7 @@ async fn await_linking_closed(link: &link::Link, linked_at: u64) {
     })
     .await
     .is_ok();
-    log::linking_connection_closed(link.id(), closed, &link.diagnostics());
+    log::linking_connection_closed(link.id(), closed, started.elapsed(), &link.diagnostics());
 }
 
 /// The `linkClient` in `message`, if it is one.
@@ -733,9 +748,10 @@ fn link_client(link: &link::Link, message: &Value) -> Result<Option<LinkClient>,
 }
 
 /// The error of a pairing that ran out of time: no wallet came, or one came and did not link.
-fn pairing_timed_out(link: &link::Link) -> MobileError {
+fn pairing_timed_out(link: &link::Link, started: Instant, deadline: Instant) -> MobileError {
     let diagnostics = Box::new(link.diagnostics());
-    log::pairing_timed_out(link.id(), link.seen_wallet(), &diagnostics);
+    let limit_ms = log::ms(deadline.saturating_duration_since(started));
+    log::pairing_timed_out(link.id(), link.seen_wallet(), started, limit_ms, &diagnostics);
     if link.seen_wallet() {
         MobileError::ResponseTimeout { diagnostics }
     } else {
@@ -762,10 +778,17 @@ fn report_status(
     true
 }
 
-/// Reports that `what` is still waiting for the wallet.
-fn report_waiting(link: &link::Link, what: &str, started: Instant, on: &mut (dyn FnMut(Progress) + Send)) {
+/// Reports that `what` is still waiting for the wallet, which it does until `deadline`.
+fn report_waiting(
+    link: &link::Link,
+    what: &str,
+    started: Instant,
+    deadline: Instant,
+    on: &mut (dyn FnMut(Progress) + Send),
+) {
     let diagnostics = Box::new(link.diagnostics());
-    log::waiting(link.id(), what, started, &diagnostics);
+    let limit_ms = log::ms(deadline.saturating_duration_since(started));
+    log::waiting(link.id(), what, started, limit_ms, &diagnostics);
     on(Progress::WaitingForWallet {
         waited: started.elapsed(),
         diagnostics,
@@ -819,6 +842,11 @@ struct Request<'a> {
 }
 
 impl Request<'_> {
+    /// The call's time limit, in whole milliseconds, for the log.
+    fn limit_ms(&self) -> u64 {
+        log::ms(self.deadline.saturating_duration_since(self.started))
+    }
+
     /// Waits, until the deadline, for the wallet to be connected.
     async fn wait_for_wallet(&self, on: &mut (dyn FnMut(Progress) + Send)) -> Result<(), MobileError> {
         let mut status = self.link.status();
@@ -838,7 +866,7 @@ impl Request<'_> {
                 return Err(self.unreachable());
             }
             if Instant::now() >= next_report {
-                report_waiting(self.link, self.interaction_id, self.started, on);
+                report_waiting(self.link, self.interaction_id, self.started, self.deadline, on);
                 next_report = Instant::now() + WAITING_REPORT_INTERVAL;
             }
             tokio::select! {
@@ -850,7 +878,13 @@ impl Request<'_> {
 
     fn unreachable(&self) -> MobileError {
         let diagnostics = Box::new(self.link.diagnostics());
-        log::unreachable(self.link.id(), self.interaction_id, &diagnostics);
+        log::unreachable(
+            self.link.id(),
+            self.interaction_id,
+            self.started,
+            self.limit_ms(),
+            &diagnostics,
+        );
         MobileError::WalletUnreachable { diagnostics }
     }
 
@@ -864,7 +898,18 @@ impl Request<'_> {
         let mut attempt = 1u32;
         loop {
             self.wait_for_wallet(on).await?;
-            log::sending(self.link.id(), self.interaction_id, text.len(), attempt);
+            log::sending(
+                self.link.id(),
+                self.interaction_id,
+                text.len(),
+                attempt,
+                self.started,
+            );
+            on(Progress::Sending {
+                attempt,
+                bytes: text.len(),
+                elapsed: self.started.elapsed(),
+            });
             match timeout_at(self.deadline, self.link.send(text)).await {
                 Ok(Ok(())) => {
                     log::delivered(self.link.id(), self.interaction_id, self.started);
@@ -957,7 +1002,14 @@ impl Request<'_> {
     fn timed_out(&self, delivery: Delivery) -> MobileError {
         let diagnostics = Box::new(self.link.diagnostics());
         let confirmed = delivery == Delivery::Confirmed;
-        log::timed_out(self.link.id(), self.interaction_id, confirmed, &diagnostics);
+        log::timed_out(
+            self.link.id(),
+            self.interaction_id,
+            confirmed,
+            self.started,
+            self.limit_ms(),
+            &diagnostics,
+        );
         if confirmed {
             MobileError::ResponseTimeout { diagnostics }
         } else {

@@ -42,6 +42,7 @@ mod requests;
 mod rpc;
 mod store;
 mod tools;
+mod trace;
 mod update;
 
 use std::rc::Rc;
@@ -305,6 +306,16 @@ async fn run(options: Options) -> i32 {
         app.iroh.setting.label(),
         iroh::relay_label(&app.iroh.relay),
     );
+    // The iroh libraries' own events (collisions, replaced connections, relay state) go to the
+    // connector's log too.
+    trace::install(app.log.clone(), app.iroh.held_links());
+    app.log.event(
+        "connector_started",
+        serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"), "transport": app.iroh.setting.label(),
+            "iroh_relays": iroh::relay_label(&app.iroh.relay),
+        }),
+    );
 
     let mut stdin = BufReader::new(tokio::io::stdin()).lines();
 
@@ -341,6 +352,9 @@ async fn run(options: Options) -> i32 {
     while app.busy() {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
+    // Telling each wallet, and letting go of the links for other connector processes.
+    iroh::close_all(&app, "connector exiting").await;
+    app.log.event("connector_exiting", serde_json::json!({}));
     drop(out_tx);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), writer).await;
     0

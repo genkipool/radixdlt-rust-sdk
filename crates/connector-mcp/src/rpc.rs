@@ -39,6 +39,10 @@ const METHOD_NOT_FOUND: i64 = -32601;
 pub struct Pending {
     pub result: Rc<RefCell<Option<Result<PairOutcome, String>>>>,
     pub label: Option<String>,
+    /// When its QR was shown.
+    pub started: Instant,
+    /// The transports it pairs over.
+    pub transports: Vec<&'static str>,
     /// The background task: a newer `pair_wallet` stops it (and with it every transport it was
     /// pairing over), as its QR is no longer shown.
     pub task: AbortHandle,
@@ -99,10 +103,11 @@ impl App {
     /// State kept beside `config_path` (`connector.json`).
     pub fn at(config_path: PathBuf, options: Options) -> Self {
         let dir = config_path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let log = Log::new(dir.join("connector.log"));
         App {
             iroh: Iroh::new(options.transport, options.iroh_relay, &dir),
-            outbox: Outbox::new(dir.join("requests.json")),
-            log: Log::new(dir.join("connector.log")),
+            outbox: Outbox::new(dir.join("requests.json")).with_log(log.clone()),
+            log,
             config_path,
             pairing: RefCell::new(None),
             inflight: RefCell::new(HashMap::new()),
@@ -176,7 +181,19 @@ pub fn dispatch(app: &Rc<App>, line: &str, out: &mpsc::UnboundedSender<String>) 
         let key = id.to_string();
         let (task_app, task_out, task_key) = (app.clone(), out.clone(), key.clone());
         let task = tokio::task::spawn_local(async move {
+            let started = Instant::now();
+            task_app
+                .log
+                .event("tool_call", json!({ "rpc_id": task_key, "tool": name }));
             let result = tools::call(&task_app, &name, args).await;
+            task_app.log.event(
+                "tool_done",
+                json!({
+                    "rpc_id": task_key, "tool": name, "elapsed_ms": crate::iroh::ms(started.elapsed()),
+                    "is_error": result["isError"].as_bool().unwrap_or(false),
+                    "code": result["structuredContent"]["code"],
+                }),
+            );
             task_app.calls.borrow_mut().remove(&task_key);
             let _ = task_out.send(result_json(id, result));
         });
