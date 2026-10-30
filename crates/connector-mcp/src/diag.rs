@@ -665,6 +665,7 @@ mod tests {
             failed_attempts: 0,
             last_error: None,
             connected_for: None,
+            key_collision: false,
         });
         let line = diagnostics.to_string();
 

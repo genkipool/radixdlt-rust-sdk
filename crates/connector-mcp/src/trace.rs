@@ -9,6 +9,7 @@
 //!   with the wallet. Two connectors on one link (the same `connector.json` on two machines, a
 //!   copied state directory) show up as this. The diagnostics of every link this process holds are
 //!   attached (`links`).
+//! - `link_collision_resolved`: the relay delivers to this end again (the other holder left).
 //! - `wallet_connection_replaced`: the wallet's connection was replaced by a newer one (the wallet
 //!   reconnected before the old connection was seen to end), also with the links' diagnostics.
 //! - `iroh_protocol` / `iroh_sdk`: everything else, with its level, message and fields. The SDK's
@@ -36,7 +37,36 @@ use crate::iroh::{held_diagnostics, HeldLinks};
 const REPEAT_WINDOW: Duration = Duration::from_secs(5);
 
 /// Words in a library message that mean another holder of the link's key took this end's place.
-const COLLISION_WORDS: &[&str] = &["displac", "another holder", "took over", "collision"];
+/// The first two are radix-connect-iroh 0.1.1's own wording (relay displacement, and the wallet
+/// replaced by another session); the others cover older and SDK wordings.
+const COLLISION_WORDS: &[&str] = &[
+    "with this link's key connected to the relay",
+    "took the connection over",
+    "displac",
+    "another holder",
+    "took over",
+    "collision",
+];
+
+/// Words in a library message that mean a collision is over (radix-connect-iroh 0.1.1).
+const RESOLVED_WORDS: &[&str] = &["delivers to this end again"];
+
+/// The `connector.log` event a library message becomes. `replaces`: the protocol library
+/// reported a second connection to the same peer in a row (versions that do not say "replaced").
+fn classify(message: &str, protocol: bool, replaces: bool) -> &'static str {
+    let lower = message.to_lowercase();
+    if RESOLVED_WORDS.iter().any(|word| lower.contains(word)) {
+        "link_collision_resolved"
+    } else if COLLISION_WORDS.iter().any(|word| lower.contains(word)) {
+        "link_collision"
+    } else if lower.contains("replaced") || (protocol && replaces) {
+        "wallet_connection_replaced"
+    } else if protocol {
+        "iroh_protocol"
+    } else {
+        "iroh_sdk"
+    }
+}
 
 /// Fields that may carry a network address: never logged.
 const ADDRESS_FIELDS: &[&str] = &["addr", "remote_addr", "address", "ip", "socket", "local_addr"];
@@ -114,17 +144,9 @@ impl Bridge {
         let mut fields = Fields::default();
         event.record(&mut fields);
         let protocol = metadata.target().starts_with("radix_connect_iroh");
-        let lower = fields.message.to_lowercase();
         let peer = fields.map.get("peer").and_then(Value::as_str);
-        let name = if COLLISION_WORDS.iter().any(|word| lower.contains(word)) {
-            "link_collision"
-        } else if lower.contains("replaced") || (protocol && self.replaces(&fields.message, peer)) {
-            "wallet_connection_replaced"
-        } else if protocol {
-            "iroh_protocol"
-        } else {
-            "iroh_sdk"
-        };
+        let replaces = protocol && self.replaces(&fields.message, peer);
+        let name = classify(&fields.message, protocol, replaces);
         let key = format!(
             "{name}|{}|{}|{}",
             fields.message,
@@ -146,7 +168,10 @@ impl Bridge {
         if suppressed > 0 {
             line.insert("suppressed".into(), suppressed.into());
         }
-        if matches!(name, "link_collision" | "wallet_connection_replaced") {
+        if matches!(
+            name,
+            "link_collision" | "link_collision_resolved" | "wallet_connection_replaced"
+        ) {
             line.insert("links".into(), held_diagnostics(&self.links).join(" | ").into());
         }
         self.log.event(name, Value::Object(line));
@@ -241,4 +266,32 @@ pub fn scoped(log: Log, links: HeldLinks) -> tracing::subscriber::DefaultGuard {
         tracing::subscriber::set_default(tracing_subscriber::registry().with(Bridge::new(log, links)));
     tracing::callsite::rebuild_interest_cache();
     guard
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify;
+
+    /// The exact wording of radix-connect-iroh 0.1.1, so a rewording there shows up here.
+    #[test]
+    fn the_protocol_librarys_collision_and_replacement_lines_are_recognised() {
+        let displaced = "another device or app instance with this link's key connected to the relay; this end no longer receives through it (the relay delivers to the newest holder)";
+        let restored =
+            "the relay delivers to this end again: the other holder of this link's key disconnected";
+        let wallet_replaced = "another session holding this link's wallet key (another device or app instance) took the connection over: waiting before dialing again; network changes do not cut this wait short";
+        let connector_replaced = "a new connection from the wallet replaced the current one";
+        assert_eq!(classify(displaced, true, false), "link_collision");
+        assert_eq!(classify(restored, true, false), "link_collision_resolved");
+        assert_eq!(classify(wallet_replaced, true, false), "link_collision");
+        assert_eq!(
+            classify(connector_replaced, true, false),
+            "wallet_connection_replaced"
+        );
+        assert_eq!(
+            classify("connected to the peer", true, true),
+            "wallet_connection_replaced"
+        );
+        assert_eq!(classify("connected to the peer", true, false), "iroh_protocol");
+        assert_eq!(classify("session started", false, false), "iroh_sdk");
+    }
 }

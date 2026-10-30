@@ -47,7 +47,7 @@ iroh = "1.4.1"
 # (the `mobile` module), from its published tag: a fresh checkout builds with nothing beside it.
 # Not on crates.io yet, so it must become a registry dependency before this crate is published —
 # `cargo publish` refuses a git dependency without a version, which is the reminder.
-radix-connect-iroh = { git = "https://github.com/genkipool/radix-connect-iroh", tag = "v0.1.0" }
+radix-connect-iroh = { git = "https://github.com/genkipool/radix-connect-iroh", tag = "v0.1.1" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ed25519-dalek = "3"

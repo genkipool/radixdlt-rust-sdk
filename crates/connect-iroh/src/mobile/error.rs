@@ -226,6 +226,7 @@ mod tests {
             failed_attempts: 2,
             last_error: Some("incoming handshake timed out".to_string()),
             connected_for: None,
+            key_collision: false,
         })
     }
 
@@ -249,10 +250,12 @@ mod tests {
             let shown = error.to_string();
             let line = error.diagnostics().unwrap().to_string();
             assert!(shown.ends_with(&line), "{shown}");
+            // The protocol library never shows IP addresses, not even a relay's (0.1.1).
             assert!(
-                shown.contains("relay=http://127.0.0.1:3340/ (NOT connected)"),
+                shown.contains("relay=http://<ip>:3340/ (NOT connected)"),
                 "{shown}"
             );
+            assert!(!shown.contains("127.0.0.1"), "{shown}");
             assert!(shown.contains("failed_attempts=2"), "{shown}");
             for text in [shown, format!("{error:?}")] {
                 assert!(!text.contains(&hex::encode(password_bytes)), "{text}");

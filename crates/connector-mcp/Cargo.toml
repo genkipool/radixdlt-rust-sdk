@@ -64,7 +64,7 @@ radixdlt-address = { path = "../address", version = "0.3.0" }
 # The end-to-end test over iroh (`src/e2e_iroh.rs`) reuses connect-iroh's simulated wallet and
 # in-process relay (`../connect-iroh/tests/support`), which need these. The protocol library comes
 # from the same published tag as connect-iroh's, so both are one crate.
-radix-connect-iroh = { git = "https://github.com/genkipool/radix-connect-iroh", tag = "v0.1.0" }
+radix-connect-iroh = { git = "https://github.com/genkipool/radix-connect-iroh", tag = "v0.1.1" }
 iroh-relay = { version = "1.4.1", default-features = false, features = ["server", "tls-ring"] }
 # The end-to-end tests stand in for the WebRTC signaling server with a socket on 127.0.0.1.
 tokio = { version = "1", features = ["net"] }

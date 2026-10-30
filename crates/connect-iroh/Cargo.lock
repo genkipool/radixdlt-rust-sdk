@@ -815,7 +815,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.119",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3146,8 +3146,8 @@ dependencies = [
 
 [[package]]
 name = "radix-connect-iroh"
-version = "0.1.0"
-source = "git+https://github.com/genkipool/radix-connect-iroh?tag=v0.1.0#a8d57b11920c9b3433b6b02c5ce26555873e66d9"
+version = "0.1.1"
+source = "git+https://github.com/genkipool/radix-connect-iroh?tag=v0.1.1#036de2fcb282fd9b1b14386bda519c5d35276aeb"
 dependencies = [
  "blake3",
  "hex",
@@ -3156,6 +3156,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "url",
  "zeroize",
 ]
