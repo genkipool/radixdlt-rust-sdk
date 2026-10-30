@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use radix_connect_iroh::{
@@ -51,12 +51,21 @@ impl fmt::Debug for LinkId {
 /// Where the link stands, as its reader saw it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Status {
-    /// The session listens at the relay; the wallet is not connected.
+    /// The session listens at its relay; the wallet is not connected.
     Waiting,
     /// The wallet is connected.
     Connected,
     /// The session is closed: nothing will arrive any more.
     Ended,
+}
+
+/// A message no request claimed, as the link's subscribers receive it.
+#[derive(Debug, Clone)]
+pub(super) struct Incoming {
+    pub(super) message: Value,
+    /// How many times the wallet's connection state had changed when the message arrived
+    /// ([`Link::state_changes`]): the connection it came on is gone once that number moves on.
+    pub(super) state_changes: u64,
 }
 
 /// What the link's reader shares with the requests.
@@ -65,7 +74,8 @@ struct Shared {
     id: LinkId,
     inbox: Mutex<Inbox>,
     status: watch::Sender<Status>,
-    unclaimed: broadcast::Sender<Value>,
+    state_changes: AtomicU64,
+    unclaimed: broadcast::Sender<Incoming>,
     seen_wallet: AtomicBool,
 }
 
@@ -81,6 +91,8 @@ impl Shared {
         if connected {
             self.seen_wallet.store(true, Ordering::Relaxed);
         }
+        // Before the status is published, so whoever wakes on it reads the new count.
+        self.state_changes.fetch_add(1, Ordering::SeqCst);
         self.status.send_replace(if connected {
             Status::Connected
         } else {
@@ -106,7 +118,10 @@ impl Shared {
                 log::kept_unclaimed(self.id, id);
             }
             // No subscriber is not an error: most messages (the account list) interest nobody.
-            let _ = self.unclaimed.send(message);
+            let _ = self.unclaimed.send(Incoming {
+                message,
+                state_changes: self.state_changes.load(Ordering::SeqCst),
+            });
         }
     }
 
@@ -152,12 +167,12 @@ impl Link {
         password: &ConnectionPassword,
         config: SessionConfig,
     ) -> Result<Self, MobileError> {
-        let relay = config.relay_url().to_string();
+        let relays = config.relays().clone();
         let session = Arc::new(
             Session::start(password, Role::Connector, config)
                 .await
                 .map_err(|error| {
-                    log::session_failed(id, &relay, &error);
+                    log::session_failed(id, &relays, &error);
                     MobileError::from(error)
                 })?,
         );
@@ -166,10 +181,11 @@ impl Link {
             id,
             inbox: Mutex::new(Inbox::default()),
             status: watch::Sender::new(Status::Waiting),
+            state_changes: AtomicU64::new(0),
             unclaimed,
             seen_wallet: AtomicBool::new(false),
         });
-        log::session_started(id, &relay, &session.diagnostics());
+        log::session_started(id, &relays, &session.diagnostics());
         let reader = tokio::spawn(read_events(session.clone(), shared.clone()));
         Ok(Link {
             session,
@@ -204,8 +220,14 @@ impl Link {
         self.shared.status.subscribe()
     }
 
-    pub(super) fn subscribe(&self) -> broadcast::Receiver<Value> {
+    pub(super) fn subscribe(&self) -> broadcast::Receiver<Incoming> {
         self.shared.unclaimed.subscribe()
+    }
+
+    /// How many times the wallet's connection state has changed since the session started. It
+    /// only grows: every connection that ends moves it on.
+    pub(super) fn state_changes(&self) -> u64 {
+        self.shared.state_changes.load(Ordering::SeqCst)
     }
 
     /// Starts waiting for the answer to `interaction_id` — or takes it, if it already arrived.

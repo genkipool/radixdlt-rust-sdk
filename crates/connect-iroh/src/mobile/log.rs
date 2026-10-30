@@ -9,7 +9,7 @@
 //! Levels: `warn` for what fails or may need a person to act, `info` for the steps of a pairing
 //! and a request and for state changes, `debug` for every message.
 
-use radix_connect_iroh::Diagnostics;
+use radix_connect_iroh::{Diagnostics, Relays};
 use tokio::time::Instant;
 
 use super::link::{LinkId, Status};
@@ -19,16 +19,27 @@ use super::MobileError;
 /// `RUST_LOG=radixdlt_connect_iroh=debug` (and `radix_connect_iroh=debug` for the protocol's own).
 const TARGET: &str = "radixdlt_connect_iroh::mobile";
 
-pub(super) fn session_started(link: LinkId, relay: &str, diagnostics: &Diagnostics) {
-    tracing::info!(target: TARGET, %link, relay, %diagnostics, "iroh session started; waiting for the wallet");
+/// The relay choice, for a log field: `public` or the custom relay's URL.
+fn relays(relays: &Relays) -> String {
+    match relays {
+        Relays::Public => "public".to_string(),
+        Relays::Custom(url) => url.to_string(),
+    }
 }
 
-pub(super) fn session_failed(link: LinkId, relay: &str, error: &dyn std::fmt::Display) {
-    tracing::warn!(target: TARGET, %link, relay, %error, "could not start the iroh session");
+pub(super) fn session_started(link: LinkId, relays_used: &Relays, diagnostics: &Diagnostics) {
+    let relays = relays(relays_used);
+    tracing::info!(target: TARGET, %link, relays, %diagnostics, "iroh session started; waiting for the wallet");
 }
 
-pub(super) fn session_start_timed_out(link: LinkId, relay: &str) {
-    tracing::warn!(target: TARGET, %link, relay, "timed out starting the iroh session");
+pub(super) fn session_failed(link: LinkId, relays_used: &Relays, error: &dyn std::fmt::Display) {
+    let relays = relays(relays_used);
+    tracing::warn!(target: TARGET, %link, relays, %error, "could not start the iroh session");
+}
+
+pub(super) fn session_start_timed_out(link: LinkId, relays_used: &Relays) {
+    let relays = relays(relays_used);
+    tracing::warn!(target: TARGET, %link, relays, "timed out starting the iroh session");
 }
 
 pub(super) fn session_ended(link: LinkId) {
@@ -68,8 +79,9 @@ pub(super) fn skipped(link: LinkId, skipped: u64) {
     tracing::warn!(target: TARGET, %link, skipped, "fell behind and skipped wallet messages");
 }
 
-pub(super) fn pairing_started(link: LinkId, relay: &str) {
-    tracing::info!(target: TARGET, %link, relay, "pairing: QR shown, waiting for the wallet to scan it");
+pub(super) fn pairing_started(link: LinkId, relays_used: &Relays) {
+    let relays = relays(relays_used);
+    tracing::info!(target: TARGET, %link, relays, "pairing: QR shown, waiting for the wallet to scan it");
 }
 
 pub(super) fn pairing_message(link: LinkId, is_link_client: bool) {
@@ -82,6 +94,14 @@ pub(super) fn pairing_message(link: LinkId, is_link_client: bool) {
 
 pub(super) fn pairing_timed_out(link: LinkId, seen_wallet: bool, diagnostics: &Diagnostics) {
     tracing::warn!(target: TARGET, %link, seen_wallet, %diagnostics, "pairing: timed out waiting for the wallet");
+}
+
+pub(super) fn linking_connection_closed(link: LinkId, closed: bool, diagnostics: &Diagnostics) {
+    if closed {
+        tracing::info!(target: TARGET, %link, %diagnostics, "pairing: the wallet closed its linking connection; its regular connection follows");
+    } else {
+        tracing::warn!(target: TARGET, %link, %diagnostics, "pairing: the wallet kept its linking connection open; a request sent over it now may be dropped");
+    }
 }
 
 pub(super) fn paired(link: LinkId, started: Instant) {

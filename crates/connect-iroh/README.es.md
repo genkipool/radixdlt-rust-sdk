@@ -29,7 +29,9 @@ Requiere Rust 1.91 (iroh 1.4).
 1. **Settings → Preferences → Radix Connect → Automatic** (o **iroh**). En Automatic la
    wallet enlaza por iroh y WebRTC a la vez y mantiene iroh en los enlaces donde
    funciona; en iroh no usa nada más.
-2. El **relé iroh** de la wallet debe ser el que usa tu servidor (ver [Relés](#relés)).
+2. Su ajuste de **relé iroh** debe coincidir con la elección de tu servidor (ver
+   [Relés](#relés)): por defecto ambos usan los relés públicos de n0, así que déjalo en su
+   valor por defecto.
 3. La wallet solo se conecta mientras su app está abierta: las peticiones esperan (dentro
    de su timeout) a que la persona la abra, e informan de que esperan.
 
@@ -39,8 +41,10 @@ Requiere Rust 1.91 (iroh 1.4).
 use std::time::Duration;
 use radixdlt_connect_iroh::mobile::{linking, MobileWalletConnector};
 
-let connector = MobileWalletConnector::new()                 // por defecto: relé público de n0
-    .with_relay_url("https://relay.example.com")?;           // producción: tu propio relé
+// Relés públicos de n0: nada que ejecutar ni configurar, en ningún extremo.
+let connector = MobileWalletConnector::new();
+// …o un relé propio, con la misma URL configurada en la wallet:
+// let connector = MobileWalletConnector::new().with_relay_url("https://relay.example.com")?;
 
 // La identidad a largo plazo del conector: genérala una vez y consérvala (es el nombre
 // del conector en la wallet).
@@ -59,7 +63,10 @@ let (wallet_public_key, password) = connector
 
 La persona escanea el QR desde **Settings → Linked Connectors → Link New
 Connector**. El QR es el mismo JSON que en WebRTC; la firma del `linkClient` de la wallet se
-verifica (y es obligatoria) antes de que `pair` vuelva. Un enlace emparejado aquí también
+verifica (y es obligatoria) antes de que `pair` vuelva. La wallet enlaza por una conexión
+propia, que descarta cualquier otra cosa que se envíe por ella, así que `pair` solo vuelve
+cuando la wallet la ha cerrado (como mucho 5 s después): una petición enviada justo después
+del emparejamiento va por la conexión normal de la wallet. Un enlace emparejado aquí también
 funciona con `radixdlt-connect` (WebRTC) cuando la wallet está en Automatic.
 
 ### Peticiones
@@ -111,17 +118,25 @@ Cómo se comporta:
 
 ### Relés
 
-Los dos extremos de un enlace deben usar el **mismo** relé iroh, igual que los dos extremos
-de un enlace WebRTC usan el mismo servidor de señalización. El relé reenvía paquetes QUIC
-cifrados de extremo a extremo y ayuda a los dos dispositivos a abrir un camino directo
-cuando la red lo permite.
+Un relé reenvía paquetes QUIC cifrados de extremo a extremo entre los dos dispositivos y les
+ayuda a abrir un camino directo cuando la red lo permite. Hay dos opciones, y **los dos
+extremos de un enlace deben elegir la misma** (`Relays`):
 
-- El predeterminado, `radix_connect_iroh::DEFAULT_RELAY_URL`, es el relé público de n0:
-  válido para desarrollo y uso moderado, sin garantías.
-- **En producción, ejecuta tu propio [`iroh-relay`](https://crates.io/crates/iroh-relay)**
-  (HTTPS) y configúralo en el servidor (`with_relay_url`) y en la wallet.
-- Los relés `http://` sin cifrar solo se aceptan en direcciones de loopback, privadas y
+- **Relés públicos — la opción por defecto** (`MobileWalletConnector::new()`, y el ajuste
+  por defecto de la wallet). Los relés públicos de n0 (Norteamérica, Europa, Asia-Pacífico):
+  cada extremo se conecta al más cercano y pasa a otro si falla. Este conector publica qué
+  relé usa — solo la URL del relé, nunca una dirección IP — en el servicio de búsqueda de
+  direcciones de n0 (pkarr/DNS), bajo su id de endpoint; la wallet lo busca ahí. Nada que
+  alojar ni configurar, en desarrollo ni en producción.
+- **Un relé propio — opcional** (`with_relay_url(url)`, y la misma URL en el ajuste de relé
+  iroh de la wallet). Normalmente tu propio [`iroh-relay`](https://crates.io/crates/iroh-relay)
+  por HTTPS: controlas su disponibilidad y a quién sirve, y no se publica nada en ningún
+  sitio. `http://` sin cifrar solo se acepta en direcciones de loopback, privadas y
   link-local (un relé en tu máquina o tu red local, para desarrollo).
+
+Si un extremo usa los relés públicos y el otro uno propio (o dos relés propios distintos), la
+wallet nunca se conecta: las peticiones terminan en `WalletUnreachable`, cuyo diagnóstico
+muestra `public` solo en un lado.
 
 ### Diagnóstico y logs
 
@@ -131,13 +146,13 @@ momento; los avisos de estado de `Progress` también llevan una. Su `Display` es
 p. ej.:
 
 ```text
-connector efcc89cfbf → 4d99dc649e state=connected path=relay rtt=42ms relay=https://relay.example.com/ (connected)
+connector efcc89cfbf → 4d99dc649e state=connected path=relay rtt=42ms relay=https://euc1-1.relay.n0.iroh.link./ (connected, public)
 ```
 
 | Lo que ves | Lo que suele significar |
 |---|---|
-| `relay … (NOT connected)` (más de unos segundos) | Este servidor no alcanza su relé: sin red, relé caído o bloqueado, o URL errónea. Nada puede conectar. |
-| `state=disconnected`, relé conectado, `WalletUnreachable` | El móvil no está: app cerrada, iroh desactivado para el enlace, otro relé, o no enlazado. |
+| `relay … (NOT connected)` o `relay=none yet` (más de unos segundos) | Este servidor no alcanza ningún relé: sin red, relé caído o bloqueado, o URL errónea. Nada puede conectar. |
+| `state=disconnected`, relé conectado, `WalletUnreachable` | El móvil no está: app cerrada, iroh desactivado para el enlace, otra elección de relé, o no enlazado. |
 | `last_error="… unauthorized"` | Los dos extremos tienen contraseñas distintas para el enlace: vuelve a emparejar. |
 | `last_error="… replaced by a newer connection"` | Inofensivo: la wallet se reconectó (cambio de red, reinicio de la app). |
 | `path=relay` | Normal tras NATs estrictos; sigue cifrado de extremo a extremo. |
@@ -164,6 +179,10 @@ el contenido de un mensaje.
 - **Los relés no ven ni los mensajes ni la contraseña** — solo los dos ids de endpoint y el
   ritmo y tamaño de paquetes cifrados. Un relé malicioso puede descartar tráfico, no leerlo
   ni falsificarlo. Por HTTP sin cifrar (solo relés locales) un observador ve también los ids.
+- **Qué publican los relés públicos.** Con la opción por defecto, este conector publica, bajo
+  su id de endpoint, la URL del relé que usa — ninguna dirección IP, nada sobre la wallet. El
+  id se deriva de la contraseña del enlace (distinto en cada enlace, imposible de relacionar,
+  y no revela nada de la contraseña). Un relé propio no publica nada.
 - **Verifica lo que devuelve la wallet.** Las pruebas ROLA se comprueban con
   `radixdlt-rola` contra un desafío nuevo, tu dApp definition y tu origen — el conector
   transporta las respuestas, no responde de ellas.
@@ -176,7 +195,8 @@ nunca se imprime), y después pide a la wallet iniciar sesión y verifica las pr
 persona y de cuenta:
 
 ```bash
-cargo run --example mobile_login -- --relay https://relay.example.com
+cargo run --example mobile_login                                       # relés públicos
+cargo run --example mobile_login -- --relay https://relay.example.com  # un relé propio
 RUST_LOG=radix_connect_iroh=debug,radixdlt_connect_iroh=debug cargo run --example mobile_login
 ```
 

@@ -14,9 +14,15 @@
 //! only the holder of the password can reach this end, and the session admits only the link's
 //! wallet. This connector keeps **one session per link**, started on first use and kept until
 //! [`close_link`](MobileWalletConnector::close_link), [`close`](MobileWalletConnector::close) or
-//! drop: it listens at the relay, and the wallet dials in whenever its app is open with iroh on
-//! for the link. Both ends must use the **same relay** (default [`DEFAULT_RELAY_URL`], a public
-//! development relay; run your own `iroh-relay` in production).
+//! drop: it listens at its relay, and the wallet dials in whenever its app is open with iroh on
+//! for the link. Both ends must make the **same relay choice** ([`Relays`]):
+//!
+//! - **Public** (the default, [`MobileWalletConnector::new`]): n0's public relays. Each end uses
+//!   its closest one; this connector publishes which one — the relay URL only, never an IP
+//!   address — through n0's address lookup, where the wallet finds it. Nothing to host or
+//!   configure, in development or production. The wallet keeps its default relay setting.
+//! - **Custom** ([`MobileWalletConnector::with_relay_url`]): one relay both ends are configured
+//!   with, typically a self-hosted `iroh-relay`. Nothing is published anywhere.
 //!
 //! Requests are matched with answers by `interactionId`, so several can be in flight on one link.
 //! Anything else the wallet sends — its `accountList` right after connecting, an answer that
@@ -34,7 +40,7 @@
 //! Every timeout carries a snapshot of the link's connectivity ([`MobileError::diagnostics`]),
 //! and the state reports in [`Progress`] carry one too; [`MobileWalletConnector::diagnostics`]
 //! takes one at any time. Its `Display` is one log line, e.g.
-//! `connector efcc89cfbf → 4d99dc649e state=disconnected relay=https://… (NOT connected)`. The
+//! `connector efcc89cfbf → 4d99dc649e state=connected path=relay rtt=42ms relay=https://… (connected, public)`. The
 //! connector also logs through [`tracing`](https://docs.rs/tracing) (target
 //! `radixdlt_connect_iroh`; the protocol's own events are under `radix_connect_iroh`): links are
 //! named by a short hash of the password, messages by their size and interaction id — never the
@@ -75,11 +81,14 @@ use radixdlt_connect_types::linking::LinkClient;
 use serde_json::Value;
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::sync::watch;
-use tokio::time::{sleep, sleep_until, timeout_at, Instant};
+use tokio::time::{sleep, sleep_until, timeout, timeout_at, Instant};
 use zeroize::Zeroizing;
 
 pub use error::MobileError;
-pub use radix_connect_iroh::{ConnectionState, Diagnostics, EndpointId, PathKind, Role, DEFAULT_RELAY_URL};
+pub use iroh::RelayUrl;
+pub use radix_connect_iroh::{
+    public_relay_urls, ConnectionState, Diagnostics, EndpointId, PathKind, Relays, Role,
+};
 /// The linking cryptography, shared with the WebRTC transport ([`radixdlt_connect_types::linking`]).
 pub use radixdlt_connect_types::linking;
 pub use radixdlt_connect_types::{
@@ -92,7 +101,7 @@ pub use radixdlt_connect_types::{
     Quantity, WalletInteractionError,
 };
 
-use link::{LinkId, Pending, Registry, Status, Waiter};
+use link::{Incoming, LinkId, Pending, Registry, Status, Waiter};
 
 /// How long a call waits for the wallet before it first reports that it is waiting. Long enough
 /// for a session that just started to reach its relay, so the first snapshot is not alarming.
@@ -103,6 +112,10 @@ const WAITING_REPORT_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Bound on starting a session for the calls that have no timeout of their own.
 const SESSION_START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long `pair` waits, once the wallet has linked, for it to close the connection it linked
+/// over — as long as the Connector Extension waits (its `linkingGracePeriod`).
+const LINKING_GRACE: Duration = Duration::from_secs(5);
 
 /// Pause before sending again a request the session could not send at all.
 const RESEND_PAUSE: Duration = Duration::from_millis(200);
@@ -165,7 +178,7 @@ pub enum Progress {
 #[derive(Debug)]
 pub struct WalletMessages {
     link: LinkId,
-    messages: broadcast::Receiver<Value>,
+    messages: broadcast::Receiver<Incoming>,
     status: watch::Receiver<Status>,
 }
 
@@ -177,7 +190,7 @@ impl WalletMessages {
             tokio::select! {
                 biased;
                 message = self.messages.recv() => match message {
-                    Ok(message) => return Some(message),
+                    Ok(incoming) => return Some(incoming.message),
                     Err(RecvError::Lagged(skipped)) => log::skipped(self.link, skipped),
                     Err(RecvError::Closed) => return None,
                 },
@@ -197,7 +210,7 @@ impl WalletMessages {
 /// tasks of a server. Configure it before first use; a session already started keeps the
 /// settings it started with.
 pub struct MobileWalletConnector {
-    relay_url: String,
+    relays: Relays,
     ack_timeout: Option<Duration>,
     max_message_size: Option<usize>,
     links: Registry,
@@ -206,7 +219,7 @@ pub struct MobileWalletConnector {
 impl fmt::Debug for MobileWalletConnector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MobileWalletConnector")
-            .field("relay_url", &self.relay_url)
+            .field("relays", &self.relays)
             .field("ack_timeout", &self.ack_timeout)
             .field("max_message_size", &self.max_message_size)
             .field("running_links", &self.links.running())
@@ -217,7 +230,7 @@ impl fmt::Debug for MobileWalletConnector {
 impl Default for MobileWalletConnector {
     fn default() -> Self {
         MobileWalletConnector {
-            relay_url: DEFAULT_RELAY_URL.to_string(),
+            relays: Relays::Public,
             ack_timeout: None,
             max_message_size: None,
             links: Registry::default(),
@@ -234,23 +247,31 @@ impl Drop for MobileWalletConnector {
 }
 
 impl MobileWalletConnector {
-    /// A connector using the default relay ([`DEFAULT_RELAY_URL`]).
+    /// A connector on n0's public relays ([`Relays::Public`]): the wallet finds it through n0's
+    /// address lookup, with no relay to run or configure on either end.
     #[must_use]
     pub fn new() -> Self {
         MobileWalletConnector::default()
     }
 
-    /// Uses the relay at `relay_url` — the one the wallet is configured with: both ends of a link
-    /// must use the same relay.
+    /// Uses ONE relay, at `relay_url` ([`Relays::Custom`]) — typically a self-hosted
+    /// `iroh-relay`. The wallet must be configured with the same URL: both ends of a link make
+    /// the same relay choice.
     ///
     /// # Errors
     /// [`MobileError::InvalidRelayUrl`] unless it is an absolute `https://` URL without
     /// credentials; plain `http://` is accepted only for loopback, private and link-local hosts
     /// (a development relay on this machine or the local network).
     pub fn with_relay_url(mut self, relay_url: &str) -> Result<Self, MobileError> {
-        SessionConfig::new(relay_url)?;
-        self.relay_url = relay_url.trim().to_string();
+        self.relays = SessionConfig::new(relay_url)?.relays().clone();
         Ok(self)
+    }
+
+    /// Uses `relays`: [`Relays::Public`] (the default) or [`Relays::Custom`].
+    #[must_use]
+    pub fn with_relays(mut self, relays: Relays) -> Self {
+        self.relays = relays;
+        self
     }
 
     /// How long the wallet has to confirm it took a message (default 10 s, as over WebRTC).
@@ -267,14 +288,17 @@ impl MobileWalletConnector {
         self
     }
 
-    /// The relay this connector's sessions use.
+    /// The relays this connector's sessions use.
     #[must_use]
-    pub fn relay_url(&self) -> &str {
-        &self.relay_url
+    pub fn relays(&self) -> &Relays {
+        &self.relays
     }
 
     fn session_config(&self) -> Result<SessionConfig, MobileError> {
-        let mut config = SessionConfig::new(&self.relay_url)?;
+        let mut config = match &self.relays {
+            Relays::Public => SessionConfig::public(),
+            Relays::Custom(url) => SessionConfig::new(url.as_str())?,
+        };
         if let Some(timeout) = self.ack_timeout {
             config = config.with_ack_timeout(timeout);
         }
@@ -296,7 +320,7 @@ impl MobileWalletConnector {
         {
             Ok(link) => link,
             Err(_) => {
-                log::session_start_timed_out(id, &self.relay_url);
+                log::session_start_timed_out(id, &self.relays);
                 Err(MobileError::Session(
                     "timed out starting the iroh endpoint".to_string(),
                 ))
@@ -312,6 +336,10 @@ impl MobileWalletConnector {
     /// the connector's long-term Ed25519 identity (`identity_*_key_hex`). The session started for
     /// the new password is KEPT: the wallet closes its linking connection and reconnects with its
     /// regular one, which this session accepts, so the first request needs no new session.
+    ///
+    /// Once the signature checks out, `pair` waits (up to 5 s) for the wallet to close the
+    /// connection it linked over before returning: that connection drops whatever else arrives
+    /// on it, so a request sent right after pairing must wait for the regular one.
     ///
     /// Store the password like a credential and never log it: whoever holds it can talk to the
     /// wallet as this connector.
@@ -371,22 +399,24 @@ impl MobileWalletConnector {
         };
         let link = self.link(password.as_slice(), deadline).await?;
         let mut messages = link.subscribe();
-        log::pairing_started(id, &self.relay_url);
+        log::pairing_started(id, &self.relays);
         on_qr(qr.as_str().to_owned());
 
         let linked = await_link_client(&link, &mut messages, started, deadline, on)
             .await
-            .and_then(|client| {
+            .and_then(|(client, linked_at)| {
                 client.verify(password.as_slice())?;
-                Ok(client.public_key)
+                Ok((client.public_key, linked_at))
             });
-        abandoned.armed = false;
         match linked {
-            Ok(wallet_public_key) => {
+            Ok((wallet_public_key, linked_at)) => {
+                await_linking_closed(&link, linked_at).await;
+                abandoned.armed = false;
                 log::paired(id, started);
                 Ok((wallet_public_key, password.to_vec()))
             }
             Err(error) => {
+                abandoned.armed = false;
                 log::pairing_failed(id, &error);
                 self.links.close(id).await;
                 Err(error)
@@ -581,20 +611,20 @@ impl Drop for Abandoned<'_> {
 /// Waits for the `linkClient` of the wallet that scanned the QR.
 async fn await_link_client(
     link: &link::Link,
-    messages: &mut broadcast::Receiver<Value>,
+    messages: &mut broadcast::Receiver<Incoming>,
     started: Instant,
     deadline: Instant,
     on: &mut (dyn FnMut(Progress) + Send),
-) -> Result<LinkClient, MobileError> {
+) -> Result<(LinkClient, u64), MobileError> {
     let mut status = link.status();
     let mut next_report = Instant::now() + FIRST_WAITING_REPORT;
     loop {
         tokio::select! {
             biased;
             message = messages.recv() => match message {
-                Ok(message) => {
-                    if let Some(client) = link_client(link, &message)? {
-                        return Ok(client);
+                Ok(incoming) => {
+                    if let Some(client) = link_client(link, &incoming.message)? {
+                        return Ok((client, incoming.state_changes));
                     }
                 }
                 Err(RecvError::Lagged(_)) => {}
@@ -617,6 +647,27 @@ async fn await_link_client(
             }
         }
     }
+}
+
+/// Waits — at most [`LINKING_GRACE`] — for the wallet to close the connection it linked over.
+///
+/// The wallet links over a LINKING connection of its own, which takes (so confirms) and drops any
+/// other message, and closes it once the link is saved; its regular connection follows. A request
+/// sent before then is lost — confirmed, so never sent again, and never answered. `linked_at` is
+/// the link's [`state_changes`](link::Link::state_changes) when the `linkClient` arrived: once it
+/// moves on, that connection is gone.
+async fn await_linking_closed(link: &link::Link, linked_at: u64) {
+    let mut status = link.status();
+    let closed = timeout(LINKING_GRACE, async {
+        while link.state_changes() == linked_at {
+            if status.changed().await.is_err() || *status.borrow() == Status::Ended {
+                return;
+            }
+        }
+    })
+    .await
+    .is_ok();
+    log::linking_connection_closed(link.id(), closed, &link.diagnostics());
 }
 
 /// The `linkClient` in `message`, if it is one.
@@ -818,7 +869,7 @@ impl Request<'_> {
     async fn listen(
         &self,
         waiter: &mut Waiter,
-        others: &mut broadcast::Receiver<Value>,
+        others: &mut broadcast::Receiver<Incoming>,
         delivery: Delivery,
         on: &mut (dyn FnMut(Progress) + Send),
     ) -> Result<Value, MobileError> {
@@ -832,7 +883,7 @@ impl Request<'_> {
                     return answer.ok_or(MobileError::Closed);
                 }
                 message = others.recv(), if others_open => match message {
-                    Ok(message) => on(Progress::OtherMessage(message)),
+                    Ok(incoming) => on(Progress::OtherMessage(incoming.message)),
                     Err(RecvError::Lagged(skipped)) => log::skipped(self.link.id(), skipped),
                     Err(RecvError::Closed) => others_open = false,
                 },
@@ -875,14 +926,19 @@ mod tests {
     }
 
     #[test]
-    fn the_default_relay_is_usable_and_others_are_checked() {
+    fn public_relays_by_default_and_a_custom_one_is_checked() {
         let connector = MobileWalletConnector::new();
-        assert_eq!(connector.relay_url(), DEFAULT_RELAY_URL);
-        assert!(connector.session_config().is_ok());
+        assert_eq!(connector.relays(), &Relays::Public);
+        assert_eq!(connector.session_config().unwrap().relays(), &Relays::Public);
         let local = MobileWalletConnector::new()
             .with_relay_url(" http://127.0.0.1:3340 ")
             .unwrap();
-        assert_eq!(local.relay_url(), "http://127.0.0.1:3340");
+        let Relays::Custom(url) = local.relays() else {
+            panic!("{:?}", local.relays());
+        };
+        assert_eq!(url.as_str(), "http://127.0.0.1:3340/");
+        assert_eq!(local.session_config().unwrap().relays(), local.relays());
+        assert_eq!(local.with_relays(Relays::Public).relays(), &Relays::Public);
         for bad in [
             "http://relay.example.com",
             "wss://relay.example.com",

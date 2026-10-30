@@ -14,14 +14,17 @@ minor versions may contain breaking changes.
   Wallet and the Connector Extension, through the `radix-connect-iroh` library) in the connector
   role, with `radixdlt_connect::Connector`'s API: `pair` (same QR, the wallet's `linkClient`
   signature required and verified; the pairing session is kept for the wallet's regular
-  connection), `exchange` with `Progress`, `await_response`, `probe`, the `request_*` helpers,
+  connection, and `pair` returns only once the wallet has closed the connection it linked over —
+  which drops anything else sent on it — so a request right after pairing is not lost), `exchange` with `Progress`, `await_response`, `probe`, the `request_*` helpers,
   plus `open_link`, `subscribe`, `diagnostics`, `close_link`/`close`. One session per link,
   answers matched by `interactionId` (concurrent requests on one link), a request sent again only
   when nothing was sent, late answers kept for `await_response`, every wait bounded. Timeout
   errors carry the link's connectivity snapshot (relay reachable?, state, path, last error), and
   everything is logged through `tracing` without passwords or message contents. Example
   `mobile_login` (QR in the terminal, ROLA login verified); tests against a simulated wallet over
-  an in-process relay. `rust-version` is now 1.91 (iroh 1.4).
+  an in-process relay. Relays: n0's public relays by default (`new()`; the wallet finds the server
+  through n0's address lookup, nothing to run or configure), or one custom relay
+  (`with_relay_url`); both ends make the same choice. `rust-version` is now 1.91 (iroh 1.4).
 - `radixdlt-connect-types` — `linking`: the linking message, the pairing QR payload, `linkClient`
   parsing and signature verification, password and identity generation — one implementation for
   both transports. `qr` (feature `qr`): the QR matrix and its terminal rendering, moved from

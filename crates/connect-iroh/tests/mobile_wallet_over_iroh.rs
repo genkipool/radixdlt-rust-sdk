@@ -99,6 +99,44 @@ async fn pairing_links_the_wallet_and_its_regular_session_serves_requests() {
     connector.close().await;
 }
 
+/// Regression (seen with a real phone): a request sent right after `pair` returned went over the
+/// wallet's LINKING connection, which takes and drops every message — so it was confirmed, never
+/// resent, and never answered. `pair` now returns once that connection has gone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_right_after_pairing_goes_over_the_regular_connection() {
+    let relay = LocalRelay::start().await;
+    let connector = connector(&relay);
+    let (private, public) = linking::generate_identity().unwrap();
+    let wallet = Arc::new(SimWallet::default());
+    let (qr_tx, qr_rx) = tokio::sync::oneshot::channel::<String>();
+
+    let server = async {
+        let (_, password) = connector
+            .pair(&private, &public, |qr| qr_tx.send(qr).unwrap(), WAIT)
+            .await
+            .unwrap();
+        // At once, as a server does once the person has linked.
+        let challenge = challenge();
+        let answer = connector
+            .request_account_proof(&password, &challenge, &ctx(), false, Duration::from_secs(20))
+            .await;
+        (challenge, answer)
+    };
+    let phone = async {
+        let qr = qr_rx.await.unwrap();
+        let password = wallet.scan_and_link(&qr, &relay.url, LinkSignature::Valid).await;
+        wallet.connect(&password, &relay.url, answers_rola()).await
+    };
+    let ((challenge, answer), running) = tokio::join!(server, phone);
+    let ignored = wallet.ignored_while_linking.lock().unwrap().clone();
+    assert!(ignored.is_empty(), "the linking session swallowed {ignored:?}");
+    assert_eq!(
+        verified_account(&answer.unwrap(), &challenge),
+        wallet.account_address()
+    );
+    running.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_forged_linking_signature_fails_pairing_and_closes_its_session() {
     let relay = LocalRelay::start().await;
@@ -154,10 +192,12 @@ async fn pairing_nobody_scans_times_out_with_the_links_diagnostics() {
         "{error:?}"
     );
     assert_eq!(diagnostics.state, ConnectionState::Disconnected);
-    assert!(
-        diagnostics.relay_url.as_str().starts_with(&relay.url),
-        "{diagnostics}"
-    );
+    let relay_in_use = diagnostics
+        .relay_url
+        .as_ref()
+        .expect("a custom relay is always known");
+    assert!(relay_in_use.as_str().starts_with(&relay.url), "{diagnostics}");
+    assert!(!diagnostics.public_relays, "{diagnostics}");
 
     // The message says what the link looked like, and nothing that opens it.
     let message = error.to_string();
@@ -517,4 +557,42 @@ async fn closing_a_link_ends_its_calls_and_the_next_call_starts_again() {
         .unwrap();
     verified_account(&answer, &challenge);
     running.close().await;
+}
+
+/// The default — n0's public relays — end to end: neither end is given a relay URL; this end
+/// publishes the one it uses through n0's address lookup and the wallet finds it there.
+///
+/// Opt-in, because it needs the internet and n0's live infrastructure:
+/// `cargo test --test mobile_wallet_over_iroh -- --ignored public`. (The protocol library tests
+/// this path offline with a local pkarr/DNS server, through a hook only its own tests can reach.)
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the internet: n0's public relays and address lookup"]
+async fn with_public_relays_the_wallet_finds_the_server_through_address_lookup() {
+    let connector = MobileWalletConnector::new();
+    let password = password();
+    connector.open_link(&password).await.unwrap();
+    let wallet = Arc::new(SimWallet::default());
+    let running = tokio::time::timeout(
+        Duration::from_secs(90),
+        wallet.connect_with(
+            &password,
+            radix_connect_iroh::SessionConfig::public(),
+            answers_rola(),
+        ),
+    )
+    .await
+    .expect("the wallet finds the server through address lookup");
+
+    let challenge = challenge();
+    let answer = connector
+        .request_account_proof(&password, &challenge, &ctx(), false, Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert_eq!(verified_account(&answer, &challenge), wallet.account_address());
+    let diagnostics = connector.diagnostics(&password).unwrap();
+    assert!(diagnostics.public_relays, "{diagnostics}");
+    assert!(diagnostics.relay_url.is_some(), "{diagnostics}");
+    println!("{diagnostics}");
+    running.close().await;
+    connector.close().await;
 }

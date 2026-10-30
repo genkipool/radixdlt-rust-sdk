@@ -3,7 +3,8 @@
 //! uses (`radix_connect_iroh::Session`, wallet role) that behaves like it:
 //!
 //! - it links by scanning the QR (checking the connector's signature, as the wallet does),
-//!   sending a signed `linkClient` on a linking session that it then closes;
+//!   sending a signed `linkClient` on a LINKING session that takes and drops any other message
+//!   while the link is saved, and that it then closes before its regular session connects;
 //! - its regular session sends an `accountList` each time it connects;
 //! - it answers requests by `interactionId`, signing ROLA proofs with real keys.
 
@@ -29,6 +30,10 @@ pub const ORIGIN: &str = "https://dapp.example.org";
 
 /// Generous bound for anything that goes through the local relay.
 pub const WAIT: Duration = Duration::from_secs(30);
+
+/// How long the linking session stays open after its `linkClient` was confirmed, as the real
+/// wallet saves the link and shows its confirmation before closing it.
+pub const LINKING_SAVE_TIME: Duration = Duration::from_millis(1500);
 
 /// An iroh relay on 127.0.0.1, plain HTTP. Dropping it stops it.
 pub struct LocalRelay {
@@ -82,6 +87,8 @@ pub struct SimWallet {
     pub link_key: SigningKey,
     pub account_key: SigningKey,
     pub identity_key: SigningKey,
+    /// What its linking sessions took and dropped: a request sent there is lost.
+    pub ignored_while_linking: Arc<Mutex<Vec<Value>>>,
 }
 
 impl Default for SimWallet {
@@ -95,6 +102,7 @@ impl Default for SimWallet {
             link_key: key(),
             account_key: key(),
             identity_key: key(),
+            ignored_while_linking: Arc::default(),
         }
     }
 }
@@ -163,8 +171,9 @@ impl SimWallet {
         )
     }
 
-    /// Scans the QR: checks the connector's signature, connects a linking session, sends a signed
-    /// `linkClient` and closes the linking session once it was confirmed — like the wallet does.
+    /// Scans the QR like the wallet does: checks the connector's signature, connects a LINKING
+    /// session, sends a signed `linkClient`, keeps the session open while the link is saved —
+    /// taking (so confirming) and dropping any message that arrives on it — and closes it.
     /// Returns the link password.
     pub async fn scan_and_link(&self, qr: &str, relay: &str, signature: LinkSignature) -> Vec<u8> {
         let qr: Value = serde_json::from_str(qr).unwrap();
@@ -187,24 +196,44 @@ impl SimWallet {
             "signature": hex::encode(self.link_key.sign(&linking::linking_message(&signed)).to_bytes()),
         });
 
-        let session = Arc::new(start_wallet_session(&password, relay).await);
+        let session = Arc::new(start_wallet_session(&password, SessionConfig::new(relay).unwrap()).await);
         let reader = {
             let session = session.clone();
-            tokio::spawn(async move { while session.next_event().await.is_some() {} })
+            let ignored = self.ignored_while_linking.clone();
+            tokio::spawn(async move {
+                while let Some(event) = session.next_event().await {
+                    if let SessionEvent::Message(text) = event {
+                        ignored.lock().unwrap().push(serde_json::from_str(&text).unwrap());
+                    }
+                }
+            })
         };
         wait_connected(&session).await;
         session
             .send(&link_client.to_string())
             .await
             .expect("linkClient confirmed");
+        tokio::time::sleep(LINKING_SAVE_TIME).await;
         session.close().await;
         reader.abort();
         password
     }
 
-    /// Connects the wallet's regular session for `password` and serves it with `handler`.
+    /// Connects the wallet's regular session for `password`, on the custom relay `relay`, and
+    /// serves it with `handler`.
     pub async fn connect(self: &Arc<Self>, password: &[u8], relay: &str, handler: Handler) -> RunningWallet {
-        let session = Arc::new(start_wallet_session(password, relay).await);
+        self.connect_with(password, SessionConfig::new(relay).unwrap(), handler)
+            .await
+    }
+
+    /// The same, with any session settings (the public relays, for one).
+    pub async fn connect_with(
+        self: &Arc<Self>,
+        password: &[u8],
+        config: SessionConfig,
+        handler: Handler,
+    ) -> RunningWallet {
+        let session = Arc::new(start_wallet_session(password, config).await);
         let received = Arc::new(Mutex::new(Vec::new()));
         let reading = Arc::new(tokio::sync::watch::Sender::new(true));
         let connections = Arc::new(AtomicUsize::new(0));
@@ -228,11 +257,9 @@ impl SimWallet {
     }
 }
 
-async fn start_wallet_session(password: &[u8], relay: &str) -> Session {
+async fn start_wallet_session(password: &[u8], config: SessionConfig) -> Session {
     let password = ConnectionPassword::from_slice(password).unwrap();
-    Session::start(&password, Role::Wallet, SessionConfig::new(relay).unwrap())
-        .await
-        .unwrap()
+    Session::start(&password, Role::Wallet, config).await.unwrap()
 }
 
 /// Waits for `session` to be connected (its state, polled: the events belong to its reader).

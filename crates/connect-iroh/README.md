@@ -28,7 +28,8 @@ Requires Rust 1.91 (iroh 1.4).
 1. **Settings → Preferences → Radix Connect → Automatic** (or **iroh**). In Automatic
    the wallet links over iroh and WebRTC at once and keeps iroh for the links where it
    works; in iroh it uses nothing else.
-2. The wallet's **iroh relay** must be the one your server uses (see [Relays](#relays)).
+2. Its **iroh relay** setting must match your server's choice (see [Relays](#relays)): by
+   default both use n0's public relays, so leave it at its default.
 3. The wallet connects only while its app is open: requests wait (within their timeout)
    for the person to open it, and report that they are waiting.
 
@@ -38,8 +39,10 @@ Requires Rust 1.91 (iroh 1.4).
 use std::time::Duration;
 use radixdlt_connect_iroh::mobile::{linking, MobileWalletConnector};
 
-let connector = MobileWalletConnector::new()                 // default: n0's public dev relay
-    .with_relay_url("https://relay.example.com")?;           // production: your own relay
+// n0's public relays: nothing to run or configure, on either end.
+let connector = MobileWalletConnector::new();
+// …or one relay of your own, set to the same URL in the wallet:
+// let connector = MobileWalletConnector::new().with_relay_url("https://relay.example.com")?;
 
 // The connector's long-term identity: generate it once and keep it (it names the
 // connector in the wallet).
@@ -58,7 +61,10 @@ let (wallet_public_key, password) = connector
 
 The person scans the QR from **Settings → Linked Connectors → Link New Connector**. The
 QR is the same JSON as over WebRTC; the wallet's `linkClient` signature is verified (and
-required) before `pair` returns. A link paired here also works with
+required) before `pair` returns. The wallet links over a connection of its own, which drops
+anything else sent on it, so `pair` returns only once the wallet has closed it (at most 5 s
+later): a request sent right after pairing goes over the wallet's regular connection. A link
+paired here also works with
 `radixdlt-connect` (WebRTC) when the wallet is on Automatic.
 
 ### Requests
@@ -107,16 +113,25 @@ How it behaves:
 
 ### Relays
 
-Both ends of a link must use the **same** iroh relay, like both ends of a WebRTC link use
-the same signaling server. The relay forwards end-to-end encrypted QUIC packets and helps
-the two devices punch a direct path when the network allows it.
+A relay forwards end-to-end encrypted QUIC packets between the two devices and helps them
+punch a direct path when the network allows it. There are two choices, and **both ends of a
+link must make the same one** (`Relays`):
 
-- The default, `radix_connect_iroh::DEFAULT_RELAY_URL`, is n0's public relay: fine for
-  development and moderate use, with no guarantees.
-- **In production, run your own [`iroh-relay`](https://crates.io/crates/iroh-relay)**
-  (HTTPS) and configure it on the server (`with_relay_url`) and in the wallet.
-- Plain `http://` relays are accepted only on loopback, private and link-local addresses
-  (a relay on your machine or LAN, for development).
+- **Public relays — the default** (`MobileWalletConnector::new()`, and the wallet's default
+  setting). n0's public relays (North America, Europe, Asia-Pacific): each end connects to its
+  closest one and moves to another if it fails. This connector publishes which relay it uses
+  — the relay URL only, never an IP address — through n0's address lookup (pkarr/DNS), under
+  its endpoint id; the wallet looks it up there. Nothing to host or configure, in development
+  or in production.
+- **A custom relay — optional** (`with_relay_url(url)`, and the same URL in the wallet's iroh
+  relay setting). Typically your own [`iroh-relay`](https://crates.io/crates/iroh-relay) over
+  HTTPS: you control its availability and who it serves, and nothing is published anywhere.
+  Plain `http://` is accepted only on loopback, private and link-local addresses (a relay on
+  your machine or LAN, for development).
+
+If one end uses the public relays and the other a custom one (or two different custom
+relays), the wallet never connects: requests end in `WalletUnreachable`, whose diagnostics
+show `public` on one side only.
 
 ### Diagnostics and logs
 
@@ -125,13 +140,13 @@ Every timeout error carries a connectivity snapshot of the link
 time; the state reports in `Progress` carry one too. Its `Display` is one line, e.g.:
 
 ```text
-connector efcc89cfbf → 4d99dc649e state=connected path=relay rtt=42ms relay=https://relay.example.com/ (connected)
+connector efcc89cfbf → 4d99dc649e state=connected path=relay rtt=42ms relay=https://euc1-1.relay.n0.iroh.link./ (connected, public)
 ```
 
 | What you see | What it usually means |
 |---|---|
-| `relay … (NOT connected)` (for more than a few seconds) | This server cannot reach its relay: no network, the relay is down or blocked, or a wrong URL. Nothing can connect. |
-| `state=disconnected`, relay connected, `WalletUnreachable` | The phone is not there: app closed, iroh off for the link, another relay, or not linked. |
+| `relay … (NOT connected)` or `relay=none yet` (for more than a few seconds) | This server cannot reach a relay: no network, the relay is down or blocked, or a wrong URL. Nothing can connect. |
+| `state=disconnected`, relay connected, `WalletUnreachable` | The phone is not there: app closed, iroh off for the link, another relay choice, or not linked. |
 | `last_error="… unauthorized"` | The two ends hold different passwords for the link: pair again. |
 | `last_error="… replaced by a newer connection"` | Harmless: the wallet reconnected (network change, app restart). |
 | `path=relay` | Normal behind strict NATs; still end-to-end encrypted. |
@@ -156,6 +171,10 @@ their size and interaction id — never the password or a message's contents.
 - **Relays see neither messages nor the password** — only the two endpoint ids and the
   timing and size of encrypted packets. A malicious relay can drop traffic, not read or
   forge it. Over plain HTTP (local relays only) an observer also sees the endpoint ids.
+- **What the public relays publish.** With the default, this connector publishes, under its
+  endpoint id, the URL of the relay it uses — no IP address, nothing about the wallet. The
+  id derives from the link password (different for every link, unlinkable, and revealing
+  nothing about the password). A custom relay publishes nothing.
 - **Verify what the wallet returns.** ROLA proofs are checked with `radixdlt-rola`
   against a fresh challenge, your dApp definition and origin — the connector carries
   answers, it does not vouch for them.
@@ -168,7 +187,8 @@ is never printed), then asks the wallet to log in and verifies the persona and a
 proofs:
 
 ```bash
-cargo run --example mobile_login -- --relay https://relay.example.com
+cargo run --example mobile_login                                       # public relays
+cargo run --example mobile_login -- --relay https://relay.example.com  # a relay of your own
 RUST_LOG=radix_connect_iroh=debug,radixdlt_connect_iroh=debug cargo run --example mobile_login
 ```
 

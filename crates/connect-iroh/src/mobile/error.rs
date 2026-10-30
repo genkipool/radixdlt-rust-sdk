@@ -20,7 +20,7 @@ use radixdlt_i18n::{tr, Lang};
 /// The timeouts carry a snapshot of the link's connectivity at the moment they happened
 /// ([`diagnostics`](Self::diagnostics)), shown after the message: `relay … (NOT connected)` says
 /// this server cannot reach its relay, a wallet that never connected with the relay up says the
-/// phone is not there (app closed, iroh off, another relay), and `last_error` says what failed
+/// phone is not there (app closed, iroh off, another relay choice), and `last_error` says what failed
 /// last. It holds no secrets: endpoint ids are public keys, and no message contents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -37,7 +37,8 @@ pub enum MobileError {
     /// A message did not have the expected shape.
     Protocol(String),
     /// The wallet did not connect in time: its app is closed, iroh is not enabled for this
-    /// link, it uses another relay, or it is not linked to this connector. Nothing was sent.
+    /// link, it made another relay choice (public vs. a custom relay, or another custom one), or
+    /// it is not linked to this connector. Nothing was sent.
     WalletUnreachable {
         /// The link's connectivity when the wait ended.
         diagnostics: Box<Diagnostics>,
@@ -123,11 +124,11 @@ impl std::fmt::Display for MobileError {
                 lang,
                 format!(
                     "the wallet did not connect over iroh in time (is the app open, with iroh enabled \
-                     and the same relay?) — diagnostics: {diagnostics}"
+                     and the same relays?) — diagnostics: {diagnostics}"
                 ),
                 format!(
                     "la wallet no se conectó por iroh a tiempo (¿está la app abierta, con iroh activado \
-                     y el mismo relé?) — diagnóstico: {diagnostics}"
+                     y los mismos relés?) — diagnóstico: {diagnostics}"
                 )
             ),
             MobileError::ResponseTimeout { diagnostics } => tr!(
@@ -215,7 +216,8 @@ mod tests {
             role: Role::Connector,
             local_id: password.endpoint_id(Role::Connector),
             peer_id: password.endpoint_id(Role::Wallet),
-            relay_url: "http://127.0.0.1:3340".parse().unwrap(),
+            relay_url: Some("http://127.0.0.1:3340".parse().unwrap()),
+            public_relays: false,
             relay_connected: false,
             relay_error: Some("connection refused".to_string()),
             state: ConnectionState::Disconnected,

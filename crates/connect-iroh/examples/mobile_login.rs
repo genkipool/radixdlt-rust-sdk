@@ -6,12 +6,15 @@
 //! browser, no Connector Extension.
 //!
 //! ```text
-//! cargo run --example mobile_login -- [--state <file>] [--relay <url>] [--timeout <seconds>]
+//! cargo run --example mobile_login -- [--state <file>] [--relay <url>|public] [--timeout <seconds>]
 //!                                      [--dapp <account>] [--origin <url>] [--network <id>] [--repair]
 //! ```
 //!
-//! 1. On the phone: Settings → Preferences → Radix Connect → **Automatic** (or **iroh**), with the
-//!    same relay as this program (`--relay`; default: the public development relay).
+//! 1. On the phone: Settings → Preferences → Radix Connect → **Automatic** (or **iroh**), and the
+//!    same relay choice as this program. By default both use n0's public relays — leave the
+//!    wallet's relay setting at its default; nothing to run or configure. With `--relay <url>`
+//!    (a self-hosted `iroh-relay`), set that same URL in the wallet. The choice is stored with
+//!    the link; `--relay public` goes back to the public relays.
 //! 2. The first run pairs: it draws a QR code here; scan it from Settings → Linked Connectors →
 //!    Link New Connector. The link (its password and this connector's identity) is stored in the
 //!    state file — created readable by you only — and is NEVER printed. Keep that file like a
@@ -22,15 +25,15 @@
 //! Diagnostics: every connection change prints the link's connectivity line, and errors carry it.
 //! For the full story, `RUST_LOG=radix_connect_iroh=debug,radixdlt_connect_iroh=debug`.
 //!
-//! The state file has the shape of `radixdlt-connect`'s `connector.json` (plus `irohRelayUrl`),
-//! so a link paired here also works over WebRTC when the wallet uses Automatic.
+//! The state file has the shape of `radixdlt-connect`'s `connector.json` (plus `irohRelayUrl` for
+//! a custom relay), so a link paired here also works over WebRTC when the wallet uses Automatic.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use radixdlt_connect_iroh::mobile::{
     extract_login, extract_proofs, linking, login_request, DappContext, MobileWalletConnector,
-    PersonaRequest, Progress, DEFAULT_RELAY_URL,
+    PersonaRequest, Progress, Relays,
 };
 use radixdlt_rola::{verify_account_proof, verify_persona_proof, AccountProof};
 use serde_json::{json, Value};
@@ -110,6 +113,16 @@ fn save(path: &Path, state: &Value) {
     std::fs::rename(&temporary, path).expect("replace the state file");
 }
 
+/// The relay choice, as the person setting up the wallet needs to read it.
+fn describe(relays: &Relays) -> String {
+    match relays {
+        Relays::Public => {
+            "Relays: n0's public relays — keep the wallet's iroh relay setting at its default.".to_string()
+        }
+        Relays::Custom(url) => format!("Relay: {url} — set this same relay in the wallet."),
+    }
+}
+
 /// Prints a step of a call; connection changes come with the link's diagnostics line.
 fn show(step: Progress) {
     match step {
@@ -159,10 +172,7 @@ async fn link(connector: &MobileWalletConnector, args: &Args, state: &mut Value)
         println!("\nIn the Radix Wallet: Settings → Linked Connectors → Link New Connector, and scan:\n");
         println!("{art}");
         println!("(If it does not scan, switch the terminal to a light theme or enlarge the window.)");
-        println!(
-            "Relay: {} — the wallet must use the same one.",
-            connector.relay_url()
-        );
+        println!("{}", describe(connector.relays()));
     };
     let (wallet_public_key, password) = match connector
         .pair_with_progress(&private, &public, on_qr, PAIRING_TIMEOUT, &mut show)
@@ -182,7 +192,10 @@ async fn link(connector: &MobileWalletConnector, args: &Args, state: &mut Value)
         "password": hex::encode(&password),
         "walletPublicKey": wallet_public_key,
         "linkedAt": linked_at,
-        "irohRelayUrl": connector.relay_url(),
+        "irohRelayUrl": match connector.relays() {
+            Relays::Custom(url) => json!(url.as_str()),
+            Relays::Public => Value::Null,
+        },
     }]);
     save(&args.state, state);
     println!(
@@ -256,12 +269,16 @@ async fn main() {
 
     let args = args();
     let mut state = load(&args.state);
+    // The command line wins; otherwise the choice stored with the link; otherwise public.
     let relay = args
         .relay
         .clone()
-        .or_else(|| state["links"][0]["irohRelayUrl"].as_str().map(str::to_string))
-        .unwrap_or_else(|| DEFAULT_RELAY_URL.to_string());
-    let connector = match MobileWalletConnector::new().with_relay_url(&relay) {
+        .or_else(|| state["links"][0]["irohRelayUrl"].as_str().map(str::to_string));
+    let connector = match relay.as_deref() {
+        None | Some("public") => Ok(MobileWalletConnector::new()),
+        Some(url) => MobileWalletConnector::new().with_relay_url(url),
+    };
+    let connector = match connector {
         Ok(connector) => connector,
         Err(error) => {
             eprintln!("{error}");
