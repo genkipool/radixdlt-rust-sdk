@@ -77,6 +77,11 @@ Si el binario no está en tu `PATH`, usa su ruta absoluta como `command`.
 
 ## Dos transportes: WebRTC e iroh
 
+> **Experimental: de momento deja el valor por defecto (`webrtc`).** iroh necesita una
+> Radix Wallet con Radix Connect over iroh, que la wallet y la Connector Extension
+> oficiales aún no incluyen. Hasta entonces, `--transport iroh|auto` es solo para pruebas
+> con compilaciones de desarrollo.
+
 El conector llega a la wallet por **WebRTC** (el servidor de señalización de Radix; por
 defecto, sin cambios) o por **Radix Connect over iroh** (QUIC a través de relés iroh — sin
 servidor de señalización y sin necesidad de UDP: la conexión con el relé es HTTPS). Se elige con

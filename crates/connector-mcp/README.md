@@ -76,6 +76,10 @@ If the binary is not on your `PATH`, use its absolute path as `command`.
 
 ## Two transports: WebRTC and iroh
 
+> **Experimental — keep the default (`webrtc`) for now.** iroh needs a Radix Wallet with
+> Radix Connect over iroh, which the official wallet and Connector Extension do not ship
+> yet. Until they do, `--transport iroh|auto` is only for testing with development builds.
+
 The connector reaches the wallet over **WebRTC** (the Radix signaling server; the default,
 unchanged) or over **Radix Connect over iroh** (QUIC through iroh relays — no signaling server,
 and no UDP needed: the relay connection is HTTPS). Choose with `--transport` (or
