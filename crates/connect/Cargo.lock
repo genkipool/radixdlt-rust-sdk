@@ -1304,6 +1304,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "radixdlt-i18n",
+ "serde",
  "serde_json",
  "uuid",
 ]

@@ -7,6 +7,32 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.7.0] - 2026-10-31
+
+`radixdlt-connector-mcp` 0.7.0: one QR for any Radix Wallet, over iroh or WebRTC with nothing to
+choose, and over iroh a wallet that is open connects at once. The self-updater offers it;
+`connector.json` files of 0.6 load as they are.
+
+### Added
+
+- **Pairing over iroh and WebRTC at once** (`radixdlt-connect-auto`): the QR works with any Radix
+  Wallet; iroh is preferred when the wallet has it, WebRTC otherwise. The link records the
+  transport it was paired over. `auto` is the default setting.
+- **Each request races both transports** over a link paired over iroh: the first one ready carries
+  it (only that one, so the wallet is never asked twice); a link whose iroh connection is up skips
+  the race.
+- **Knocks** (`radix-connect-iroh` 0.1.2): a session that starts tells its wallet, which dials at
+  once instead of at its next retry (up to 30 s later). Each link keeps the relay its wallet was
+  last seen on (`walletRelay`) to knock there. Measured with a phone: about 20 s down to 0.6 s.
+- **Removing a link removes it on both sides**: the wallet is told when the link is forgotten here,
+  and a link the wallet removed is forgotten here.
+
+### Changed
+
+- Built on `radixdlt-connect-auto` and `radixdlt-connect-webrtc` (the renamed `radixdlt-connect`).
+- The iroh path explains itself in the logs (sessions, knocks, why a wallet is not reachable).
+
+
 ### Added — `radixdlt-connect-auto`: iroh or WebRTC, with nothing to choose
 
 - **`WalletConnector`**: one QR pairs over iroh and WebRTC at once (iroh preferred, with a grace
