@@ -1,0 +1,39 @@
+# Isolated workspace, as `radixdlt-connect-webrtc`'s: its `webrtc` tree cannot be resolved together
+# with the main SDK workspace. It shares the other crates by path.
+[workspace]
+
+[package]
+name = "radixdlt-connect-auto"
+description = "Talk to the Radix Wallet over iroh or WebRTC, whichever it can, with nothing to choose: one QR pairs over both, each request races both and goes over exactly one, the fastest."
+version = "0.3.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/genkipool/radixdlt-rust-sdk"
+authors = ["Luis Alberto Reoyo Bolaños <68571366+genkipool@users.noreply.github.com>"]
+rust-version = "1.87"
+keywords = ["radix", "radixdlt", "radix-connect", "iroh", "webrtc"]
+categories = ["cryptography::cryptocurrencies", "network-programming"]
+readme = "README.md"
+
+[dependencies]
+radixdlt-i18n = { path = "../i18n", version = "0.3.0" }
+radixdlt-connect-types = { path = "../connect-types", version = "0.3.0" }
+radixdlt-connect-webrtc = { path = "../connect-webrtc", version = "0.3.0" }
+# Without its `wallet` feature (answering requests, which pulls the Scrypto engine): a connector
+# only asks the wallet.
+radixdlt-connect-iroh = { path = "../connect-iroh", version = "0.3.0", default-features = false }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+# The tests over iroh reuse connect-iroh's simulated wallet and in-process relay
+# (`../connect-iroh/tests/support`), which need these.
+radixdlt-address = { path = "../address", version = "0.3.0" }
+radixdlt-rola = { path = "../rola", version = "0.3.0" }
+radix-connect-iroh = { git = "https://github.com/genkipool/radix-connect-iroh", tag = "v0.1.1" }
+iroh-relay = { version = "1.4.1", default-features = false, features = ["server", "tls-ring"] }
+ed25519-dalek = "3"
+getrandom = "0.4"
+hex = "0.4"

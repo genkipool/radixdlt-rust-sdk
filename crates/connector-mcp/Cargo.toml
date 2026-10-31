@@ -1,6 +1,6 @@
-# Isolated workspace: this binary depends on `radixdlt-connect`, whose `webrtc`
+# Isolated workspace: this binary depends on `radixdlt-connect-webrtc`, whose `webrtc`
 # dependency tree cannot be resolved together with the main SDK workspace (same
-# reason `radixdlt-connect` itself is isolated). It shares the connect crates by
+# reason `radixdlt-connect-webrtc` itself is isolated). It shares the connect crates by
 # path and publishes/installs independently from GitHub.
 [workspace]
 
@@ -23,7 +23,7 @@ name = "radix-connector-mcp"
 path = "src/main.rs"
 
 [dependencies]
-radixdlt-connect = { path = "../connect", version = "0.3.0" }
+radixdlt-connect-webrtc = { path = "../connect-webrtc", version = "0.3.0" }
 # `qr`: the QR encoder and terminal renderer shared with every program that pairs a wallet.
 radixdlt-connect-types = { path = "../connect-types", version = "0.3.0", features = ["qr"] }
 radixdlt-rola = { path = "../rola", version = "0.3.0" }
@@ -34,7 +34,7 @@ radixdlt-connect-iroh = { path = "../connect-iroh", version = "0.3.0", default-f
 # connector.log (`src/trace.rs`). Both are already in the tree through iroh.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
-# One connector process per wallet link over iroh (an OS file lock), as `radixdlt-connect` does
+# One connector process per wallet link over iroh (an OS file lock), as `radixdlt-connect-webrtc` does
 # for WebRTC turns.
 fs4 = { version = "0.13", features = ["sync"] }
 zeroize = "1.8"

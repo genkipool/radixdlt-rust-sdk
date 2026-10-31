@@ -1,4 +1,4 @@
-# radixdlt-connect
+# radixdlt-connect-webrtc
 
 *[English](README.md) · **Español***
 
@@ -9,13 +9,13 @@ interacciones de wallet (pruebas de cuenta ROLA, transacciones, pre-autorizacion
 
 ```toml
 [dependencies]
-radixdlt-connect = "0.1"
+radixdlt-connect-webrtc = "0.1"
 ```
 
 ### Emparejamiento (QR)
 
 ```rust
-use radixdlt_connect::{Connector, LinkState};
+use radixdlt_connect_webrtc::{Connector, LinkState};
 use std::time::Duration;
 
 let connector = Connector::new(); // conjunto ICE público de Radix; cámbialo con with_ice_servers()
@@ -34,7 +34,7 @@ que las respuestas obsoletas que hayan quedado en la cola de peticiones de la wa
 intentos anteriores se descartan automáticamente.
 
 ```rust
-use radixdlt_connect::DappContext;
+use radixdlt_connect_webrtc::DappContext;
 
 let ctx = DappContext::new(network_id, dapp_definition, origin);
 
@@ -72,7 +72,7 @@ vez** — cada enlace tiene su propia contraseña (y por tanto su propio `connec
 de modo que un demonio puede alcanzar un dispositivo concreto:
 
 ```rust
-use radixdlt_connect::state::{Link, LinkState};
+use radixdlt_connect_webrtc::state::{Link, LinkState};
 
 let mut state = LinkState::load(path)?;         // migra el `link` único heredado
 for link in state.all_links() { /* lista dispositivos; `link.label` es opcional */ }
@@ -92,7 +92,7 @@ wifis de invitados y casi todas las plataformas serverless. Este crate puede lle
 la interacción entera por **TURN sobre TCP/TLS 443**, sin abrir un solo socket UDP:
 
 ```rust
-use radixdlt_connect::{Connector, TurnTcpServer};
+use radixdlt_connect_webrtc::{Connector, TurnTcpServer};
 
 let relay = TurnTcpServer::parse(
     "turns:relay.example.com:443?transport=tcp",

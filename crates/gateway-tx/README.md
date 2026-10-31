@@ -20,7 +20,7 @@ let status = gw.submit_and_wait(&tx).await?;
 ```
 
 > Note: this crate pulls the `radix-engine` dependency tree, which cannot be resolved
-> together with the WebRTC tree of `radixdlt-connect`. Use them in separate binaries.
+> together with the WebRTC tree of `radixdlt-connect-webrtc`. Use them in separate binaries.
 
 Error messages are localized to the system language. Part of the
 [RadixDLT Rust SDK](https://crates.io/crates/radixdlt-sdk).

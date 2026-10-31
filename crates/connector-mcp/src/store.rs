@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::SigningKey;
-use radixdlt_connect::state::{Identity, LinkState};
+use radixdlt_connect_webrtc::state::{Identity, LinkState};
 
 /// Namespace for connector-state helpers (no instance state of its own).
 pub struct Store;

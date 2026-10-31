@@ -15,9 +15,9 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
-use radixdlt_connect::crypto::blake2b_256;
-use radixdlt_connect::state::Link;
-use radixdlt_connect::{
+use radixdlt_connect_webrtc::crypto::blake2b_256;
+use radixdlt_connect_webrtc::state::Link;
+use radixdlt_connect_webrtc::{
     account_proof_request_sharing, account_request, authorized_request, extract_accounts,
     extract_persona_email, extract_persona_name, extract_proofs, extract_signed_partial_transaction,
     extract_transaction_intent_hash, pre_authorization_request, transaction_request, unauthorized_request,
@@ -988,6 +988,11 @@ async fn finish_pairing(app: &Rc<App>, outcome: PairOutcome, label: Option<Strin
         wallet_public_key: outcome.wallet_public_key.clone(),
         linked_at: now_unix_seconds(),
         label: label.clone(),
+        transport: Some(match outcome.paired_over.transport {
+            Transport::Webrtc => radixdlt_connect_types::Transport::Webrtc,
+            Transport::Iroh => radixdlt_connect_types::Transport::Iroh,
+        }),
+        iroh_relay: outcome.paired_over.iroh_relay.clone(),
     });
     if let Err(e) = Store::save(app.config_path(), &state) {
         return ToolResult::error(format!("paired, but could not save the link: {e}"));
@@ -1077,7 +1082,7 @@ fn list_wallets(app: &Rc<App>) -> ToolResult {
 }
 
 /// The wallets removed here that still have to be told, as a paragraph (empty when none).
-fn pending_notices(state: &radixdlt_connect::LinkState) -> String {
+fn pending_notices(state: &radixdlt_connect_webrtc::LinkState) -> String {
     if state.retired_links.is_empty() {
         return String::new();
     }
@@ -1821,18 +1826,18 @@ async fn request_data(app: &Rc<App>, args: &Value) -> ToolResult {
 
 /// «, 1+ account(s) with proof, ongoing persona data (name, phones)» — what else a request asks.
 fn what_else(request: &AuthorizedRequest) -> String {
-    let quantity = |q: radixdlt_connect::Quantity| match q {
-        radixdlt_connect::Quantity::AtLeast(n) => format!("{n}+"),
-        radixdlt_connect::Quantity::Exactly(n) => format!("exactly {n}"),
+    let quantity = |q: radixdlt_connect_webrtc::Quantity| match q {
+        radixdlt_connect_webrtc::Quantity::AtLeast(n) => format!("{n}+"),
+        radixdlt_connect_webrtc::Quantity::Exactly(n) => format!("exactly {n}"),
     };
-    let accounts = |a: &radixdlt_connect::AccountsWanted, when: &str| {
+    let accounts = |a: &radixdlt_connect_webrtc::AccountsWanted, when: &str| {
         format!(
             "{when}{q} account(s){p}",
             q = quantity(a.quantity),
             p = if a.challenge.is_some() { " with proof" } else { "" }
         )
     };
-    let data = |d: &radixdlt_connect::PersonaDataWanted, when: &str| {
+    let data = |d: &radixdlt_connect_webrtc::PersonaDataWanted, when: &str| {
         let mut fields = Vec::new();
         if d.name {
             fields.push("name".to_string());

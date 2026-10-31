@@ -21,9 +21,10 @@ off-ledger primitives that, until now, only existed in JavaScript/TypeScript. Bu
 | [`radixdlt-address`](crates/address) | Virtual-account address derivation |
 | [`radixdlt-keystore`](crates/keystore) | Encrypted Ed25519 keystore (scrypt + AES-256-GCM) |
 | [`radixdlt-gateway-tx`](crates/gateway-tx) | Gateway client + local transaction signing |
-| [`radixdlt-connect`](crates/connect) | Radix Connect over **WebRTC** (talks to the mobile wallet), including TURN over TCP/TLS for networks with no UDP |
+| [`radixdlt-connect-auto`](crates/connect-auto) | Talks to the Radix Wallet over **iroh or WebRTC, whichever it can**: one QR pairs over both, each request races both and goes over exactly one, the fastest |
+| [`radixdlt-connect-webrtc`](crates/connect-webrtc) | Radix Connect over **WebRTC** (talks to the mobile wallet), including TURN over TCP/TLS for networks with no UDP. Formerly `radixdlt-connect`, still available under that name as a re-export |
 | [`radixdlt-connect-iroh`](crates/connect-iroh) | Radix Connect over **iroh/QUIC**: the mobile wallet directly from a server (Radix Connect over iroh v1, no browser), and pure-Rust SDK-to-SDK |
-| [`radixdlt-connector-mcp`](crates/connector-mcp) | Local **MCP server** (binary): lets AI agents pair a wallet and sign transactions via `radixdlt-connect` (WebRTC) or `radixdlt-connect-iroh` (iroh) |
+| [`radixdlt-connector-mcp`](crates/connector-mcp) | Local **MCP server** (binary): lets AI agents pair a wallet and sign transactions via `radixdlt-connect-webrtc` (WebRTC) or `radixdlt-connect-iroh` (iroh) |
 | [`radixdlt-i18n`](crates/i18n) | System-locale detection + bilingual text helpers |
 
 ## Quick start
@@ -49,7 +50,7 @@ radixdlt-sdk = { version = "0.1", features = ["full"] }
   the phone approves and the private key never leaves it. It installs from GitHub
   (`cargo install --git …` or the scripts in [`scripts/`](scripts)); see its
   [README](crates/connector-mcp) for the tools and setup.
-- **Workspaces.** `radixdlt-connect`, `radixdlt-connect-iroh` and
+- **Workspaces.** `radixdlt-connect-webrtc`, `radixdlt-connect-iroh` and
   `radixdlt-connector-mcp` are isolated workspaces (heavy WebRTC / QUIC dependency
   trees); the rest share the main workspace.
 

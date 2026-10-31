@@ -27,9 +27,9 @@
 //! ## Wallet / WebRTC
 //!
 //! Radix Connect (pairing and WebRTC wallet interactions) lives in the separate
-//! `radixdlt-connect` crate. It is **not** re-exported here because its `webrtc`
+//! `radixdlt-connect-webrtc` crate. It is **not** re-exported here because its `webrtc`
 //! dependency tree cannot be resolved together with the `radix-engine` tree used by
-//! the `gateway` feature. Add `radixdlt-connect` directly; it pairs naturally with
+//! the `gateway` feature. Add `radixdlt-connect-webrtc` directly; it pairs naturally with
 //! the `rola` feature for "log in with Radix" flows.
 //!
 //! All user-facing error messages across the SDK are localized to the system

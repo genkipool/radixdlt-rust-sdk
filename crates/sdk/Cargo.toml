@@ -37,7 +37,7 @@ gate = ["dep:radixdlt-gate", "rola"]
 # Everything that shares the radix-common/engine tree.
 full = ["rola", "keystore", "gateway", "connect-types", "gate"]
 
-# NOTE: the transports `radixdlt-connect` (WebRTC) and `radixdlt-connect-iroh` (QUIC)
+# NOTE: the transports `radixdlt-connect-webrtc` (WebRTC) and `radixdlt-connect-iroh` (QUIC)
 # are intentionally NOT re-exported here. Their dependency trees cannot be resolved
 # together with the `radix-engine` tree pulled by the `gateway` feature. Add the
 # transport crate you need directly; both share the `connect-types` schema.

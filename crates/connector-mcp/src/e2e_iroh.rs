@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fs4::fs_std::FileExt;
-use radixdlt_connect::Connector;
+use radixdlt_connect_webrtc::Connector;
 use radixdlt_connect_types::linking;
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;

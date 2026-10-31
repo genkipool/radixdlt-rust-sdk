@@ -3565,34 +3565,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "radixdlt-connect"
-version = "0.3.0"
-dependencies = [
- "aes-gcm 0.11.0",
- "async-trait",
- "base64 0.23.0",
- "blake2",
- "bytes",
- "fs4",
- "futures-util",
- "getrandom 0.4.3",
- "hex",
- "radixdlt-connect-types",
- "radixdlt-i18n",
- "rtc",
- "rustls",
- "sansio",
- "serde",
- "serde_json",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "uuid",
- "webpki-roots 1.0.11",
- "webrtc",
-]
-
-[[package]]
 name = "radixdlt-connect-iroh"
 version = "0.3.0"
 dependencies = [
@@ -3621,8 +3593,37 @@ dependencies = [
  "hex",
  "qrcode",
  "radixdlt-i18n",
+ "serde",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "radixdlt-connect-webrtc"
+version = "0.3.0"
+dependencies = [
+ "aes-gcm 0.11.0",
+ "async-trait",
+ "base64 0.23.0",
+ "blake2",
+ "bytes",
+ "fs4",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hex",
+ "radixdlt-connect-types",
+ "radixdlt-i18n",
+ "rtc",
+ "rustls",
+ "sansio",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "uuid",
+ "webpki-roots 1.0.11",
+ "webrtc",
 ]
 
 [[package]]
@@ -3639,9 +3640,9 @@ dependencies = [
  "iroh-relay",
  "radix-connect-iroh",
  "radixdlt-address",
- "radixdlt-connect",
  "radixdlt-connect-iroh",
  "radixdlt-connect-types",
+ "radixdlt-connect-webrtc",
  "radixdlt-rola",
  "reqwest",
  "rustls",

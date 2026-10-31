@@ -1,5 +1,5 @@
 //! Removing a wallet here removes this connector from the wallet too, and the other way round
-//! (see [`radixdlt_connect::link_removal`]).
+//! (see [`radixdlt_connect_webrtc::link_removal`]).
 //!
 //! - `remove_wallet` unpairs the wallet and keeps a notice ([`RetiredLink`], in `connector.json`)
 //!   until the wallet confirmed it was told; while this connector runs, [`deliver_notices`] keeps
@@ -11,7 +11,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use radixdlt_connect::state::RetiredLink;
+use radixdlt_connect_webrtc::state::RetiredLink;
 use serde_json::json;
 use std::time::Instant;
 
@@ -180,7 +180,7 @@ enum Attempt {
 }
 
 async fn attempt(app: &Rc<App>, password: &[u8], route: &Route, wait: Duration) -> Result<(), Attempt> {
-    use radixdlt_connect::ConnectError;
+    use radixdlt_connect_webrtc::ConnectError;
     use radixdlt_connect_iroh::mobile::MobileError;
     match route {
         Route::Webrtc => match app.webrtc_connector().notify_link_removed(password, wait).await {

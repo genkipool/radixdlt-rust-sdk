@@ -18,6 +18,7 @@ qr = ["dep:qrcode"]
 
 [dependencies]
 radixdlt-i18n = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 # The linking crypto (`linking` module), shared by every transport. Light on purpose: this crate

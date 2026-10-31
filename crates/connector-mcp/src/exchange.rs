@@ -17,7 +17,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use radixdlt_connect::{check_failure, ConnectError, DappContext, Progress};
+use radixdlt_connect_webrtc::{check_failure, ConnectError, DappContext, Progress};
 use radixdlt_connect_iroh::mobile::{MobileError, Progress as IrohProgress};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
@@ -299,7 +299,7 @@ pub async fn settle_across_processes(app: &App, wallet: &str, id: &str) {
     let Some(closed) = app.outbox.link_closed_at(wallet) else {
         return;
     };
-    let settle = radixdlt_connect::WALLET_SETTLE.as_millis() as u64;
+    let settle = radixdlt_connect_webrtc::WALLET_SETTLE.as_millis() as u64;
     let wait = (closed + settle).saturating_sub(crate::outbox::now_millis());
     if wait > 0 && wait <= settle {
         app.log.event(
@@ -613,9 +613,9 @@ fn iroh_state(error: &MobileError, delivered: bool) -> State {
 }
 
 /// The wallet's own words, without the localized «the wallet rejected the request:» prefix.
-fn wallet_detail(error: &radixdlt_connect::WalletInteractionError) -> String {
+fn wallet_detail(error: &radixdlt_connect_webrtc::WalletInteractionError) -> String {
     match error {
-        radixdlt_connect::WalletInteractionError::WalletRejected(detail) => detail.clone(),
+        radixdlt_connect_webrtc::WalletInteractionError::WalletRejected(detail) => detail.clone(),
         other => other.to_string(),
     }
 }

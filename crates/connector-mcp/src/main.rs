@@ -181,7 +181,7 @@ async fn command(args: &[String]) -> i32 {
                 .position(|a| a == "--listen")
                 .and_then(|i| args.get(i + 1))
                 .cloned()
-                .unwrap_or_else(|| format!("0.0.0.0:{}", radixdlt_connect::relay::DEFAULT_RELAY_PORT));
+                .unwrap_or_else(|| format!("0.0.0.0:{}", radixdlt_connect_webrtc::relay::DEFAULT_RELAY_PORT));
             let turn = args
                 .iter()
                 .position(|a| a == "--turn")
@@ -209,9 +209,9 @@ async fn command(args: &[String]) -> i32 {
                 };
                 eprintln!("TURN (TCP) on {turn}: in the wallet's server add  stun:{turn}  and  turn:{turn}?transport=tcp  user radix");
                 tokio::task::spawn_local(async move {
-                    if let Err(e) = radixdlt_connect::turn_server::serve_turn(
+                    if let Err(e) = radixdlt_connect_webrtc::turn_server::serve_turn(
                         listener,
-                        radixdlt_connect::turn_server::TurnConfig::loopback(&password),
+                        radixdlt_connect_webrtc::turn_server::TurnConfig::loopback(&password),
                     )
                     .await
                     {
@@ -254,9 +254,9 @@ async fn relay(listen: &str) -> i32 {
     eprintln!("(the address of THIS computer on the cable or Wi-Fi the phone is on), and make it current.");
     eprintln!(
         "Connectors on this computer use it when it is listed in {} or ~/.config/radix-connect/relays",
-        radixdlt_connect::RELAYS_ENV
+        radixdlt_connect_webrtc::RELAYS_ENV
     );
-    match radixdlt_connect::relay::serve_relay(listener).await {
+    match radixdlt_connect_webrtc::relay::serve_relay(listener).await {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("radix-connector-mcp: relay stopped: {e}");

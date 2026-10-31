@@ -100,7 +100,7 @@ struct File {
     #[serde(default)]
     requests: Vec<Record>,
     /// When each wallet's last channel closed (unix milliseconds), so that ANOTHER connector
-    /// process waits for the wallet to let go of it too (see `radixdlt_connect::WALLET_SETTLE`).
+    /// process waits for the wallet to let go of it too (see `radixdlt_connect_webrtc::WALLET_SETTLE`).
     #[serde(default)]
     links: std::collections::BTreeMap<String, u64>,
 }

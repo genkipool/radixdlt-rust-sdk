@@ -20,7 +20,7 @@ let status = gw.submit_and_wait(&tx).await?;
 ```
 
 > Nota: este crate arrastra el árbol de dependencias de `radix-engine`, que no se puede
-> resolver junto al árbol de WebRTC de `radixdlt-connect`. Úsalos en binarios separados.
+> resolver junto al árbol de WebRTC de `radixdlt-connect-webrtc`. Úsalos en binarios separados.
 
 Los mensajes de error se localizan al idioma del sistema. Forma parte del
 [RadixDLT Rust SDK](https://crates.io/crates/radixdlt-sdk).

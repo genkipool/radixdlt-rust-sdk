@@ -3,7 +3,7 @@
 //! personas, accounts shared one-time or ongoing, persona data, and proofs, each proof verified
 //! here against the challenge THIS connector sent (never the one the answer echoes back).
 
-use radixdlt_connect::{AccountsWanted, PersonaDataWanted, Quantity};
+use radixdlt_connect_webrtc::{AccountsWanted, PersonaDataWanted, Quantity};
 use radixdlt_rola::{verify_account_proof, verify_persona_proof, AccountProof};
 use serde_json::{json, Value};
 
@@ -238,7 +238,7 @@ pub fn render_answer(response: &Value, verifier: Option<&Verifier>) -> String {
         let phones = list_of(data.get("phoneNumbers"));
         out.push_str(&format!(
             "{title}:\n  name:   {name}\n  emails: {emails}\n  phones: {phones}\n",
-            name = radixdlt_connect::extract_persona_name(&as_one_time).unwrap_or_else(|| "—".into()),
+            name = radixdlt_connect_webrtc::extract_persona_name(&as_one_time).unwrap_or_else(|| "—".into()),
             emails = if emails.is_empty() {
                 "—".into()
             } else {
@@ -299,14 +299,14 @@ fn list_of(v: Option<&Value>) -> Vec<String> {
 
 /// One line saying what an answer was — for the request record and for late answers.
 pub fn describe_answer(response: &Value) -> String {
-    if let Err(e) = radixdlt_connect::check_failure(response) {
+    if let Err(e) = radixdlt_connect_webrtc::check_failure(response) {
         return format!("FAILURE — {e}");
     }
     let items = response.get("items").cloned().unwrap_or(Value::Null);
-    if let Ok(txid) = radixdlt_connect::extract_transaction_intent_hash(response) {
+    if let Ok(txid) = radixdlt_connect_webrtc::extract_transaction_intent_hash(response) {
         return format!("transaction SUBMITTED — {txid}");
     }
-    if radixdlt_connect::extract_signed_partial_transaction(response).is_ok() {
+    if radixdlt_connect_webrtc::extract_signed_partial_transaction(response).is_ok() {
         return "pre-authorization SIGNED (not submitted)".to_string();
     }
     let mut parts = Vec::new();

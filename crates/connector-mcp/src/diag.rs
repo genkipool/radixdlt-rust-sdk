@@ -16,7 +16,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use radixdlt_connect::ConnectError;
+use radixdlt_connect_webrtc::ConnectError;
 use radixdlt_connect_iroh::mobile::MobileError;
 use serde_json::{json, Value};
 
@@ -136,7 +136,7 @@ impl Failure {
                 "NOT_DELIVERED",
                 "deliver",
                 true,
-                format!("{detail} (after {} attempts, each on a fresh channel)", radixdlt_connect::SEND_ATTEMPTS),
+                format!("{detail} (after {} attempts, each on a fresh channel)", radixdlt_connect_webrtc::SEND_ATTEMPTS),
                 "The wallet app opened the channel but never confirmed receiving the request, so it is almost certainly NOT on the phone. Ask the person to bring the Radix Wallet to the foreground (or close and reopen it), check with check_wallet_connection, then send again. If the phone shows it after all, they answer it and await_response {interaction_id} collects the answer.",
             ),
             ConnectError::ResponseTimeout if delivered => Failure::new(

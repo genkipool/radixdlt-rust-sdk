@@ -32,7 +32,7 @@ Radix Connect (wallet pairing) is **not** re-exported here because its transport
 dependency tree cannot be resolved together with the `gateway` feature's
 `radix-engine` tree. Add the transport directly:
 
-- [`radixdlt-connect`](https://crates.io/crates/radixdlt-connect) — WebRTC, talks to the Radix mobile wallet.
+- [`radixdlt-connect-webrtc`](https://crates.io/crates/radixdlt-connect-webrtc) — WebRTC, talks to the Radix mobile wallet.
 - [`radixdlt-connect-iroh`](https://crates.io/crates/radixdlt-connect-iroh) — QUIC, for pure-Rust SDK-to-SDK peers.
 
 ## License

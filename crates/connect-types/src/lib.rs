@@ -35,6 +35,9 @@ pub mod linking;
 #[cfg(feature = "qr")]
 pub mod qr;
 pub mod relays;
+pub mod transport;
+
+pub use transport::Transport;
 
 use radixdlt_i18n::{tr, Lang};
 use serde_json::{json, Value};

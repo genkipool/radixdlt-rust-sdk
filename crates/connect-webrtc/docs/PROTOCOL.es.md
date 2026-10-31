@@ -1,4 +1,4 @@
-# radixdlt-connect — Especificación del protocolo Radix Connect (WebRTC)
+# radixdlt-connect-webrtc — Especificación del protocolo Radix Connect (WebRTC)
 
 *[English](PROTOCOL.md) · **Español***
 

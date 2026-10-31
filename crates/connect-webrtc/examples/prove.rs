@@ -9,12 +9,12 @@
 //!   cargo run --example prove -- [--state <path>] [--timeout <seconds>] [--dapp <addr>]
 //!
 //! Open the Radix Wallet on your phone and approve the request when it appears.
-//! This is the flagship "log in with Radix" flow: radixdlt-connect (get the proof)
+//! This is the flagship "log in with Radix" flow: radixdlt-connect-webrtc (get the proof)
 //! + radixdlt-rola (verify it), no Node involved.
 
 use std::time::Duration;
 
-use radixdlt_connect::{extract_proofs, Connector, DappContext, LinkState};
+use radixdlt_connect_webrtc::{extract_proofs, Connector, DappContext, LinkState};
 use radixdlt_rola::{verify_account_proof, AccountProof};
 
 // Sample Stokenet dApp definition; override with --dapp for your own dApp.

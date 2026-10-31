@@ -1,12 +1,12 @@
-# Isolated workspace: the `webrtc` dependency tree conflicts at resolution time with
-# the `radix-engine` tree used by `radixdlt-gateway-tx`, so this crate is kept out of
-# the main SDK workspace (same approach the original prototype used). It still shares
-# `radixdlt-i18n` by path. Publishes to crates.io independently.
+# The crate's former name, kept so that code depending on `radixdlt-connect` keeps building: it is
+# `radixdlt-connect-webrtc`, re-exported. New code depends on `radixdlt-connect-webrtc` (WebRTC
+# only), `radixdlt-connect-iroh` (iroh only) or `radixdlt-connect-auto` (both, chosen by itself).
+# Isolated workspace, as `radixdlt-connect-webrtc`'s (its webrtc tree).
 [workspace]
 
 [package]
 name = "radixdlt-connect"
-description = "Radix Connect protocol in native Rust: signaling, WebRTC and wallet interactions (a drop-in for @radixdlt/radix-connect-webrtc)."
+description = "Former name of radixdlt-connect-webrtc (Radix Connect over WebRTC), which it re-exports. Use radixdlt-connect-webrtc, or radixdlt-connect-auto for iroh and WebRTC chosen automatically."
 version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -18,30 +18,4 @@ categories = ["cryptography::cryptocurrencies", "network-programming"]
 readme = "README.md"
 
 [dependencies]
-radixdlt-i18n = { path = "../i18n", version = "0.3.0" }
-radixdlt-connect-types = { path = "../connect-types", version = "0.3.0" }
-getrandom = "0.4"
-blake2 = "0.10"
-# The link's turn across processes (an OS file lock), within the crate's MSRV.
-fs4 = { version = "0.13", features = ["sync"] }
-hex = "0.4"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-aes-gcm = { version = "0.11", features = ["alloc"] }
-tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-futures-util = "0.3"
-uuid = { version = "1", features = ["v4"] }
-base64 = "0.23"
-webrtc = "0.21"
-async-trait = "0.1.91"
-rtc = "0.21"
-bytes = "1"
-sansio = "1"
-webpki-roots = "1"
-tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-
-[dev-dependencies]
-# Used by the `prove` example to verify the ROLA proof returned by the wallet.
-radixdlt-rola = { path = "../rola", version = "0.3.0" }
+radixdlt-connect-webrtc = { path = "../connect-webrtc", version = "0.3.0" }

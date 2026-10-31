@@ -22,7 +22,7 @@ use the form at <https://pamauthority.genkipool.com/security> instead.
 
 These crates handle cryptographic material (Ed25519 keys, ROLA proofs) and network
 transports. Particularly relevant areas: `radixdlt-keystore` (key encryption),
-`radixdlt-rola` (proof verification), and the transports `radixdlt-connect` /
+`radixdlt-rola` (proof verification), and the transports `radixdlt-connect-webrtc` /
 `radixdlt-connect-iroh`.
 
 ## Supported versions

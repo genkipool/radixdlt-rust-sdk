@@ -16,7 +16,7 @@
 
 use std::time::{Duration, Instant};
 
-use radixdlt_connect::{extract_proofs, Connector, DappContext, LinkState, TurnTcpServer};
+use radixdlt_connect_webrtc::{extract_proofs, Connector, DappContext, LinkState, TurnTcpServer};
 use radixdlt_rola::{verify_account_proof, AccountProof};
 
 // Matches the daemon's defaults, so this measures the transport and nothing else.
@@ -50,7 +50,7 @@ async fn main() {
     if get("--mode", "relay-tcp") == "probe" {
         let relay = TurnTcpServer::parse(RELAY_URL, RELAY_USER, RELAY_PASS).expect("relay url");
         println!("allocating on {} (tls={})…", relay.addr, relay.tls);
-        match radixdlt_connect::probe_relay_candidates(&relay, Duration::from_secs(5)).await {
+        match radixdlt_connect_webrtc::probe_relay_candidates(&relay, Duration::from_secs(5)).await {
             Ok((relayed, candidates)) => {
                 println!("allocated, relayed address = {relayed}");
                 println!("candidates that would be offered to the wallet:");

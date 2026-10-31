@@ -3,6 +3,7 @@
 //! without re-pairing.
 
 use radixdlt_connect_types::link_removal::notice_expired;
+pub use radixdlt_connect_types::Transport;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConnectError;
@@ -25,6 +26,26 @@ pub struct Link {
     /// Optional human-readable label shown when listing links (e.g. "alice's phone").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The transport the link was paired over, if known: a link paired over iroh has a wallet that
+    /// speaks iroh. Links paired before it was recorded have none, which means WebRTC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<Transport>,
+    /// The custom iroh relay the link was paired on, if not iroh's public ones.
+    #[serde(rename = "irohRelay", default, skip_serializing_if = "Option::is_none")]
+    pub iroh_relay: Option<String>,
+}
+
+impl Link {
+    /// The raw bytes of its password, to reach its wallet with.
+    pub fn password_bytes(&self) -> Result<Vec<u8>, ConnectError> {
+        hex::decode(&self.password).map_err(|e| ConnectError::Protocol(format!("invalid password hex: {e}")))
+    }
+
+    /// The transport it was paired over: WebRTC when it was not recorded.
+    #[must_use]
+    pub fn paired_over(&self) -> Transport {
+        self.transport.unwrap_or(Transport::Webrtc)
+    }
 }
 
 /// A link removed here whose wallet was not told yet: its password is kept to tell it (see
@@ -40,6 +61,12 @@ pub struct RetiredLink {
     /// The link's label, if it had one, to tell the person which phone it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The transport the link was paired over, to tell its wallet over it (see [`Link::transport`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<Transport>,
+    /// The custom iroh relay the link was paired on, if any.
+    #[serde(rename = "irohRelay", default, skip_serializing_if = "Option::is_none")]
+    pub iroh_relay: Option<String>,
     /// When it was removed, in seconds since the Unix epoch.
     #[serde(rename = "retiredAt")]
     pub retired_at: u64,
@@ -166,6 +193,8 @@ impl LinkState {
             password: link.password,
             wallet_public_key: link.wallet_public_key,
             label: link.label,
+            transport: link.transport,
+            iroh_relay: link.iroh_relay,
             retired_at: now,
         };
         self.retired_links.retain(|r| r.password != retired.password);
@@ -232,6 +261,8 @@ mod tests {
             wallet_public_key: pk.into(),
             linked_at: String::new(),
             label: Some(format!("{pk}'s phone")),
+            transport: Some(Transport::Iroh),
+            iroh_relay: None,
         }
     }
 
@@ -256,6 +287,7 @@ mod tests {
 
         assert_eq!(retired.password, "a1a1");
         assert_eq!(retired.label.as_deref(), Some("aa's phone"));
+        assert_eq!(retired.transport, Some(Transport::Iroh), "told over the transport it was paired over");
         assert_eq!(state.all_links().len(), 1);
         assert_eq!(state.retired_links, vec![retired.clone()]);
         assert_eq!(retired.password_bytes().unwrap(), vec![0xa1, 0xa1]);

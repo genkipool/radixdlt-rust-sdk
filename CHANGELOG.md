@@ -7,6 +7,32 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added — `radixdlt-connect-auto`: iroh or WebRTC, with nothing to choose
+
+- **`WalletConnector`**: one QR pairs over iroh and WebRTC at once (iroh preferred, with a grace
+  period after WebRTC links); the `Link` records the transport it was paired over.
+- **Each request races both transports** over a link paired over iroh: the first one ready carries
+  it — only that one, so the wallet never gets a request twice — and the answer is awaited over
+  both. Never slower than WebRTC; as fast as iroh when iroh is there. A link whose iroh connection
+  is up skips the race.
+- `keep_listening` keeps a link's iroh session open (daemons, agents), `notify_link_removed` tells a
+  wallet over every transport it may be on, and the `request_*` helpers match
+  `radixdlt-connect-webrtc`'s, over a `Link`.
+- One `Error` for both transports, saying how far a request got.
+- `connect-types`: `Transport`; `state::Link` and `RetiredLink` record `transport` and `irohRelay`
+  (optional: older `connector.json` files load as before, as WebRTC).
+
+### Changed — `radixdlt-connect` is now `radixdlt-connect-webrtc`
+
+- The WebRTC transport crate is renamed **`radixdlt-connect-webrtc`** (in `crates/connect-webrtc`),
+  next to `radixdlt-connect-iroh`: each name says its transport. Nothing else changes in it.
+- **`radixdlt-connect` stays**, as a crate that re-exports `radixdlt-connect-webrtc` whole, so code
+  written against `radixdlt_connect::…` keeps building. New code depends on
+  `radixdlt-connect-webrtc` (WebRTC only), `radixdlt-connect-iroh` (iroh only) or
+  `radixdlt-connect-auto` (both, chosen by itself).
+- `radixdlt-connector-mcp` depends on `radixdlt-connect-webrtc`. Its binary and package keep their
+  names: installing and updating it does not change.
+
 ### Changed — `radixdlt-connector-mcp`: any Radix Wallet pairs, with one QR
 
 - **`auto` is the default transport setting** (unset or empty `--transport` /

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
-use radixdlt_connect::Connector;
+use radixdlt_connect_webrtc::Connector;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
