@@ -54,6 +54,8 @@ pub struct PairOutcome {
     pub wallet_public_key: String,
     pub password: Zeroizing<Vec<u8>>,
     pub paired_over: LinkRecord,
+    /// The iroh relay the wallet is on (linked over iroh), kept with the link to knock there.
+    pub wallet_relay: Option<String>,
 }
 
 /// How this connector process reaches wallets: from `--transport` / `--iroh-relay` or their

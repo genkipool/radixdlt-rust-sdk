@@ -224,6 +224,9 @@ pub struct MobileWalletConnector {
     ack_timeout: Option<Duration>,
     max_message_size: Option<usize>,
     links: Registry,
+    /// The relay each link's wallet was last seen on, as the host remembers it: a session that
+    /// starts knocks there, and a wallet that is up dials at once (see [`Self::set_wallet_relay`]).
+    wallet_relays: std::sync::Mutex<std::collections::HashMap<LinkId, String>>,
 }
 
 impl fmt::Debug for MobileWalletConnector {
@@ -244,6 +247,7 @@ impl Default for MobileWalletConnector {
             ack_timeout: None,
             max_message_size: None,
             links: Registry::default(),
+            wallet_relays: std::sync::Mutex::default(),
         }
     }
 }
@@ -304,11 +308,28 @@ impl MobileWalletConnector {
         &self.relays
     }
 
+    #[cfg(test)]
     fn session_config(&self) -> Result<SessionConfig, MobileError> {
+        self.session_config_for(None)
+    }
+
+    /// The settings of `link`'s session: with its wallet's relay, when known, to knock there.
+    fn session_config_for(&self, link: Option<LinkId>) -> Result<SessionConfig, MobileError> {
         let mut config = match &self.relays {
             Relays::Public => SessionConfig::public(),
             Relays::Custom(url) => SessionConfig::new(url.as_str())?,
         };
+        let hint = link.and_then(|id| {
+            self.wallet_relays
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&id)
+                .cloned()
+        });
+        if let Some(relay) = hint {
+            // A hint that is not a usable relay URL is no reason not to start.
+            config = config.clone().with_peer_relay(&relay).unwrap_or(config);
+        }
         if let Some(timeout) = self.ack_timeout {
             config = config.with_ack_timeout(timeout);
         }
@@ -320,15 +341,27 @@ impl MobileWalletConnector {
 
     /// The running link for `password`, starting its session if needed (bounded by `deadline`).
     async fn link(&self, password: &[u8], deadline: Instant) -> Result<Arc<link::Link>, MobileError> {
+        self.start_link(password, deadline, Knocks::Yes).await
+    }
+
+    /// [`link`](Self::link), knocking or not when its session starts.
+    async fn start_link(
+        &self,
+        password: &[u8],
+        deadline: Instant,
+        knocks: Knocks,
+    ) -> Result<Arc<link::Link>, MobileError> {
         let secret = ConnectionPassword::from_slice(password)?;
         let id = LinkId::of(password);
         let limit_ms = log::ms(deadline.saturating_duration_since(Instant::now()));
-        match timeout_at(
-            deadline,
-            self.links.get_or_start(&secret, id, || self.session_config()),
-        )
-        .await
-        {
+        let config = || {
+            let config = self.session_config_for(Some(id))?;
+            Ok(match knocks {
+                Knocks::Yes => config,
+                Knocks::No => config.without_knocks(),
+            })
+        };
+        match timeout_at(deadline, self.links.get_or_start(&secret, id, config)).await {
             Ok(link) => link,
             Err(_) => {
                 log::session_start_timed_out(id, &self.relays, limit_ms);
@@ -463,7 +496,8 @@ impl MobileWalletConnector {
             id,
             armed: true,
         };
-        let link = self.link(password, deadline).await?;
+        // A pairing does not knock: the wallet does not know the link before it scans the QR.
+        let link = self.start_link(password, deadline, Knocks::No).await?;
         let mut messages = link.subscribe();
         log::pairing_started(
             id,
@@ -649,6 +683,24 @@ impl MobileWalletConnector {
             .map(|link| link.diagnostics())
     }
 
+    /// The relay the wallet of this link was last seen on, as the host remembers it (kept with
+    /// the link). The link's next session knocks there as it starts, so a wallet that is up
+    /// dials at once instead of at its next retry — up to 30 s later once it has been waiting.
+    /// A relay that is wrong or out of date only means the knock does not arrive.
+    pub fn set_wallet_relay(&self, password: &[u8], relay_url: &str) {
+        self.wallet_relays
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(LinkId::of(password), relay_url.to_string());
+    }
+
+    /// The relay this link's wallet is on, while its session runs and the wallet connected:
+    /// what to keep with the link for [`set_wallet_relay`](Self::set_wallet_relay).
+    pub async fn wallet_relay(&self, password: &[u8]) -> Option<String> {
+        let link = self.links.get(LinkId::of(password))?;
+        link.peer_relay().await.map(|url| url.to_string())
+    }
+
     /// Whether the wallet of this link is connected right now.
     #[must_use]
     pub fn is_connected(&self, password: &[u8]) -> bool {
@@ -728,6 +780,13 @@ impl MobileWalletConnector {
     pub async fn close(&self) {
         self.links.close_all().await;
     }
+}
+
+/// Whether a link's session knocks for its wallet when it starts.
+#[derive(Debug, Clone, Copy)]
+enum Knocks {
+    Yes,
+    No,
 }
 
 /// Discards the session of a pairing whose caller stopped waiting (the future was dropped).

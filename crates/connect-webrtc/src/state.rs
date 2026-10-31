@@ -33,6 +33,10 @@ pub struct Link {
     /// The custom iroh relay the link was paired on, if not iroh's public ones.
     #[serde(rename = "irohRelay", default, skip_serializing_if = "Option::is_none")]
     pub iroh_relay: Option<String>,
+    /// The iroh relay its wallet was last seen on: the next session knocks there, so a wallet
+    /// that is up connects at once. Learned while connected; a wrong one only means no knock.
+    #[serde(rename = "walletRelay", default, skip_serializing_if = "Option::is_none")]
+    pub wallet_relay: Option<String>,
 }
 
 impl Link {
@@ -67,6 +71,9 @@ pub struct RetiredLink {
     /// The custom iroh relay the link was paired on, if any.
     #[serde(rename = "irohRelay", default, skip_serializing_if = "Option::is_none")]
     pub iroh_relay: Option<String>,
+    /// The iroh relay its wallet was last seen on, to knock there (see [`Link::wallet_relay`]).
+    #[serde(rename = "walletRelay", default, skip_serializing_if = "Option::is_none")]
+    pub wallet_relay: Option<String>,
     /// When it was removed, in seconds since the Unix epoch.
     #[serde(rename = "retiredAt")]
     pub retired_at: u64,
@@ -195,6 +202,7 @@ impl LinkState {
             label: link.label,
             transport: link.transport,
             iroh_relay: link.iroh_relay,
+            wallet_relay: link.wallet_relay,
             retired_at: now,
         };
         self.retired_links.retain(|r| r.password != retired.password);
@@ -215,6 +223,18 @@ impl LinkState {
         let before = self.retired_links.len();
         self.retired_links.retain(|r| !r.expired(now));
         before - self.retired_links.len()
+    }
+
+    /// Records the relay the wallet of the link with this password was last seen on. Returns
+    /// whether it changed (and the state needs saving).
+    pub fn note_wallet_relay(&mut self, password: &str, relay: &str) -> bool {
+        match self.links.iter_mut().find(|l| l.password == password) {
+            Some(link) if link.wallet_relay.as_deref() != Some(relay) => {
+                link.wallet_relay = Some(relay.to_string());
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Removes the link with this password because ITS WALLET removed it: no notice is kept, the
@@ -263,6 +283,7 @@ mod tests {
             label: Some(format!("{pk}'s phone")),
             transport: Some(Transport::Iroh),
             iroh_relay: None,
+            wallet_relay: Some("https://euc1-1.relay.n0.iroh.link./".into()),
         }
     }
 
@@ -322,6 +343,27 @@ mod tests {
         assert_eq!(state.all_links().len(), 1);
         assert!(state.retired_links.is_empty());
         assert!(state.remove_link_removed_by_wallet(&[0xff]).is_none());
+    }
+
+    #[test]
+    fn the_wallets_relay_is_noted_only_when_it_changes_and_survives_retiring() {
+        let mut state = state();
+        assert!(
+            !state.note_wallet_relay("a1a1", "https://euc1-1.relay.n0.iroh.link./"),
+            "same"
+        );
+        assert!(state.note_wallet_relay("a1a1", "https://use1-1.relay.n0.iroh.link./"));
+        assert!(
+            !state.note_wallet_relay("nope", "https://x.example/"),
+            "no such link"
+        );
+        let retired = state.retire_link("aa", 1).unwrap();
+        assert_eq!(
+            retired.wallet_relay.as_deref(),
+            Some("https://use1-1.relay.n0.iroh.link./")
+        );
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("walletRelay"), "{json}");
     }
 
     #[test]

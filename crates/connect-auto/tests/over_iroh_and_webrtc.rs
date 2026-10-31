@@ -66,6 +66,7 @@ fn link_over(transport: Transport, password: &[u8]) -> Link {
         label: None,
         transport: Some(transport),
         iroh_relay: None,
+        wallet_relay: None,
     }
 }
 
@@ -278,6 +279,7 @@ async fn a_removed_link_is_told_over_iroh_while_webrtc_cannot() {
         label: None,
         transport: Some(Transport::Iroh),
         iroh_relay: None,
+        wallet_relay: None,
         retired_at: 0,
     };
 

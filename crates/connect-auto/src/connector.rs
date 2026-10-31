@@ -95,6 +95,9 @@ pub struct Paired {
     pub iroh_relay: Option<String>,
     /// Why the pairing kept that transport, for logs (`iroh first`, `webrtc: no iroh within grace`…).
     pub why: &'static str,
+    /// The iroh relay the wallet is on, when it linked over iroh: kept with the link, so the
+    /// next session knocks there (see [`Link::wallet_relay`]).
+    pub wallet_relay: Option<String>,
 }
 
 impl Paired {
@@ -108,6 +111,7 @@ impl Paired {
             label,
             transport: Some(self.transport),
             iroh_relay: self.iroh_relay,
+            wallet_relay: self.wallet_relay,
         }
     }
 }
@@ -221,6 +225,26 @@ impl WalletConnector {
     pub fn with_iroh_grace(mut self, grace: Duration) -> Self {
         self.iroh_grace = grace;
         self
+    }
+
+    /// The iroh connector of `link`, told where its wallet was last seen (to knock there).
+    fn iroh_for(&self, link: &Link, password: &[u8]) -> Result<Arc<MobileWalletConnector>, Error> {
+        let iroh = self.iroh_on(link.iroh_relay.as_deref())?;
+        if let Some(relay) = &link.wallet_relay {
+            iroh.set_wallet_relay(password, relay);
+        }
+        Ok(iroh)
+    }
+
+    /// The iroh relay `link`'s wallet is on right now, when its session runs and the wallet
+    /// connected over it: keep it with the link when it changed ([`Link::wallet_relay`]), so the
+    /// next session knocks there.
+    pub async fn wallet_relay(&self, link: &Link) -> Option<String> {
+        let password = link.password_bytes().ok()?;
+        self.iroh_on(link.iroh_relay.as_deref())
+            .ok()?
+            .wallet_relay(&password)
+            .await
     }
 
     /// The iroh connector of a relay (`None`: the public relays).
@@ -360,10 +384,15 @@ impl WalletConnector {
                 // The attempt not kept is dropped as this returns: its session or signaling closes.
                 PairStep::Linked(transport, wallet_public_key, why) => {
                     tracing::info!(target: TARGET, %transport, why, "pairing: the wallet linked");
+                    let wallet_relay = match transport {
+                        Transport::Iroh => iroh.wallet_relay(password).await,
+                        Transport::Webrtc => None,
+                    };
                     return Ok(Paired {
                         wallet_public_key,
                         transport,
                         why,
+                        wallet_relay,
                         iroh_relay: (transport == Transport::Iroh)
                             .then(|| self.iroh_relay.clone())
                             .flatten(),
@@ -413,12 +442,12 @@ impl WalletConnector {
                 Box::pin(self.over_webrtc(&password, interaction, timeout, on)).await
             }
             [Transport::Iroh] => {
-                let iroh = self.iroh_on(link.iroh_relay.as_deref())?;
+                let iroh = self.iroh_for(link, &password)?;
                 on(Event::Carrier(Transport::Iroh));
                 Box::pin(over_iroh(&iroh, &password, interaction, timeout, on)).await
             }
             racing => {
-                let iroh = self.iroh_on(link.iroh_relay.as_deref())?;
+                let iroh = self.iroh_for(link, &password)?;
                 Box::pin(self.race(&iroh, racing, &password, interaction, timeout, on)).await
             }
         }
@@ -606,6 +635,9 @@ impl WalletConnector {
         let paired_over = link.transport.unwrap_or(Transport::Webrtc);
         let plan = self.transports.for_link(paired_over);
         let iroh = self.iroh_on(link.iroh_relay.as_deref())?;
+        if let Some(relay) = &link.wallet_relay {
+            iroh.set_wallet_relay(&password, relay);
+        }
         let over_iroh = async {
             if plan.contains(&Transport::Iroh) {
                 iroh.notify_link_removed(&password, timeout)
@@ -672,7 +704,7 @@ impl WalletConnector {
         let password = link
             .password_bytes()
             .map_err(|e| Error::InvalidLink(e.to_string()))?;
-        self.iroh_on(link.iroh_relay.as_deref())?
+        self.iroh_for(link, &password)?
             .open_link(&password)
             .await
             .map_err(Error::from_iroh)

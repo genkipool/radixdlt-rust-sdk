@@ -226,6 +226,11 @@ impl Link {
         self.shared.removed_by_wallet.load(Ordering::SeqCst)
     }
 
+    /// The relay the wallet is on, as this end knows it.
+    pub(super) async fn peer_relay(&self) -> Option<iroh::RelayUrl> {
+        self.session.peer_relay().await
+    }
+
     pub(super) fn diagnostics(&self) -> Diagnostics {
         self.session.diagnostics()
     }

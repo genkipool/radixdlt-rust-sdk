@@ -112,3 +112,30 @@ async fn a_notice_the_wallet_did_not_read_yet_is_sent_again() {
         .contains(&json!({ "discriminator": "linkRemoved" })));
     running.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connected_wallets_relay_is_known_so_the_next_session_can_knock_there() {
+    let relay = LocalRelay::start().await;
+    let connector = connector(&relay);
+    let password = password();
+    assert_eq!(connector.wallet_relay(&password).await, None, "no session yet");
+    connector.open_link(&password).await.unwrap();
+    let wallet = Arc::new(SimWallet::default());
+    let running = wallet.connect(&password, &relay.url, never_answers()).await;
+    running.wait_connected().await;
+
+    let seen = tokio::time::timeout(WAIT, async {
+        loop {
+            if let Some(seen) = connector.wallet_relay(&password).await {
+                return seen;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the wallet's relay, once connected");
+    assert_eq!(seen.trim_end_matches('/'), relay.url.trim_end_matches('/'));
+    // Kept as the link's hint: the next session starts with it.
+    connector.set_wallet_relay(&password, &seen);
+    running.close().await;
+}

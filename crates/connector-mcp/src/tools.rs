@@ -711,6 +711,7 @@ async fn pair_in_background(
             transport: mcp_transport(paired.transport),
             wallet_public_key: paired.wallet_public_key,
             why: paired.why,
+            wallet_relay: paired.wallet_relay,
         }),
         Err(radixdlt_connect_auto::Error::PairingFailed { reasons }) => Err(iroh_unavailable
             .map(|reason| (Transport::Iroh, reason))
@@ -778,6 +779,8 @@ pub struct Linked {
     pub transport: Transport,
     pub wallet_public_key: String,
     pub why: &'static str,
+    /// The iroh relay the wallet is on, when it linked over iroh.
+    pub wallet_relay: Option<String>,
 }
 
 /// What a pairing came to: the link, recorded with the transport it was paired over (an iroh one
@@ -793,6 +796,7 @@ pub fn concluded(
             transport,
             wallet_public_key,
             why,
+            wallet_relay,
         }) => {
             let mut fields = json!({
                 "transport": transport.label(),
@@ -818,6 +822,7 @@ pub fn concluded(
                     transport,
                     iroh_relay,
                 },
+                wallet_relay,
             })
         }
         Err(failures) => {
@@ -910,6 +915,7 @@ async fn finish_pairing(app: &Rc<App>, outcome: PairOutcome, label: Option<Strin
             Transport::Iroh => radixdlt_connect_types::Transport::Iroh,
         }),
         iroh_relay: outcome.paired_over.iroh_relay.clone(),
+        wallet_relay: outcome.wallet_relay.clone(),
     });
     if let Err(e) = Store::save(app.config_path(), &state) {
         return ToolResult::error(format!("paired, but could not save the link: {e}"));

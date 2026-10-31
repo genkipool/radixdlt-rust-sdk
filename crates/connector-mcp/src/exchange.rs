@@ -573,14 +573,24 @@ async fn run_iroh(
                     Setting::Iroh => Transports::IrohOnly,
                     Setting::Auto | Setting::Webrtc => Transports::Auto,
                 });
+            let password_hex = hex::encode(&target.password);
+            // Where its wallet was last seen: the session knocks there as it starts.
+            let wallet_relay = Store::load(app.config_path()).ok().and_then(|state| {
+                state
+                    .all_links()
+                    .iter()
+                    .find(|l| l.password == password_hex)
+                    .and_then(|l| l.wallet_relay.clone())
+            });
             let link = Link {
-                password: hex::encode(&target.password),
+                password: password_hex,
                 wallet_public_key: target.wallet.clone(),
                 linked_at: String::new(),
                 label: None,
                 transport: Some(AutoTransport::Iroh),
                 // The connector it is given already is the one for this link's relay.
                 iroh_relay: None,
+                wallet_relay,
             };
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AutoEvent>();
             let mut on = move |event: AutoEvent| {
@@ -598,6 +608,7 @@ async fn run_iroh(
             while let Ok(event) = event_rx.try_recv() {
                 on_auto_event(app, id, limit_ms, event, &delivered, notes);
             }
+            remember_wallet_relay(app, &wallet, &link).await;
             let delivered = delivered.get();
             outcome.map(|result| {
                 result.map_err(|error| {
@@ -673,6 +684,25 @@ fn on_auto_event(
             }
         }
         _ => {}
+    }
+}
+
+/// Keeps the iroh relay `link`'s wallet is on with the link when it changed, so the link's next
+/// session knocks there and a wallet that is up connects at once.
+async fn remember_wallet_relay(app: &App, wallet: &WalletConnector, link: &Link) {
+    let Some(relay) = wallet.wallet_relay(link).await else {
+        return;
+    };
+    if link.wallet_relay.as_deref() == Some(relay.as_str()) {
+        return;
+    }
+    if let Ok(mut state) = Store::load(app.config_path()) {
+        if state.note_wallet_relay(&link.password, &relay) && Store::save(app.config_path(), &state).is_ok() {
+            app.log.event(
+                "wallet_relay_noted",
+                json!({ "link": iroh::short_id(&iroh::connection_id(&link.password_bytes().unwrap_or_default())), "relay": relay }),
+            );
+        }
     }
 }
 

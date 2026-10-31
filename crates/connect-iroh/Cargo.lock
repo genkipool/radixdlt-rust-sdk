@@ -815,7 +815,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -3146,8 +3146,7 @@ dependencies = [
 
 [[package]]
 name = "radix-connect-iroh"
-version = "0.1.1"
-source = "git+https://github.com/genkipool/radix-connect-iroh?tag=v0.1.1#036de2fcb282fd9b1b14386bda519c5d35276aeb"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "hex",
@@ -3279,6 +3278,7 @@ dependencies = [
  "hex",
  "qrcode",
  "radixdlt-i18n",
+ "serde",
  "serde_json",
  "uuid",
 ]
