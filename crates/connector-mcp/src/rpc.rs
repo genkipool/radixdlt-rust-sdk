@@ -94,6 +94,8 @@ pub struct App {
     /// Makes the WebRTC connector of every pairing and request: `Connector::new` (the public
     /// signaling server and the machine's relays). Tests point it at servers on 127.0.0.1.
     webrtc: Box<dyn Fn() -> Connector>,
+    /// A newer release found at start, said once: in the next tool result (`update::announce`).
+    pub update_notice: RefCell<Option<String>>,
 }
 
 impl App {
@@ -116,6 +118,7 @@ impl App {
             calls: RefCell::new(HashMap::new()),
             dapp_checks: RefCell::new(HashMap::new()),
             webrtc: Box::new(Connector::new),
+            update_notice: RefCell::new(None),
         }
     }
 
@@ -187,7 +190,10 @@ pub fn dispatch(app: &Rc<App>, line: &str, out: &mpsc::UnboundedSender<String>) 
             task_app
                 .log
                 .event("tool_call", json!({ "rpc_id": task_key, "tool": name }));
-            let result = tools::call(&task_app, &name, args).await;
+            let mut result = tools::call(&task_app, &name, args).await;
+            if let Some(notice) = task_app.update_notice.borrow_mut().take() {
+                crate::update::add_notice(&mut result, &notice);
+            }
             task_app.log.event(
                 "tool_done",
                 json!({

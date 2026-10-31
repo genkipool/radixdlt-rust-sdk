@@ -48,6 +48,11 @@ radix-connector-mcp update         # descarga, verifica (SHA-256 y que arranca),
 radix-connector-mcp update --tag connector-v0.4.0   # una versión concreta (también para volver atrás)
 ```
 
+También lo mira solo: al arrancar, como mucho una vez al día (la respuesta se guarda en
+`update-check.json`, junto a `connector.json`), pregunta a GitHub en segundo plano, y una versión
+nueva se dice una vez, tras el resultado de la siguiente herramienta, para que el agente se lo diga
+al usuario. Con `RADIX_CONNECTOR_NO_UPDATE_CHECK=1` no pregunta nunca.
+
 Un agente puede hacer lo mismo con las herramientas `check_update` / `update_connector`.
 **Actualizar nunca obliga a emparejar otra vez el móvil**: el emparejamiento vive en
 `connector.json` del directorio de configuración y una actualización solo sustituye el binario.

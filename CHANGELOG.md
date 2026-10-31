@@ -7,6 +7,17 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.8.1] - 2026-10-31
+
+### Added — `radixdlt-connector-mcp`
+
+- **It says when there is a newer release.** At start, at most once a day, it asks GitHub in the
+  background (the answer kept in `update-check.json` beside `connector.json`, within 10 s, and
+  silent when offline); a newer release is logged and said once, after the next tool's result,
+  for the agent to tell the user. Until now it only knew when asked (`check-update`,
+  `check_update`), so a connector nobody asked stayed on its version for good.
+  `RADIX_CONNECTOR_NO_UPDATE_CHECK=1` turns it off.
+
 ## [connector-v0.8.0] - 2026-10-31
 
 `radixdlt-connector-mcp` 0.8.0: one process per link, and removing connectors, both done by the SDK

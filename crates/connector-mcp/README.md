@@ -48,6 +48,11 @@ radix-connector-mcp update         # download, verify (SHA-256 + it runs), back 
 radix-connector-mcp update --tag connector-v0.4.0   # a specific release (also to roll back)
 ```
 
+It also looks by itself: at start, at most once a day (the answer is kept in `update-check.json`
+beside `connector.json`), it asks GitHub in the background, and a newer release is said once,
+after the next tool's result, for the agent to tell the user. Set
+`RADIX_CONNECTOR_NO_UPDATE_CHECK=1` to never ask.
+
 An agent can do the same with the `check_update` / `update_connector` tools. **Updating never
 requires pairing the phone again**: the pairing lives in `connector.json` in the config
 directory, and an update only replaces the binary. Restart the MCP client afterwards so it

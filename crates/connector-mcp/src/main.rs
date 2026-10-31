@@ -320,6 +320,8 @@ async fn run(options: Options) -> i32 {
 
     // Tells the wallets removed here, while this connector runs.
     tokio::task::spawn_local(link_removal::deliver_notices(app.clone()));
+    // Says, once, when there is a newer connector.
+    tokio::task::spawn_local(update::announce(app.clone()));
 
     let mut stdin = BufReader::new(tokio::io::stdin()).lines();
 

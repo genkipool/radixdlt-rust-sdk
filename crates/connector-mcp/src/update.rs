@@ -120,6 +120,105 @@ pub async fn check() -> Result<Check, String> {
     })
 }
 
+// ── Telling the user there is a newer release ──────────────────────────────────────────────
+//
+// Nothing else would: a connector that is never asked to check stays on its version for good.
+// At start, at most once a day, it asks GitHub in the background; a newer release is logged and
+// said once, in the next tool result, which is what the assistant reads and relays to the user.
+
+/// Set to anything to never check at start (an offline machine, a pinned version).
+pub const NO_CHECK_ENV: &str = "RADIX_CONNECTOR_NO_UPDATE_CHECK";
+const CHECK_FILE: &str = "update-check.json";
+const CHECK_EVERY_SECS: u64 = 24 * 60 * 60;
+const CHECK_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The last check, kept beside `connector.json` so that a connector started many times a day asks
+/// GitHub once.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct LastCheck {
+    checked_at: u64,
+    latest: String,
+}
+
+/// Whether the last check (if any) is too old to trust at `now`.
+fn check_due(last: Option<&LastCheck>, now: u64) -> bool {
+    last.is_none_or(|last| now.saturating_sub(last.checked_at) >= CHECK_EVERY_SECS)
+}
+
+/// What to tell the user when `latest` is newer than this binary.
+fn notice_for(current: &str, latest: &str) -> Option<String> {
+    (parse_version(latest)? > parse_version(current)?).then(|| {
+        format!(
+            "UPDATE AVAILABLE: radix-connector-mcp {latest} is out (this is {current}). Tell the user; \
+             it installs with the update_connector tool or `radix-connector-mcp update`, and keeps the \
+             wallet pairing."
+        )
+    })
+}
+
+/// Adds `notice` to a tool result, after what the tool said.
+pub fn add_notice(result: &mut Value, notice: &str) {
+    if let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) {
+        content.push(serde_json::json!({ "type": "text", "text": notice }));
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// The newest release, from the last check when it is recent, from GitHub otherwise.
+async fn latest_known(dir: &Path) -> Result<String, String> {
+    let file = dir.join(CHECK_FILE);
+    let last: Option<LastCheck> = std::fs::read(&file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    let now = now_secs();
+    if let Some(last) = last.as_ref().filter(|last| !check_due(Some(last), now)) {
+        return Ok(last.latest.clone());
+    }
+    let found = tokio::time::timeout(CHECK_WITHIN, check())
+        .await
+        .map_err(|_| "GitHub did not answer in time".to_string())??;
+    let record = LastCheck {
+        checked_at: now,
+        latest: found.latest,
+    };
+    if let Ok(bytes) = serde_json::to_vec(&record) {
+        let _ = std::fs::write(&file, bytes);
+    }
+    Ok(record.latest)
+}
+
+/// Run once at start: notes a newer release for the next tool result (and the log).
+pub async fn announce(app: std::rc::Rc<crate::rpc::App>) {
+    if std::env::var_os(NO_CHECK_ENV).is_some() {
+        return;
+    }
+    let dir = app
+        .config_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    match latest_known(&dir).await {
+        Ok(latest) => {
+            if let Some(notice) = notice_for(CURRENT, &latest) {
+                eprintln!("radix-connector-mcp: {notice}");
+                app.log.event(
+                    "update_available",
+                    serde_json::json!({ "installed": CURRENT, "latest": latest }),
+                );
+                *app.update_notice.borrow_mut() = Some(notice);
+            }
+        }
+        Err(error) => app
+            .log
+            .event("update_check_failed", serde_json::json!({ "error": error })),
+    }
+}
+
 /// Downloads `tag` (default: the newest), checks it, and puts it in place of this binary.
 /// Returns what happened, for a person to read.
 pub async fn update(tag: Option<&str>, force: bool) -> Result<String, String> {
@@ -253,6 +352,35 @@ fn replace(new: &Path, exe: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_check_is_due_once_a_day() {
+        let last = LastCheck {
+            checked_at: 1_000_000,
+            latest: "0.8.0".into(),
+        };
+        assert!(check_due(None, 1_000_000));
+        assert!(!check_due(Some(&last), 1_000_000 + CHECK_EVERY_SECS - 1));
+        assert!(check_due(Some(&last), 1_000_000 + CHECK_EVERY_SECS));
+        // A clock set back does not make it due forever.
+        assert!(!check_due(Some(&last), 10));
+    }
+
+    #[test]
+    fn only_a_newer_release_is_announced() {
+        assert!(notice_for("0.6.1", "0.8.0").is_some_and(|n| n.contains("0.8.0") && n.contains("0.6.1")));
+        assert_eq!(notice_for("0.8.0", "0.8.0"), None);
+        assert_eq!(notice_for("0.9.0", "0.8.0"), None);
+        assert_eq!(notice_for("0.8.0", "not a version"), None);
+    }
+
+    #[test]
+    fn the_notice_follows_what_the_tool_said() {
+        let mut result = json!({ "content": [{ "type": "text", "text": "done" }], "isError": false });
+        add_notice(&mut result, "UPDATE AVAILABLE");
+        assert_eq!(result["content"][0]["text"], "done");
+        assert_eq!(result["content"][1]["text"], "UPDATE AVAILABLE");
+    }
 
     #[test]
     fn versions_compare_as_numbers_and_skip_pre_releases() {
