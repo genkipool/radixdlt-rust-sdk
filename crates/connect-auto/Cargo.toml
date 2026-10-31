@@ -25,6 +25,10 @@ radixdlt-connect-iroh = { path = "../connect-iroh", version = "0.3.0", default-f
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 tracing = "0.1"
+# WebRTC's signaling (TLS) and iroh both use rustls, and together they enable two of its backends,
+# so rustls cannot pick one by itself: `WalletConnector::new` installs `ring` when the application
+# installed none.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

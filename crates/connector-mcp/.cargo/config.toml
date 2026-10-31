@@ -1,0 +1,6 @@
+# The connector serves on ONE thread, the process's main thread (8 MiB of stack). Its end-to-end
+# tests run the same tool calls on test threads, 2 MiB by default — too little for an unoptimised
+# build of a request raced over iroh and WebRTC (a release build needs far less). The tests get the
+# stack the program runs with.
+[env]
+RUST_MIN_STACK = "8388608"

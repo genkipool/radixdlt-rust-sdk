@@ -43,7 +43,7 @@ pub use connector::{Event, Paired, Transports, WalletConnector, IROH_GRACE};
 pub use error::Error;
 
 /// The transports, for settings the defaults do not cover.
-pub use radixdlt_connect_iroh::mobile::MobileWalletConnector;
+pub use radixdlt_connect_iroh::mobile::{MobileError, MobileWalletConnector, Progress as IrohProgress};
 pub use radixdlt_connect_types::{
     account_proof_request, account_proof_request_sharing, account_request, authorized_request, check_failure,
     extract_accounts, extract_login, extract_ongoing_accounts, extract_ownership_proofs,
@@ -56,4 +56,4 @@ pub use radixdlt_connect_types::{
 /// The links' state file (`connector.json`): the links, how each was paired, and the notices of
 /// removed ones.
 pub use radixdlt_connect_webrtc::state::{self, Identity, Link, LinkState, RetiredLink};
-pub use radixdlt_connect_webrtc::Connector as WebrtcConnector;
+pub use radixdlt_connect_webrtc::{ConnectError, Connector as WebrtcConnector, Progress as WebrtcProgress};

@@ -69,6 +69,19 @@ pub enum Event {
     Delivered(Transport),
     /// A message that is not this request's answer (the wallet's account list, a late answer).
     OtherMessage(Value),
+    /// A pairing attempt over a transport ended: the wallet that linked over it, or why not. The
+    /// pairing keeps the one the race decides; this is for whoever logs each attempt.
+    PairingAttempt {
+        /// The transport.
+        transport: Transport,
+        /// The wallet's public key, or why it did not link.
+        linked: Result<String, String>,
+    },
+    /// Every step iroh reports (waiting for the wallet, connected, sending, resending…), as it
+    /// reports it: for logs and diagnostics that want the detail.
+    IrohStep(IrohProgress),
+    /// Every step WebRTC reports, as it reports it.
+    WebrtcStep(WebrtcProgress),
 }
 
 /// A wallet that linked.
@@ -80,6 +93,8 @@ pub struct Paired {
     pub transport: Transport,
     /// The custom iroh relay, when it linked over iroh on one.
     pub iroh_relay: Option<String>,
+    /// Why the pairing kept that transport, for logs (`iroh first`, `webrtc: no iroh within grace`…).
+    pub why: &'static str,
 }
 
 impl Paired {
@@ -142,8 +157,16 @@ impl Default for WalletConnector {
 impl WalletConnector {
     /// Both transports, on their public servers: Radix's signaling server for WebRTC, iroh's
     /// public relays.
+    ///
+    /// TLS: when the application has not installed a process-wide `rustls` crypto provider, this
+    /// installs `ring` (WebRTC's signaling and iroh together enable two, and rustls would refuse to
+    /// choose). One installed before is kept.
     #[must_use]
     pub fn new() -> Self {
+        static TLS: std::sync::Once = std::sync::Once::new();
+        TLS.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
         Self {
             webrtc: Arc::new(Connector::new()),
             iroh: Arc::new(MobileWalletConnector::new()),
@@ -172,6 +195,14 @@ impl WalletConnector {
     #[must_use]
     pub fn with_iroh(mut self, iroh: MobileWalletConnector) -> Self {
         self.iroh = Arc::new(iroh);
+        self
+    }
+
+    /// The same, shared with its owner: whoever holds other sessions on it (or its turns) keeps
+    /// them, and this uses them.
+    #[must_use]
+    pub fn with_iroh_shared(mut self, iroh: Arc<MobileWalletConnector>) -> Self {
+        self.iroh = iroh;
         self
     }
 
@@ -246,18 +277,35 @@ impl WalletConnector {
     /// # Errors
     /// [`Error::PairingFailed`] with why over each transport.
     pub async fn pair_with_password(&self, password: &[u8], timeout: Duration) -> Result<Paired, Error> {
+        Box::pin(self.pair_with_password_observed(password, timeout, &mut |_| {})).await
+    }
+
+    /// [`pair_with_password`](Self::pair_with_password), reporting each attempt and each iroh step
+    /// through `on`.
+    ///
+    /// # Errors
+    /// [`Error::PairingFailed`] with why over each transport.
+    pub async fn pair_with_password_observed(
+        &self,
+        password: &[u8],
+        timeout: Duration,
+        on: &mut (dyn FnMut(Event) + Send),
+    ) -> Result<Paired, Error> {
         let password: &[u8; linking::PASSWORD_LENGTH] = password
             .try_into()
             .map_err(|_| Error::InvalidLink("the password must be 32 bytes".into()))?;
         let plan = self.transports.for_pairing();
         let mut race = PairingRace::new(plan);
         let iroh = self.iroh_on(self.iroh_relay.as_deref())?;
-        let mut ignore = |_: IrohProgress| {};
+        let (steps, mut stepped) = tokio::sync::mpsc::unbounded_channel();
+        let mut forward = move |step: IrohProgress| {
+            let _ = steps.send(step);
+        };
         let mut over_iroh: Running<'_, Result<String, Error>> = plan.contains(&Transport::Iroh).then(|| {
             let iroh = iroh.clone();
-            let ignore = &mut ignore;
+            let forward = &mut forward;
             Box::pin(async move {
-                iroh.pair_with_password(password, timeout, ignore)
+                iroh.pair_with_password(password, timeout, forward)
                     .await
                     .map_err(Error::from_iroh)
             }) as Pin<Box<dyn Future<Output = _> + Send + '_>>
@@ -276,18 +324,26 @@ impl WalletConnector {
         loop {
             let step = tokio::select! {
                 biased;
+                Some(step) = stepped.recv() => {
+                    on(Event::IrohStep(step));
+                    continue;
+                }
                 linked = async { over_iroh.as_mut().expect("guarded").await }, if over_iroh.is_some() => {
                     over_iroh = None;
+                    let linked = linked.map_err(|e| e.to_string());
+                    on(Event::PairingAttempt { transport: Transport::Iroh, linked: linked.clone() });
                     match linked {
                         Ok(wallet) => race.linked(Transport::Iroh, wallet),
-                        Err(e) => race.failed(Transport::Iroh, e.to_string()),
+                        Err(reason) => race.failed(Transport::Iroh, reason),
                     }
                 }
                 linked = async { over_webrtc.as_mut().expect("guarded").await }, if over_webrtc.is_some() => {
                     over_webrtc = None;
+                    let linked = linked.map_err(|e| e.to_string());
+                    on(Event::PairingAttempt { transport: Transport::Webrtc, linked: linked.clone() });
                     match linked {
                         Ok(wallet) => race.linked(Transport::Webrtc, wallet),
-                        Err(e) => race.failed(Transport::Webrtc, e.to_string()),
+                        Err(reason) => race.failed(Transport::Webrtc, reason),
                     }
                 }
                 () = async { grace.as_mut().expect("guarded").await }, if grace.is_some() => {
@@ -302,11 +358,12 @@ impl WalletConnector {
                     }
                 }
                 // The attempt not kept is dropped as this returns: its session or signaling closes.
-                PairStep::Linked(transport, wallet_public_key) => {
-                    tracing::info!(target: TARGET, %transport, "pairing: the wallet linked");
+                PairStep::Linked(transport, wallet_public_key, why) => {
+                    tracing::info!(target: TARGET, %transport, why, "pairing: the wallet linked");
                     return Ok(Paired {
                         wallet_public_key,
                         transport,
+                        why,
                         iroh_relay: (transport == Transport::Iroh)
                             .then(|| self.iroh_relay.clone())
                             .flatten(),
@@ -348,20 +405,21 @@ impl WalletConnector {
         let password = link
             .password_bytes()
             .map_err(|e| Error::InvalidLink(e.to_string()))?;
+        // Each on the heap: a race's state is large, and a caller that nests this deep in its own
+        // futures (a tool call in a server, on a thread with a small stack) must not carry it.
         match self.transports.for_link(link.paired_over()) {
             [Transport::Webrtc] => {
                 on(Event::Carrier(Transport::Webrtc));
-                self.over_webrtc(&password, interaction, timeout, on).await
+                Box::pin(self.over_webrtc(&password, interaction, timeout, on)).await
             }
             [Transport::Iroh] => {
                 let iroh = self.iroh_on(link.iroh_relay.as_deref())?;
                 on(Event::Carrier(Transport::Iroh));
-                over_iroh(&iroh, &password, interaction, timeout, on).await
+                Box::pin(over_iroh(&iroh, &password, interaction, timeout, on)).await
             }
             racing => {
                 let iroh = self.iroh_on(link.iroh_relay.as_deref())?;
-                self.race(&iroh, racing, &password, interaction, timeout, on)
-                    .await
+                Box::pin(self.race(&iroh, racing, &password, interaction, timeout, on)).await
             }
         }
     }
@@ -409,7 +467,7 @@ impl WalletConnector {
         if iroh.is_connected(password) {
             tracing::debug!(target: TARGET, "request: iroh already connected, sent over it");
             on(Event::Carrier(Transport::Iroh));
-            return over_iroh(iroh, password, interaction, timeout, on).await;
+            return Box::pin(over_iroh(iroh, password, interaction, timeout, on)).await;
         }
         let interaction_id = interaction
             .get("interactionId")
@@ -670,6 +728,7 @@ async fn over_iroh(
 }
 
 fn report_webrtc(step: WebrtcProgress, on: &mut (dyn FnMut(Event) + Send)) {
+    on(Event::WebrtcStep(step.clone()));
     match step {
         WebrtcProgress::Delivered { .. } => on(Event::Delivered(Transport::Webrtc)),
         WebrtcProgress::OtherMessage(message) => on(Event::OtherMessage(message)),
@@ -678,6 +737,7 @@ fn report_webrtc(step: WebrtcProgress, on: &mut (dyn FnMut(Event) + Send)) {
 }
 
 fn report_iroh(step: IrohProgress, on: &mut (dyn FnMut(Event) + Send)) {
+    on(Event::IrohStep(step.clone()));
     match step {
         IrohProgress::Delivered { .. } => on(Event::Delivered(Transport::Iroh)),
         IrohProgress::OtherMessage(message) => on(Event::OtherMessage(message)),

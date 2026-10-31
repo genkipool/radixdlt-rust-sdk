@@ -23,6 +23,9 @@ name = "radix-connector-mcp"
 path = "src/main.rs"
 
 [dependencies]
+# Pairing over iroh and WebRTC with one QR, and each request raced over both: the same piece
+# every connector built on the SDK uses.
+radixdlt-connect-auto = { path = "../connect-auto", version = "0.3.0" }
 radixdlt-connect-webrtc = { path = "../connect-webrtc", version = "0.3.0" }
 # `qr`: the QR encoder and terminal renderer shared with every program that pairs a wallet.
 radixdlt-connect-types = { path = "../connect-types", version = "0.3.0", features = ["qr"] }

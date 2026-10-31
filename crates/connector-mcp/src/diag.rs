@@ -16,8 +16,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use radixdlt_connect_webrtc::ConnectError;
+use radixdlt_connect_auto::Error as AutoError;
 use radixdlt_connect_iroh::mobile::MobileError;
+use radixdlt_connect_webrtc::ConnectError;
 use serde_json::{json, Value};
 
 /// The log file rolls over to `connector.log.1` beyond this size.
@@ -175,6 +176,44 @@ impl Failure {
     /// The codes are the WebRTC ones where the meaning is the same, so an agent handles both
     /// transports alike. The timeouts' detail ends with the link's diagnostics line (relay
     /// reachable?, connection state, path, last error) — never a secret.
+    /// A request raced over iroh and WebRTC (`radixdlt-connect-auto`): the same codes and hints
+    /// as each transport's, whichever carried it.
+    pub fn from_auto(error: &AutoError, delivered: bool) -> Self {
+        use radixdlt_connect_auto::Transport as T;
+        let detail = error.to_string();
+        match error {
+            AutoError::WalletRejected(wallet) => Failure::from_wallet(wallet),
+            AutoError::LinkRemoved => Failure::link_removed(detail),
+            AutoError::LinkBusy => Failure::from_connect(&ConnectError::LinkBusy, delivered),
+            AutoError::NoAnswer { .. } => Failure::from_connect(&ConnectError::ResponseTimeout, true),
+            AutoError::NotConfirmed { transport: T::Webrtc, .. } => {
+                Failure::from_connect(&ConnectError::ConfirmationTimeout, delivered)
+            }
+            AutoError::NotConfirmed { .. } => Failure::new(
+                "NOT_CONFIRMED",
+                "deliver",
+                false,
+                detail,
+                "The wallet never confirmed the request: it may or may not be on the phone, so it was NOT sent again. Ask the person to look at the Radix Wallet: if the request shows, they answer it and await_response {interaction_id} collects the answer; if nothing shows, clear it with cancel_request {interaction_id} and send it again.",
+            ),
+            AutoError::NoNetwork { .. } => Failure::new(
+                "NO_NETWORK",
+                "connect",
+                true,
+                detail,
+                "This machine reached neither the Radix Connect signaling server nor an iroh relay (internet, proxy or firewall). Nothing reached the wallet; retry once the network is back.",
+            ),
+            AutoError::WalletUnreachable { .. } => Failure::new(
+                "WALLET_UNREACHABLE",
+                "connect",
+                true,
+                detail,
+                "The wallet connected over neither iroh nor WebRTC, so the request was NOT delivered. Ask the person to open the Radix Wallet app and keep it in the foreground (it only connects while open), check the phone has internet, then retry. If it keeps failing, this connector may have been removed from the wallet (Settings › Linked Connectors): check with list_wallets and pair again.",
+            ),
+            _ => Failure::from_connect(&ConnectError::WebRtc(detail), delivered),
+        }
+    }
+
     /// The wallet removed this connector: the code [`exchange`](crate::exchange) unpairs it on.
     pub fn link_removed(detail: String) -> Self {
         // Nothing waits in the wallet (it took nothing over a removed link), so sending again

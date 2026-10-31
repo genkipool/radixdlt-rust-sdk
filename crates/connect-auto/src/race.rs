@@ -9,8 +9,10 @@ use radixdlt_connect_types::Transport;
 pub(crate) enum PairStep {
     /// Keep waiting; `start_grace` when WebRTC linked and iroh gets its grace period from now.
     Wait { start_grace: bool },
-    /// The link keeps this transport: the wallet with this public key linked over it.
-    Linked(Transport, String),
+    /// The link keeps this transport: the wallet with this public key linked over it, and why
+    /// that one (for logs: `iroh first`, `iroh within grace after webrtc`, `webrtc: no iroh within
+    /// grace`, `only webrtc completed`, `the only transport tried`).
+    Linked(Transport, String, &'static str),
     /// Every transport failed: why, in the order they failed.
     Failed(Vec<(Transport, String)>),
 }
@@ -26,6 +28,7 @@ pub(crate) enum PairStep {
 /// over WebRTC. Preferring iroh is preferring what the wallet can do best.
 #[derive(Debug)]
 pub(crate) struct PairingRace {
+    alone: bool,
     trying: Vec<Transport>,
     failures: Vec<(Transport, String)>,
     /// The wallet that linked over WebRTC, waiting for iroh's grace period.
@@ -35,6 +38,7 @@ pub(crate) struct PairingRace {
 impl PairingRace {
     pub(crate) fn new(transports: &[Transport]) -> Self {
         Self {
+            alone: transports.len() == 1,
             trying: transports.to_vec(),
             failures: Vec::new(),
             over_webrtc: None,
@@ -43,13 +47,23 @@ impl PairingRace {
 
     pub(crate) fn linked(&mut self, transport: Transport, wallet_public_key: String) -> PairStep {
         self.trying.retain(|t| *t != transport);
+        if self.alone {
+            return PairStep::Linked(transport, wallet_public_key, "the only transport tried");
+        }
         match transport {
-            Transport::Iroh => PairStep::Linked(Transport::Iroh, wallet_public_key),
+            Transport::Iroh if self.over_webrtc.take().is_some() => PairStep::Linked(
+                Transport::Iroh,
+                wallet_public_key,
+                "iroh within grace after webrtc",
+            ),
+            Transport::Iroh => PairStep::Linked(Transport::Iroh, wallet_public_key, "iroh first"),
             Transport::Webrtc if self.trying.contains(&Transport::Iroh) => {
                 self.over_webrtc = Some(wallet_public_key);
                 PairStep::Wait { start_grace: true }
             }
-            Transport::Webrtc => PairStep::Linked(Transport::Webrtc, wallet_public_key),
+            Transport::Webrtc => {
+                PairStep::Linked(Transport::Webrtc, wallet_public_key, "only webrtc completed")
+            }
         }
     }
 
@@ -58,7 +72,7 @@ impl PairingRace {
         self.failures.push((transport, reason));
         if !self.trying.contains(&Transport::Iroh) {
             if let Some(wallet_public_key) = self.over_webrtc.take() {
-                return PairStep::Linked(Transport::Webrtc, wallet_public_key);
+                return PairStep::Linked(Transport::Webrtc, wallet_public_key, "only webrtc completed");
             }
         }
         if self.trying.is_empty() {
@@ -70,7 +84,11 @@ impl PairingRace {
 
     pub(crate) fn grace_over(&mut self) -> PairStep {
         match self.over_webrtc.take() {
-            Some(wallet_public_key) => PairStep::Linked(Transport::Webrtc, wallet_public_key),
+            Some(wallet_public_key) => PairStep::Linked(
+                Transport::Webrtc,
+                wallet_public_key,
+                "webrtc: no iroh within grace",
+            ),
             None => PairStep::Wait { start_grace: false },
         }
     }
@@ -122,7 +140,10 @@ mod tests {
     #[test]
     fn iroh_linking_first_is_kept_at_once() {
         let mut race = PairingRace::new(&BOTH);
-        assert_eq!(race.linked(Iroh, "w".into()), PairStep::Linked(Iroh, "w".into()));
+        assert_eq!(
+            race.linked(Iroh, "w".into()),
+            PairStep::Linked(Iroh, "w".into(), "iroh first")
+        );
     }
 
     #[test]
@@ -132,20 +153,26 @@ mod tests {
             race.linked(Webrtc, "w".into()),
             PairStep::Wait { start_grace: true }
         );
-        assert_eq!(race.linked(Iroh, "w".into()), PairStep::Linked(Iroh, "w".into()));
+        assert_eq!(
+            race.linked(Iroh, "w".into()),
+            PairStep::Linked(Iroh, "w".into(), "iroh within grace after webrtc")
+        );
     }
 
     #[test]
     fn webrtc_is_kept_once_the_grace_is_over_or_iroh_failed() {
         let mut race = PairingRace::new(&BOTH);
         race.linked(Webrtc, "w".into());
-        assert_eq!(race.grace_over(), PairStep::Linked(Webrtc, "w".into()));
+        assert_eq!(
+            race.grace_over(),
+            PairStep::Linked(Webrtc, "w".into(), "webrtc: no iroh within grace")
+        );
 
         let mut race = PairingRace::new(&BOTH);
         race.linked(Webrtc, "w".into());
         assert_eq!(
             race.failed(Iroh, "no iroh".into()),
-            PairStep::Linked(Webrtc, "w".into())
+            PairStep::Linked(Webrtc, "w".into(), "only webrtc completed")
         );
     }
 
@@ -172,7 +199,7 @@ mod tests {
         let mut race = PairingRace::new(&[Webrtc]);
         assert_eq!(
             race.linked(Webrtc, "w".into()),
-            PairStep::Linked(Webrtc, "w".into())
+            PairStep::Linked(Webrtc, "w".into(), "the only transport tried")
         );
     }
 

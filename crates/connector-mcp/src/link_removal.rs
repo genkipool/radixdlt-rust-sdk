@@ -180,8 +180,8 @@ enum Attempt {
 }
 
 async fn attempt(app: &Rc<App>, password: &[u8], route: &Route, wait: Duration) -> Result<(), Attempt> {
-    use radixdlt_connect_webrtc::ConnectError;
     use radixdlt_connect_iroh::mobile::MobileError;
+    use radixdlt_connect_webrtc::ConnectError;
     match route {
         Route::Webrtc => match app.webrtc_connector().notify_link_removed(password, wait).await {
             Ok(()) => Ok(()),

@@ -3332,6 +3332,7 @@ dependencies = [
  "radixdlt-connect-webrtc",
  "radixdlt-i18n",
  "radixdlt-rola",
+ "rustls",
  "serde_json",
  "tokio",
  "tracing",

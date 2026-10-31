@@ -3565,6 +3565,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "radixdlt-connect-auto"
+version = "0.3.0"
+dependencies = [
+ "radixdlt-connect-iroh",
+ "radixdlt-connect-types",
+ "radixdlt-connect-webrtc",
+ "radixdlt-i18n",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "radixdlt-connect-iroh"
 version = "0.3.0"
 dependencies = [
@@ -3640,6 +3654,7 @@ dependencies = [
  "iroh-relay",
  "radix-connect-iroh",
  "radixdlt-address",
+ "radixdlt-connect-auto",
  "radixdlt-connect-iroh",
  "radixdlt-connect-types",
  "radixdlt-connect-webrtc",

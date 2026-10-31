@@ -18,12 +18,10 @@ use std::time::Duration;
 
 use fs4::fs_std::FileExt;
 use radixdlt_connect_webrtc::Connector;
-use radixdlt_connect_types::linking;
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
-use zeroize::Zeroizing;
 
-use crate::iroh::{LinkRecord, Setting, Transport};
+use crate::iroh::Setting;
 use crate::rpc::{App, Options};
 use crate::tools;
 
@@ -498,133 +496,6 @@ fn by_default_a_wallet_with_iroh_links_over_iroh_and_webrtc_lets_go() {
         assert!(app.iroh.diagnostics(&password).is_none());
 
         running.close().await;
-        std::fs::remove_dir_all(&dir).ok();
-    });
-}
-
-/// A stand-in for the WebRTC half of a pairing (no WebRTC wallet runs here): it "links" wallet
-/// `wallet` once `ready` holds. The iroh half, the decision and what follows it are the
-/// connector's own.
-fn webrtc_links_when<'a>(ready: impl Fn() -> bool + 'a, wallet: &'a str) -> tools::Attempt<'a> {
-    Box::pin(async move {
-        while !ready() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        Ok(wallet.to_string())
-    })
-}
-
-/// An app on the local relay, with the default setting.
-fn auto_app(dir: &std::path::Path, relay: &LocalRelay) -> Rc<App> {
-    std::fs::remove_dir_all(dir).ok();
-    Rc::new(App::at(
-        dir.join("connector.json"),
-        Options {
-            iroh_relay: Some(relay.url.clone()),
-            ..Options::default()
-        },
-    ))
-}
-
-/// A wallet without iroh (the official one) links over WebRTC: iroh gets its grace, nothing
-/// links over it, and WebRTC is kept — the iroh half, whose session was listening, is dropped:
-/// no session, no lock.
-#[test]
-fn a_wallet_that_links_over_webrtc_only_is_kept_after_the_grace_and_iroh_goes() {
-    in_local_set(async {
-        let relay = LocalRelay::start().await;
-        let dir = std::env::temp_dir().join(format!("connector_mcp_e2e_webrtc_kept_{}", std::process::id()));
-        let app = auto_app(&dir, &relay);
-        let password = Zeroizing::new(linking::generate_password().unwrap());
-        let iroh = app.iroh.connector(&app.iroh.relay).unwrap();
-        let wallet = "ab".repeat(32);
-        // WebRTC links once the iroh session listens, so iroh is dropped while it runs.
-        let over_webrtc = webrtc_links_when(|| iroh.diagnostics(password.as_slice()).is_some(), &wallet);
-
-        let started = std::time::Instant::now();
-        let chosen = tools::choose_link(
-            vec![
-                (Transport::Webrtc, over_webrtc),
-                (Transport::Iroh, tools::attempt(&app, Transport::Iroh, &password)),
-            ],
-            tools::IROH_GRACE,
-        )
-        .await;
-        assert!(started.elapsed() >= tools::IROH_GRACE, "{:?}", started.elapsed());
-        let linked = chosen.clone().unwrap();
-        assert_eq!(
-            (linked.transport, linked.why),
-            (Transport::Webrtc, "webrtc: no iroh within grace")
-        );
-        assert!(
-            iroh.diagnostics(password.as_slice()).is_none(),
-            "the iroh half's session is closed"
-        );
-
-        let outcome = tools::concluded(&app, password.as_slice(), chosen, std::time::Instant::now()).unwrap();
-        assert_eq!(
-            outcome.paired_over,
-            LinkRecord {
-                transport: Transport::Webrtc,
-                iroh_relay: None
-            }
-        );
-        assert!(app.iroh.diagnostics(password.as_slice()).is_none());
-        assert!(link_lock_is_free(&dir, password.as_slice()));
-        let log = std::fs::read_to_string(dir.join("connector.log")).unwrap();
-        assert!(
-            log.contains("\"transport\":\"webrtc\"")
-                && log.contains("\"why\":\"webrtc: no iroh within grace\""),
-            "{log}"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    });
-}
-
-/// iroh is preferred: when WebRTC links first and the wallet links over iroh within the grace,
-/// iroh is kept (and its session, for the first requests).
-#[test]
-fn iroh_linking_within_the_grace_after_webrtc_is_kept() {
-    in_local_set(async {
-        let relay = LocalRelay::start().await;
-        let dir = std::env::temp_dir().join(format!("connector_mcp_e2e_iroh_grace_{}", std::process::id()));
-        let app = auto_app(&dir, &relay);
-        let password = Zeroizing::new(linking::generate_password().unwrap());
-        let (private, public) = linking::generate_identity().unwrap();
-        let qr = linking::pairing_qr(password.as_slice(), &private, &public).unwrap();
-        let iroh = app.iroh.connector(&app.iroh.relay).unwrap();
-        let wallet = Arc::new(SimWallet::default());
-        // WebRTC "links" the moment the wallet's iroh connection is up — before its linkClient.
-        let over_webrtc = webrtc_links_when(|| iroh.is_connected(password.as_slice()), "webrtc-wallet");
-
-        let deciding = tools::choose_link(
-            vec![
-                (Transport::Webrtc, over_webrtc),
-                (Transport::Iroh, tools::attempt(&app, Transport::Iroh, &password)),
-            ],
-            tools::IROH_GRACE,
-        );
-        let phone = wallet.scan_and_link(&qr, &relay.url, LinkSignature::Valid);
-        let (chosen, _) = tokio::join!(deciding, phone);
-        assert_eq!(
-            chosen,
-            Ok(tools::Linked {
-                transport: Transport::Iroh,
-                wallet_public_key: wallet.public_key_hex(),
-                why: "iroh within grace after webrtc",
-            })
-        );
-        let outcome = tools::concluded(&app, password.as_slice(), chosen, std::time::Instant::now()).unwrap();
-        assert_eq!(outcome.paired_over.transport, Transport::Iroh);
-        assert!(
-            app.iroh.diagnostics(password.as_slice()).is_some(),
-            "kept for requests"
-        );
-        let log = std::fs::read_to_string(dir.join("connector.log")).unwrap();
-        assert!(
-            log.contains("\"why\":\"iroh within grace after webrtc\""),
-            "{log}"
-        );
         std::fs::remove_dir_all(&dir).ok();
     });
 }

@@ -17,14 +17,14 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use radixdlt_connect_webrtc::{check_failure, ConnectError, DappContext, Progress};
 use radixdlt_connect_iroh::mobile::{MobileError, Progress as IrohProgress};
+use radixdlt_connect_webrtc::{check_failure, ConnectError, DappContext, Progress};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use crate::diag::{iso_secs, now_secs, Failure, LINK_REMOVED};
 use crate::gateway;
-use crate::iroh::{self, Route};
+use crate::iroh::{self, Route, Setting};
 use crate::link_removal;
 use crate::outbox::{Outbox, Record, State};
 use crate::requests::describe_answer;
@@ -33,6 +33,9 @@ use crate::store::Store;
 use crate::tools::{
     clamp_timeout, opt_bool, opt_str, opt_u64, req_network, resolve_dapp_definition, resolve_origin, Network,
     ToolResult,
+};
+use radixdlt_connect_auto::{
+    Error as AutoError, Event as AutoEvent, Link, Transport as AutoTransport, Transports, WalletConnector,
 };
 
 /// A verified dApp identity is not checked again for this long.
@@ -556,49 +559,136 @@ async fn run_iroh(
     let left = deadline.saturating_duration_since(Instant::now());
     let limit_ms = iroh::ms(target.timeout);
 
-    let (step_tx, mut step_rx) = tokio::sync::mpsc::unbounded_channel::<IrohProgress>();
-    let mut on = move |step: IrohProgress| {
-        let _ = step_tx.send(step);
-    };
-    let outcome = {
-        let exchange = async {
-            match interaction {
-                Some(interaction) => {
-                    turn.connector
-                        .exchange(&target.password, interaction, left, &mut on)
-                        .await
+    // How it ended: its answer, or how far it got (the failure and the state it leaves).
+    let outcome: Option<Result<Value, (Failure, State)>> = match interaction {
+        // A request: raced over iroh and WebRTC — the first one ready carries it, and only that one
+        // — by `radixdlt-connect-auto`, through the iroh connector that holds this link's turn.
+        Some(interaction) => {
+            let wallet = WalletConnector::new()
+                .with_webrtc(app.webrtc_connector())
+                .with_iroh_shared(turn.connector.clone())
+                // The setting says how NEW links pair; a link paired over iroh is reached over both
+                // (raced), or over iroh alone when the setting is iroh.
+                .with_transports(match app.iroh.setting {
+                    Setting::Iroh => Transports::IrohOnly,
+                    Setting::Auto | Setting::Webrtc => Transports::Auto,
+                });
+            let link = Link {
+                password: hex::encode(&target.password),
+                wallet_public_key: target.wallet.clone(),
+                linked_at: String::new(),
+                label: None,
+                transport: Some(AutoTransport::Iroh),
+                // The connector it is given already is the one for this link's relay.
+                iroh_relay: None,
+            };
+            let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AutoEvent>();
+            let mut on = move |event: AutoEvent| {
+                let _ = event_tx.send(event);
+            };
+            let exchange = wallet.exchange_with(&link, interaction, left, &mut on);
+            tokio::pin!(exchange);
+            let outcome = loop {
+                tokio::select! {
+                    result = &mut exchange => break Some(result),
+                    Some(event) = event_rx.recv() => on_auto_event(app, id, limit_ms, event, &delivered, notes),
+                    _ = &mut stop_rx => break None,
                 }
-                None => {
-                    turn.connector
-                        .await_response(&target.password, id, left, &mut on)
-                        .await
+            };
+            while let Ok(event) = event_rx.try_recv() {
+                on_auto_event(app, id, limit_ms, event, &delivered, notes);
+            }
+            let delivered = delivered.get();
+            outcome.map(|result| {
+                result.map_err(|error| {
+                    (
+                        Failure::from_auto(&error, delivered),
+                        auto_state(&error, delivered),
+                    )
+                })
+            })
+        }
+        // The answer to a request sent earlier: it is listened for, nothing is sent.
+        None => {
+            let (step_tx, mut step_rx) = tokio::sync::mpsc::unbounded_channel::<IrohProgress>();
+            let mut on = move |step: IrohProgress| {
+                let _ = step_tx.send(step);
+            };
+            let listening = turn.connector.await_response(&target.password, id, left, &mut on);
+            tokio::pin!(listening);
+            let outcome = loop {
+                tokio::select! {
+                    result = &mut listening => break Some(result),
+                    Some(step) = step_rx.recv() => on_iroh_step(app, id, limit_ms, step, &delivered, notes),
+                    _ = &mut stop_rx => break None,
                 }
+            };
+            while let Ok(step) = step_rx.try_recv() {
+                on_iroh_step(app, id, limit_ms, step, &delivered, notes);
             }
-        };
-        tokio::pin!(exchange);
-        loop {
-            tokio::select! {
-                result = &mut exchange => break Some(result),
-                Some(step) = step_rx.recv() => on_iroh_step(app, id, limit_ms, step, &delivered, notes),
-                _ = &mut stop_rx => break None,
-            }
+            let delivered = delivered.get();
+            outcome.map(|result| {
+                result.map_err(|error| {
+                    (
+                        Failure::from_mobile(&error, delivered),
+                        iroh_state(&error, delivered),
+                    )
+                })
+            })
         }
     };
-    while let Ok(step) = step_rx.try_recv() {
-        on_iroh_step(app, id, limit_ms, step, &delivered, notes);
-    }
     unfinished.done = true;
     let delivered = delivered.get();
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let ended = match outcome {
         None => Ended::Cancelled,
         Some(Ok(response)) => Ended::Answer(response),
-        Some(Err(error)) => {
-            let state = iroh_state(&error, delivered);
-            Ended::Failed(Failure::from_mobile(&error, delivered), state)
-        }
+        Some(Err((failure, state))) => Ended::Failed(failure, state),
     };
     conclude(app, target, id, sending, delivered, elapsed_ms, ended)
+}
+
+/// What a raced request reported: each transport's steps to the same bookkeeping as when it goes
+/// over that transport alone, and which one carried it.
+fn on_auto_event(
+    app: &App,
+    id: &str,
+    limit_ms: u64,
+    event: AutoEvent,
+    delivered: &Cell<bool>,
+    notes: &mut Vec<String>,
+) {
+    match event {
+        AutoEvent::IrohStep(step) => on_iroh_step(app, id, limit_ms, step, delivered, notes),
+        AutoEvent::WebrtcStep(step) => on_step(app, id, step, delivered, notes),
+        AutoEvent::Carrier(transport) => {
+            app.log.event(
+                "carrier",
+                json!({ "interaction_id": id, "transport": transport.label(), "why": "ready first" }),
+            );
+            if transport == AutoTransport::Webrtc {
+                notes.push(
+                    "sent over WebRTC: the wallet was reachable over it before iroh connected.".to_string(),
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The state a raced request's failure leaves it in.
+fn auto_state(error: &AutoError, delivered: bool) -> State {
+    match error {
+        AutoError::WalletRejected(_) => State::Answered,
+        // It may be on the phone: it keeps blocking new requests until it is answered or cleared.
+        AutoError::NotConfirmed {
+            transport: AutoTransport::Iroh,
+            ..
+        } => State::Unconfirmed,
+        AutoError::NotConfirmed { .. } => State::NotDelivered,
+        _ if delivered => State::Delivered,
+        _ => State::NotDelivered,
+    }
 }
 
 /// The state an iroh failure leaves a request in.
