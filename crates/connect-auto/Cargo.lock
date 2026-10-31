@@ -3343,6 +3343,7 @@ name = "radixdlt-connect-iroh"
 version = "0.3.0"
 dependencies = [
  "ed25519-dalek 3.0.0",
+ "fs4",
  "hex",
  "iroh",
  "radix-connect-iroh",

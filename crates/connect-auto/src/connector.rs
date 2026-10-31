@@ -141,6 +141,8 @@ pub struct WalletConnector {
     iroh_relay: Option<String>,
     transports: Transports,
     iroh_grace: Duration,
+    /// The program's state file, when the connector looks after its links (`with_state`).
+    pub(crate) state: Option<Arc<std::path::PathBuf>>,
 }
 
 impl std::fmt::Debug for WalletConnector {
@@ -178,6 +180,7 @@ impl WalletConnector {
             iroh_relay: None,
             transports: Transports::Auto,
             iroh_grace: IROH_GRACE,
+            state: None,
         }
     }
 
@@ -207,6 +210,18 @@ impl WalletConnector {
     #[must_use]
     pub fn with_iroh_shared(mut self, iroh: Arc<MobileWalletConnector>) -> Self {
         self.iroh = iroh;
+        self
+    }
+
+    /// The iroh connector for links paired on the custom relay `relay_url`, shared with the
+    /// caller (as [`with_iroh_shared`](Self::with_iroh_shared) is for the public relays): one
+    /// session per link in this process, whoever opens it.
+    #[must_use]
+    pub fn with_iroh_on_relay(self, relay_url: &str, iroh: Arc<MobileWalletConnector>) -> Self {
+        self.iroh_by_relay
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(relay_url.to_string(), iroh);
         self
     }
 
@@ -245,6 +260,11 @@ impl WalletConnector {
             .ok()?
             .wallet_relay(&password)
             .await
+    }
+
+    /// [`iroh_on`](Self::iroh_on), for the rest of the crate.
+    pub(crate) fn iroh_on_relay(&self, relay: Option<&str>) -> Result<Arc<MobileWalletConnector>, Error> {
+        self.iroh_on(relay)
     }
 
     /// The iroh connector of a relay (`None`: the public relays).
@@ -425,6 +445,19 @@ impl WalletConnector {
     /// # Errors
     /// How far it got (see [`Error`]).
     pub async fn exchange_with(
+        &self,
+        link: &Link,
+        interaction: &Value,
+        timeout: Duration,
+        on: &mut (dyn FnMut(Event) + Send),
+    ) -> Result<Value, Error> {
+        let result = self.exchange_over(link, interaction, timeout, on).await;
+        // With the program's state file, what the answer says about the link is kept (`kept`).
+        self.after_exchange(link, &result).await;
+        result
+    }
+
+    async fn exchange_over(
         &self,
         link: &Link,
         interaction: &Value,

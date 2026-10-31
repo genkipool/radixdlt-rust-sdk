@@ -598,8 +598,6 @@ fn two_connectors_on_one_link_one_holds_it_the_other_is_busy_or_waits_its_turn()
             detail.contains(&format!("pid {}", std::process::id())) && detail.contains("of 1000 ms"),
             "{detail}"
         );
-        let wait = &events(&dir, "iroh_link_wait")[0];
-        assert_eq!(wait["holder_pid"], std::process::id(), "{wait}");
         let busy_event = &events(&dir, "iroh_link_busy")[0];
         assert_eq!(busy_event["limit_ms"], 1000, "{busy_event}");
         assert!(busy_event["waited_ms"].as_u64().unwrap() >= 1000, "{busy_event}");
@@ -619,14 +617,8 @@ fn two_connectors_on_one_link_one_holds_it_the_other_is_busy_or_waits_its_turn()
             letting_go
         );
         let taken = taken.unwrap();
-        let locked = &events(&dir, "iroh_link_locked")[0];
-        assert!(locked["waited_ms"].as_u64().unwrap() >= 500, "{locked}");
         let released = &events(&dir, "iroh_link_released")[0];
         assert_eq!(released["uses"], 1, "{released}");
-        assert!(
-            events(&dir, "iroh_link_lock_recovered").is_empty(),
-            "a link let go of cleanly is not a crashed holder"
-        );
         drop(taken);
         assert_log_clean(&dir, &password);
         std::fs::remove_dir_all(&dir).ok();
@@ -634,7 +626,7 @@ fn two_connectors_on_one_link_one_holds_it_the_other_is_busy_or_waits_its_turn()
 }
 
 /// A connector that crashed holding a link leaves its record in the link's lock file (the OS
-/// frees the lock itself): the next one takes the link and says so.
+/// frees the lock itself): the next one takes the link and the SDK says so.
 #[test]
 fn a_link_left_locked_by_a_crashed_connector_is_recovered_and_logged() {
     in_local_set(async {
@@ -645,7 +637,7 @@ fn a_link_left_locked_by_a_crashed_connector_is_recovered_and_logged() {
         let key = crate::iroh::connection_id(&password);
         std::fs::create_dir_all(dir.join("iroh-links")).unwrap();
         let lock = dir.join("iroh-links").join(format!("{}.lock", &key[..32]));
-        std::fs::write(&lock, "999999 1700000000").unwrap();
+        std::fs::write(&lock, "process 999999 since 1700000000").unwrap();
         let app = Rc::new(App::at(
             dir.join("connector.json"),
             Options {
@@ -662,15 +654,9 @@ fn a_link_left_locked_by_a_crashed_connector_is_recovered_and_logged() {
         )
         .await
         .unwrap();
-        let recovered = &events(&dir, "iroh_link_lock_recovered")[0];
-        assert_eq!(recovered["previous_holder_pid"], 999_999, "{recovered}");
-        assert_eq!(
-            recovered["previous_holder_since"], "2023-11-14T22:13:20Z",
-            "{recovered}"
-        );
         let record = std::fs::read_to_string(&lock).unwrap();
         assert!(
-            record.starts_with(&format!("{} ", std::process::id())),
+            record.starts_with(&format!("process {} since ", std::process::id())),
             "{record}"
         );
         assert!(app.iroh.holder(&password).starts_with("this process"));
@@ -946,7 +932,6 @@ fn a_wallet_removed_while_its_app_is_closed_is_told_when_it_connects() {
             "told, and the notice gone: {}",
             connector_state(&dir)
         );
-        assert!(!events(&dir, "removal_notice_delivered").is_empty());
         assert_log_clean(&dir, &password);
         running.close().await;
         std::fs::remove_dir_all(&dir).ok();

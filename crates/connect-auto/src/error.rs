@@ -44,13 +44,17 @@ pub enum Error {
     /// The wallet removed this link (the person removed the connector in the wallet): forget it;
     /// pairing again makes a new one.
     LinkRemoved,
-    /// Another conversation on this link did not end in time.
+    /// Another conversation on this link did not end in time, or another process of this machine
+    /// held the link for as long as the call could wait. Nothing was sent.
     LinkBusy,
     /// Pairing failed over every transport: why, over each.
     PairingFailed {
         /// Why, over each transport tried.
         reasons: Vec<(Transport, String)>,
     },
+    /// The program's state file (`WalletConnector::with_state`) is missing, or could not be read
+    /// or written.
+    State(String),
     /// Anything else, over this transport.
     Failed {
         /// The transport.
@@ -161,6 +165,8 @@ impl Error {
             MobileError::ResponseTimeout { .. } => Reach::Final(Error::NoAnswer { transport }),
             MobileError::WalletRejected(reason) => Reach::Final(Error::WalletRejected(reason)),
             MobileError::LinkRemoved => Reach::Final(Error::LinkRemoved),
+            // Another process of this machine holds the link: nothing was sent.
+            MobileError::LinkBusy { .. } => Reach::Final(Error::LinkBusy),
             MobileError::InvalidPassword => Reach::Final(Error::InvalidLink(error.to_string())),
             other => Reach::Final(Error::Failed {
                 transport,
@@ -244,6 +250,11 @@ impl fmt::Display for Error {
                 lang,
                 format!("the wallet did not link ({})", each(reasons)),
                 format!("la wallet no se enlazó ({})", each(reasons))
+            ),
+            Error::State(detail) => tr!(
+                lang,
+                format!("the link state file: {detail}"),
+                format!("el fichero de estado de los enlaces: {detail}")
             ),
             Error::Failed { transport, detail } => tr!(
                 lang,

@@ -564,9 +564,12 @@ async fn run_iroh(
         // A request: raced over iroh and WebRTC — the first one ready carries it, and only that one
         // — by `radixdlt-connect-auto`, through the iroh connector that holds this link's turn.
         Some(interaction) => {
+            // Given the state file, the SDK keeps what the answer says about the link: the relay its
+            // wallet is on (for the next knock), or that the wallet removed it.
             let wallet = WalletConnector::new()
                 .with_webrtc(app.webrtc_connector())
                 .with_iroh_shared(turn.connector.clone())
+                .with_state(app.config_path())
                 // The setting says how NEW links pair; a link paired over iroh is reached over both
                 // (raced), or over iroh alone when the setting is iroh.
                 .with_transports(match app.iroh.setting {
@@ -608,7 +611,6 @@ async fn run_iroh(
             while let Ok(event) = event_rx.try_recv() {
                 on_auto_event(app, id, limit_ms, event, &delivered, notes);
             }
-            remember_wallet_relay(app, &wallet, &link).await;
             let delivered = delivered.get();
             outcome.map(|result| {
                 result.map_err(|error| {
@@ -684,25 +686,6 @@ fn on_auto_event(
             }
         }
         _ => {}
-    }
-}
-
-/// Keeps the iroh relay `link`'s wallet is on with the link when it changed, so the link's next
-/// session knocks there and a wallet that is up connects at once.
-async fn remember_wallet_relay(app: &App, wallet: &WalletConnector, link: &Link) {
-    let Some(relay) = wallet.wallet_relay(link).await else {
-        return;
-    };
-    if link.wallet_relay.as_deref() == Some(relay.as_str()) {
-        return;
-    }
-    if let Ok(mut state) = Store::load(app.config_path()) {
-        if state.note_wallet_relay(&link.password, &relay) && Store::save(app.config_path(), &state).is_ok() {
-            app.log.event(
-                "wallet_relay_noted",
-                json!({ "link": iroh::short_id(&iroh::connection_id(&link.password_bytes().unwrap_or_default())), "relay": relay }),
-            );
-        }
     }
 }
 

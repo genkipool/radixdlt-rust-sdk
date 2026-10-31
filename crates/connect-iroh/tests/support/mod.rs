@@ -226,8 +226,28 @@ impl SimWallet {
             .await
     }
 
+    /// Starts the wallet without waiting for it to connect: for a connector that closes the
+    /// connection right after it got what it came for (a removal notice), which may be over before
+    /// anybody looks.
+    #[allow(dead_code)]
+    pub async fn start(self: &Arc<Self>, password: &[u8], relay: &str, handler: Handler) -> RunningWallet {
+        self.start_with(password, SessionConfig::new(relay).unwrap(), handler)
+            .await
+    }
+
     /// The same, with any session settings (the public relays, for one).
     pub async fn connect_with(
+        self: &Arc<Self>,
+        password: &[u8],
+        config: SessionConfig,
+        handler: Handler,
+    ) -> RunningWallet {
+        let running = self.start_with(password, config, handler).await;
+        running.wait_connected().await;
+        running
+    }
+
+    async fn start_with(
         self: &Arc<Self>,
         password: &[u8],
         config: SessionConfig,
@@ -245,15 +265,13 @@ impl SimWallet {
             reading.clone(),
             connections.clone(),
         ));
-        let running = RunningWallet {
+        RunningWallet {
             session,
             received,
             reading,
             connections,
             task,
-        };
-        running.wait_connected().await;
-        running
+        }
     }
 }
 

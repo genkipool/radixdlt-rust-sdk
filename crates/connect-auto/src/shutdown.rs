@@ -44,9 +44,11 @@ impl WalletConnector {
     /// # }
     /// ```
     pub async fn run_until_stopped<F: Future>(&self, work: F) -> Option<F::Output> {
+        // With a state file, its removal notices are delivered meanwhile (never ends by itself).
         let outcome = tokio::select! {
             output = work => Some(output),
             () = stop_requested() => None,
+            () = self.deliver_removal_notices(), if self.state.is_some() => None,
         };
         self.close().await;
         outcome

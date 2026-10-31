@@ -7,6 +7,40 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.8.0] - 2026-10-31
+
+`radixdlt-connector-mcp` 0.8.0: one process per link, and removing connectors, both done by the SDK
+for any program that uses it. Nothing changes for callers; the self-updater offers it.
+
+### Added — `radixdlt-connect-iroh`
+
+- **One process per link on a machine.** A link's session starts only once its process holds the
+  link's lock (an OS file lock named after the link's hash, never the password), released when the
+  session closes or the process ends. Two processes on one link took the wallet from each other,
+  and an answer in flight was lost with the connection. Another process waits for the link within
+  its call's time: `Progress::WaitingForLink { holder }`, then `Progress::LinkTaken { waited }`, or
+  `MobileError::LinkBusy { holder }` when it could not wait any longer. A holder that crashed is
+  taken over, and logged.
+- `with_link_lock_dir`, `without_link_locks`, `open_link_within`, `link_holder`.
+
+### Added — `radixdlt-connect-auto`
+
+- **`WalletConnector::with_state(path)`**: the connector looks after the links of the program's
+  state file. A link the wallet removed is forgotten; the relay a wallet is on is noted for the
+  next knock; `remove_link` retires a link and tells its wallet, at once when it is reachable;
+  `deliver_removal_notices` (run by `run_until_stopped`) tells the others whenever they connect,
+  and gives a notice up after 30 days; `deliver_pending_notices` does one round, for a program run
+  now and then; `remember_wallet_relays` notes where connected wallets are.
+- `with_iroh_on_relay`: share a custom relay's iroh connector, as `with_iroh_shared` does the
+  public relays', so a link has one session in the process whoever opens it.
+- `Error::State`; `MobileError::LinkBusy` maps to `Error::LinkBusy`.
+
+### Changed — `radixdlt-connector-mcp`
+
+- Its links' locks and its connector removal are the SDK's: its own lock files and notice
+  delivery are gone (the lock files stay where they were, `iroh-links` beside the state, and keep
+  their names). What stays is the MCP's own: releasing an idle link after 30 minutes.
+
 ## [connector-v0.7.1] - 2026-10-31
 
 `radixdlt-connector-mcp` 0.7.1: a connector that is asked to stop never leaves its wallets

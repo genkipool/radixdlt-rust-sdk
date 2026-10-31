@@ -36,12 +36,14 @@
 
 mod connector;
 mod error;
+mod kept;
 mod race;
 mod requests;
 mod shutdown;
 
 pub use connector::{Event, Paired, Transports, WalletConnector, IROH_GRACE};
 pub use error::Error;
+pub use kept::{NoticesDelivered, Removal};
 pub use shutdown::stop_requested;
 
 /// The transports, for settings the defaults do not cover.

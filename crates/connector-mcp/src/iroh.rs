@@ -21,8 +21,9 @@
 //!
 //! **One process per link.** A link's iroh session owns an endpoint key derived from the link
 //! password; two connector processes (two MCP clients) running one for the same link would
-//! compete at the relay and pass the wallet back and forth. So a process takes an OS file lock
-//! per link before starting its session, keeps it while it uses the link and for a while after
+//! compete at the relay and pass the wallet back and forth. So a process takes the link's lock
+//! (the SDK's: `MobileWalletConnector` takes an OS file lock per link before starting its session,
+//! here in `iroh-links` beside the state), keeps the session while it uses the link and for a while after
 //! (the wallet stays connected between requests), and releases it after thirty idle minutes
 //! (`RADIX_CONNECTOR_IROH_IDLE_SECONDS`), closing the session first — long, because a wallet
 //! takes up to ~15 s to find a session started again. Another process waits for the lock within
@@ -30,20 +31,19 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, Write};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use fs4::fs_std::FileExt;
-use radixdlt_connect_iroh::mobile::{linking, Diagnostics, MobileWalletConnector};
+use radixdlt_connect_iroh::mobile::{linking, Diagnostics, MobileError, MobileWalletConnector};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use zeroize::Zeroizing;
 
-use crate::diag::{iso_secs, now_secs, Failure};
+use crate::diag::{iso_secs, Failure};
 use crate::rpc::App;
 
 /// Environment variable with the transport setting (`webrtc`, `iroh` or `auto`).
@@ -56,8 +56,6 @@ pub const IDLE_ENV: &str = "RADIX_CONNECTOR_IROH_IDLE_SECONDS";
 /// How long an unused link's iroh session is kept by default: reaching the wallet again after
 /// a release costs it up to ~15 s (it re-dials with a back-off), so be generous.
 const DEFAULT_IDLE: Duration = Duration::from_secs(30 * 60);
-/// How often a process waiting for another one to release a link checks again.
-const TURN_POLL: Duration = Duration::from_millis(250);
 
 /// How a link reaches the wallet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,8 +255,6 @@ const RECONNECT_POLL: Duration = Duration::from_millis(100);
 
 /// A link whose iroh session this process holds.
 pub struct Held {
-    /// The link's OS lock; released when dropped, after the session is closed.
-    lock: File,
     connector: Arc<MobileWalletConnector>,
     /// Needed to close the session; memory only, wiped when dropped.
     password: Zeroizing<Vec<u8>>,
@@ -399,12 +395,15 @@ impl Iroh {
         if let Some(connector) = self.connectors.borrow().get(relay) {
             return Ok(connector.clone());
         }
+        // The SDK keeps one process per link with its locks; here, beside the state, where every
+        // connector process of this state looks.
         let connector = match relay {
             None => MobileWalletConnector::new(),
             Some(url) => MobileWalletConnector::new()
                 .with_relay_url(url)
                 .map_err(|e| e.to_string())?,
-        };
+        }
+        .with_link_lock_dir(self.lock_dir.clone());
         let connector = Arc::new(connector);
         self.connectors
             .borrow_mut()
@@ -431,31 +430,10 @@ impl Iroh {
                 held.users
             );
         }
-        let Ok(file) = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(self.lock_path(&key))
-        else {
-            return "nobody".to_string();
-        };
-        if matches!(FileExt::try_lock_exclusive(&file), Ok(true)) {
-            let _ = FileExt::unlock(&file);
-            return "nobody".to_string();
+        match self.connector(&None).ok().and_then(|c| c.link_holder(password)) {
+            Some(record) => format!("another process ({})", describe_holder(&record)),
+            None => "nobody".to_string(),
         }
-        match read_holder(&file) {
-            Some(holder) => format!(
-                "another process (pid {}) since {}",
-                holder.pid,
-                iso_secs(holder.since)
-            ),
-            None => "another process".to_string(),
-        }
-    }
-
-    fn lock_path(&self, key: &str) -> PathBuf {
-        // Half the hash is plenty to tell a machine's links apart.
-        self.lock_dir
-            .join(format!("{}.lock", key.get(..32).unwrap_or(key)))
     }
 
     /// Why a session for `key` is being opened now.
@@ -488,73 +466,29 @@ pub async fn acquire(
     let started = Instant::now();
     let limit_ms = ms(deadline.saturating_duration_since(started));
     let connector = iroh.connector(relay).map_err(|e| unavailable(&e))?;
-    let mut lock: Option<File> = None;
-    let mut waited = false;
-    loop {
-        if let Some(turn) = join(app, &key) {
-            return Ok(turn);
-        }
-        let file = match lock.take() {
-            Some(file) => file,
-            None => open_lock(&iroh.lock_path(&key)).map_err(Failure::local)?,
-        };
-        if matches!(FileExt::try_lock_exclusive(&file), Ok(true)) {
-            lock = Some(file);
-            break;
-        }
-        if Instant::now() >= deadline {
-            let holder = read_holder(&file);
-            let waited_ms = ms(started.elapsed());
-            app.log.event(
-                "iroh_link_busy",
-                json!({
-                    "link": link, "holder_pid": holder.as_ref().map(|h| h.pid),
-                    "holder_since": holder.as_ref().map(|h| iso_secs(h.since)),
-                    "waited_ms": waited_ms, "limit_ms": limit_ms,
-                }),
-            );
-            return Err(link_busy(holder, iroh.idle, waited_ms, limit_ms));
-        }
-        if !waited {
-            waited = true;
-            let holder = read_holder(&file);
-            app.log.event(
-                "iroh_link_wait",
-                json!({
-                    "link": link, "holder_pid": holder.as_ref().map(|h| h.pid),
-                    "holder_since": holder.as_ref().map(|h| iso_secs(h.since)), "limit_ms": limit_ms,
-                }),
-            );
-        }
-        lock = Some(file);
-        tokio::time::sleep(TURN_POLL).await;
+    if let Some(turn) = join(app, &key) {
+        return Ok(turn);
     }
-    let Some(mut file) = lock else {
-        return Err(Failure::local("the link's lock was lost"));
-    };
-    let lock_waited_ms = ms(started.elapsed());
-    if waited {
-        app.log.event(
-            "iroh_link_locked",
-            json!({ "link": link, "waited_ms": lock_waited_ms, "limit_ms": limit_ms }),
-        );
-    }
-    // A holder that lets go clears its record; one still there exited without letting go (a
-    // crash, a kill): the operating system freed its lock with the process.
-    if let Some(stale) = read_holder(&file) {
-        app.log.event(
-            "iroh_link_lock_recovered",
-            json!({
-                "link": link, "previous_holder_pid": stale.pid, "previous_holder_since": iso_secs(stale.since),
-                "previous_holder_running": process_running(stale.pid),
-            }),
-        );
-    }
-    write_holder(&mut file);
+    // Another process of this machine holding the link is waited for by the SDK, within this
+    // call's own time; it logs the wait and the taking (`iroh_sdk` in this log).
     let (why, released_ago_ms) = iroh.opening_reason(&key);
     let opening = Instant::now();
-    if let Err(error) = connector.open_link(password).await {
-        clear_holder(&file);
+    let opened = connector
+        .open_link_within(password, deadline.saturating_duration_since(Instant::now()))
+        .await;
+    if let Err(MobileError::LinkBusy { holder }) = &opened {
+        let waited_ms = ms(started.elapsed());
+        app.log.event(
+            "iroh_link_busy",
+            json!({ "link": link, "holder": describe_holder(holder), "waited_ms": waited_ms, "limit_ms": limit_ms }),
+        );
+        return Err(link_busy(Some(holder), iroh.idle, waited_ms, limit_ms));
+    }
+    // Another call of this process may have opened it meanwhile: join it.
+    if let Some(turn) = join(app, &key) {
+        return Ok(turn);
+    }
+    if let Err(error) = opened {
         app.log.event(
             "iroh_link_open_failed",
             json!({ "link": link, "why": why, "error": error.to_string(), "elapsed_ms": ms(opening.elapsed()) }),
@@ -565,14 +499,13 @@ pub async fn acquire(
         "iroh_link_open",
         json!({
             "link": link, "relays": relay_label(relay), "why": why, "released_ago_ms": released_ago_ms,
-            "open_ms": ms(opening.elapsed()), "lock_waited_ms": lock_waited_ms,
+            "open_ms": ms(opening.elapsed()),
         }),
     );
     watch_wallet_connects(app, &key, password, &connector, why);
     // Another call may have taken the link while this one opened it: join it.
     let mut held = iroh.held();
     let entry = held.entry(key.clone()).or_insert_with(|| Held {
-        lock: file,
         connector: connector.clone(),
         password: Zeroizing::new(password.to_vec()),
         users: 0,
@@ -664,22 +597,17 @@ fn watch_wallet_connects(
 pub fn adopt(app: &Rc<App>, password: &[u8], relay: &Option<String>) {
     let key = connection_id(password);
     let link = short_id(&key).to_string();
-    let lock = open_lock(&app.iroh.lock_path(&key))
-        .ok()
-        .filter(|file| matches!(FileExt::try_lock_exclusive(file), Ok(true)));
-    let connector = app.iroh.connector(relay);
-    let (Some(mut lock), Ok(connector)) = (lock, connector) else {
+    // Its lock is the SDK's, taken when the pairing started its session.
+    let Ok(connector) = app.iroh.connector(relay) else {
         app.log.event(
             "iroh_link_adopt_failed",
-            json!({ "link": link, "detail": "could not take the new link's lock; its session stays until it is used or closed" }),
+            json!({ "link": link, "detail": "no connector for its relay; its session stays until it is used or closed" }),
         );
         return;
     };
-    write_holder(&mut lock);
     app.iroh.held().insert(
         key.clone(),
         Held {
-            lock,
             connector,
             password: Zeroizing::new(password.to_vec()),
             users: 1,
@@ -719,7 +647,6 @@ async fn close(app: &Rc<App>, key: &str, held: Held, why: &'static str) {
     // Closed BEFORE the lock goes, so no other process starts a session for the link while this
     // one still holds its endpoint.
     held.connector.close_link(&held.password).await;
-    clear_holder(&held.lock);
     app.iroh
         .released
         .borrow_mut()
@@ -769,7 +696,6 @@ fn release(app: &Rc<App>, key: &str) {
         if let Some(held) = expired {
             let (lifetime_ms, uses) = (ms(held.opened_at.elapsed()), held.uses);
             held.connector.close_link(&held.password).await;
-            clear_holder(&held.lock);
             drop(held);
             app.iroh
                 .released
@@ -783,55 +709,17 @@ fn release(app: &Rc<App>, key: &str) {
     });
 }
 
-fn open_lock(path: &Path) -> Result<File, String> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+/// What the SDK's lock records of a link's holder (`process <pid> since <unix seconds>`), for
+/// people: `pid <pid>, holding it since <time>`.
+fn describe_holder(record: &str) -> String {
+    let mut words = record.split_whitespace();
+    match (words.next(), words.next(), words.next(), words.next()) {
+        (Some("process"), Some(pid), Some("since"), Some(since)) => match since.parse() {
+            Ok(since) => format!("pid {pid}, holding it since {}", iso_secs(since)),
+            Err(_) => format!("pid {pid}"),
+        },
+        _ => record.to_string(),
     }
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|e| format!("{}: {e}", path.display()))
-}
-
-/// Who wrote a link's lock file: the process holding the link, and since when.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Holder {
-    pub pid: u32,
-    /// Unix seconds.
-    pub since: u64,
-}
-
-/// Records this process as the link's holder (`<pid> <unix seconds>`), for the message another
-/// process shows and for telling a clean release from a crash.
-fn write_holder(file: &mut File) {
-    let _ = file.set_len(0);
-    let _ = file.rewind();
-    let _ = write!(file, "{} {}", std::process::id(), now_secs());
-}
-
-/// Empties the holder record: the link was let go of cleanly.
-fn clear_holder(file: &File) {
-    let _ = file.set_len(0);
-}
-
-fn read_holder(file: &File) -> Option<Holder> {
-    let mut text = String::new();
-    let mut file = file;
-    let _ = file.rewind();
-    file.read_to_string(&mut text).ok()?;
-    let mut words = text.split_whitespace();
-    let pid = words.next()?.parse().ok()?;
-    let since = words.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    Some(Holder { pid, since })
-}
-
-/// Whether a process with this pid is running, where that can be told (`/proc`); `None` otherwise.
-fn process_running(pid: u32) -> Option<bool> {
-    let proc = Path::new("/proc");
-    proc.is_dir().then(|| proc.join(pid.to_string()).exists())
 }
 
 /// A connection id shortened for the log, like the library's link ids.
@@ -853,14 +741,13 @@ fn unavailable(detail: &str) -> Failure {
     )
 }
 
-fn link_busy(holder: Option<Holder>, idle: Duration, waited_ms: u64, limit_ms: u64) -> Failure {
+fn link_busy(holder: Option<&str>, idle: Duration, waited_ms: u64, limit_ms: u64) -> Failure {
     let who = holder.map_or_else(
         || "another radix-connector-mcp process".to_string(),
         |holder| {
             format!(
-                "another radix-connector-mcp process (pid {}, holding it since {})",
-                holder.pid,
-                iso_secs(holder.since)
+                "another radix-connector-mcp process ({})",
+                describe_holder(holder)
             )
         },
     );

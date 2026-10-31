@@ -34,6 +34,11 @@ impl LinkId {
     pub(super) fn of(password: &[u8]) -> Self {
         LinkId(linking::connection_id(password))
     }
+
+    /// The name of its lock file: half the hash, plenty to tell a machine's links apart.
+    pub(super) fn file_name(&self) -> String {
+        hex::encode(self.0.get(..16).unwrap_or_default())
+    }
 }
 
 impl fmt::Display for LinkId {
@@ -158,6 +163,9 @@ pub(super) struct Link {
     session: Arc<Session>,
     shared: Arc<Shared>,
     reader: JoinHandle<()>,
+    /// This process's hold on the link (`lock`), shared with the registry: let go once the link is
+    /// closed there and every session that used it has ended.
+    _lock: Option<Arc<super::lock::LinkLock>>,
 }
 
 impl Drop for Link {
@@ -172,6 +180,7 @@ impl Link {
         id: LinkId,
         password: &ConnectionPassword,
         config: SessionConfig,
+        lock: Option<Arc<super::lock::LinkLock>>,
     ) -> Result<Self, MobileError> {
         let relays = config.relays().clone();
         let started = Instant::now();
@@ -200,6 +209,7 @@ impl Link {
             session,
             shared,
             reader,
+            _lock: lock,
         })
     }
 
@@ -332,6 +342,19 @@ pub(super) struct Registry {
 #[derive(Debug, Default)]
 struct Slot {
     link: tokio::sync::Mutex<Option<Arc<Link>>>,
+    /// This process's hold on the link, taken by its first session and kept for the next ones —
+    /// a session started again must not wait for the one it replaces — until the link is closed.
+    lock: std::sync::Mutex<Option<Arc<super::lock::LinkLock>>>,
+}
+
+impl Slot {
+    fn held_lock(&self) -> Option<Arc<super::lock::LinkLock>> {
+        self.lock.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn keep_lock(&self, lock: Option<Arc<super::lock::LinkLock>>) {
+        *self.lock.lock().unwrap_or_else(PoisonError::into_inner) = lock;
+    }
 }
 
 impl Registry {
@@ -351,6 +374,8 @@ impl Registry {
         password: &ConnectionPassword,
         id: LinkId,
         config: impl FnOnce() -> Result<SessionConfig, MobileError>,
+        locks: &super::lock::LinkLocks,
+        on: &mut (dyn FnMut(super::Progress) + Send),
     ) -> Result<Arc<Link>, MobileError> {
         let slot = self.slot(id);
         let mut current = slot.link.lock().await;
@@ -363,7 +388,22 @@ impl Registry {
             log::session_restarting(id);
             stale.close().await;
         }
-        let link = Arc::new(Link::start(id, password, config()?).await?);
+        let config = config()?;
+        // One process per link on this machine: another one holding it is waited for — this one,
+        // holding it already, is not.
+        let lock = match slot.held_lock() {
+            Some(lock) => Some(lock),
+            None => locks.take(id, on).await.map(Arc::new),
+        };
+        slot.keep_lock(lock.clone());
+        let link = match Link::start(id, password, config, lock).await {
+            Ok(link) => Arc::new(link),
+            Err(error) => {
+                // No session: the link is let go of, for another process to have.
+                slot.keep_lock(None);
+                return Err(error);
+            }
+        };
         *current = Some(link.clone());
         Ok(link)
     }
@@ -380,11 +420,13 @@ impl Registry {
         let Some(slot) = self.existing_slot(id) else {
             return;
         };
-        let link = slot.link.lock().await.take();
-        if let Some(link) = link {
+        let mut current = slot.link.lock().await;
+        if let Some(link) = current.take() {
             log::closing(id, why);
             link.close().await;
         }
+        // The link is let go of (once the session that held it ends, which it just did).
+        slot.keep_lock(None);
     }
 
     /// Closes every link.
@@ -402,9 +444,14 @@ impl Registry {
     /// wait). Without a tokio runtime it stops abruptly.
     /// `false` when there was none.
     pub(super) fn discard(&self, id: LinkId) -> bool {
-        let link = self
-            .existing_slot(id)
+        let slot = self.existing_slot(id);
+        let link = slot
+            .as_ref()
             .and_then(|slot| slot.link.try_lock().ok().and_then(|mut link| link.take()));
+        // The closing session keeps its own hold until it has ended.
+        if let Some(slot) = &slot {
+            slot.keep_lock(None);
+        }
         let found = link.is_some();
         close_in_background(link.into_iter().collect());
         found

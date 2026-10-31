@@ -71,6 +71,12 @@ pub enum MobileError {
     /// The wallet removed this link (the person removed the connector in the wallet): it will
     /// not answer over it again. Forget the link; pairing again makes a new one.
     LinkRemoved,
+    /// Another process on this machine held the link for as long as the call could wait (two at
+    /// once would take the wallet from each other). Nothing was sent. Who holds it: `holder`.
+    LinkBusy {
+        /// What the holder wrote down: `process <pid> since <unix seconds>`.
+        holder: String,
+    },
 }
 
 impl MobileError {
@@ -176,6 +182,11 @@ impl std::fmt::Display for MobileError {
                 lang,
                 "the wallet removed this connector: pair it again to use it".to_string(),
                 "la wallet eliminó este conector: vuelve a emparejarla para usarla".to_string()
+            ),
+            MobileError::LinkBusy { holder } => tr!(
+                lang,
+                format!("another program on this computer is using this link ({holder}): nothing was sent"),
+                format!("otro programa de este equipo está usando este enlace ({holder}): no se envió nada")
             ),
         };
         f.write_str(&msg)

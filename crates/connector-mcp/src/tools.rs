@@ -1028,20 +1028,16 @@ async fn remove_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
         Ok(pk) => pk,
         Err(e) => return ToolResult::error(e),
     };
-    let notice = match link_removal::retire(app, &pk) {
-        Ok(notice) => notice,
-        Err(e) => return ToolResult::error(e),
-    };
-    if link_removal::tell_now(app, &notice, link_removal::AT_ONCE).await {
-        ToolResult::text(format!(
+    match link_removal::remove(app, &pk).await {
+        Ok(true) => ToolResult::text(format!(
             "Removed the paired wallet {pk}, and the wallet removed this connector too."
-        ))
-    } else {
-        ToolResult::text(format!(
+        )),
+        Ok(false) => ToolResult::text(format!(
             "Removed the paired wallet {pk}. The wallet was not reachable now: it removes this \
              connector too as soon as it connects while this connector runs (the Radix Wallet app \
              open on the phone), for up to 30 days — list_wallets shows it until then."
-        ))
+        )),
+        Err(e) => ToolResult::error(e),
     }
 }
 

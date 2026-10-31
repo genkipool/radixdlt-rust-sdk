@@ -69,6 +69,7 @@
 mod error;
 mod inbox;
 mod link;
+mod lock;
 mod log;
 mod requests;
 
@@ -130,6 +131,17 @@ const RESEND_PAUSE: Duration = Duration::from_millis(200);
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Progress {
+    /// Another process of this machine holds the link (one process per link: two would take the
+    /// wallet from each other), and this call waits for it within its own time. Reported once.
+    WaitingForLink {
+        /// Who holds it: `process <pid> since <unix seconds>`.
+        holder: String,
+    },
+    /// The other process let go of the link, and it is this one's now.
+    LinkTaken {
+        /// How long the call waited for it.
+        waited: Duration,
+    },
     /// The wallet is not connected: its app must be open, with iroh enabled for this link and the
     /// same relay. Reported two seconds into the wait and every ten seconds while it lasts.
     WaitingForWallet {
@@ -224,6 +236,8 @@ pub struct MobileWalletConnector {
     ack_timeout: Option<Duration>,
     max_message_size: Option<usize>,
     links: Registry,
+    /// One process per link on this machine (`lock`).
+    locks: lock::LinkLocks,
     /// The relay each link's wallet was last seen on, as the host remembers it: a session that
     /// starts knocks there, and a wallet that is up dials at once (see [`Self::set_wallet_relay`]).
     wallet_relays: std::sync::Mutex<std::collections::HashMap<LinkId, String>>,
@@ -247,6 +261,7 @@ impl Default for MobileWalletConnector {
             ack_timeout: None,
             max_message_size: None,
             links: Registry::default(),
+            locks: lock::LinkLocks::default(),
             wallet_relays: std::sync::Mutex::default(),
         }
     }
@@ -266,6 +281,22 @@ impl MobileWalletConnector {
     #[must_use]
     pub fn new() -> Self {
         MobileWalletConnector::default()
+    }
+
+    /// Keeps the locks of this machine's links (one process per link) in `dir` instead of the
+    /// user's runtime directory. Every process that may use the same links must use the same one.
+    #[must_use]
+    pub fn with_link_lock_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.locks = lock::LinkLocks::in_dir(dir);
+        self
+    }
+
+    /// No lock per link: for a host that already keeps one process per link itself. Two
+    /// processes using one link at once take the wallet from each other.
+    #[must_use]
+    pub fn without_link_locks(mut self) -> Self {
+        self.locks = lock::LinkLocks::none();
+        self
     }
 
     /// Uses ONE relay, at `relay_url` ([`Relays::Custom`]) — typically a self-hosted
@@ -341,7 +372,18 @@ impl MobileWalletConnector {
 
     /// The running link for `password`, starting its session if needed (bounded by `deadline`).
     async fn link(&self, password: &[u8], deadline: Instant) -> Result<Arc<link::Link>, MobileError> {
-        self.start_link(password, deadline, Knocks::Yes).await
+        self.start_link(password, deadline, Knocks::Yes, &mut |_| {})
+            .await
+    }
+
+    /// [`link`](Self::link), telling `on` when it waits for another process to let go of it.
+    async fn link_observed(
+        &self,
+        password: &[u8],
+        deadline: Instant,
+        on: &mut (dyn FnMut(Progress) + Send),
+    ) -> Result<Arc<link::Link>, MobileError> {
+        self.start_link(password, deadline, Knocks::Yes, on).await
     }
 
     /// [`link`](Self::link), knocking or not when its session starts.
@@ -350,6 +392,7 @@ impl MobileWalletConnector {
         password: &[u8],
         deadline: Instant,
         knocks: Knocks,
+        on: &mut (dyn FnMut(Progress) + Send),
     ) -> Result<Arc<link::Link>, MobileError> {
         let secret = ConnectionPassword::from_slice(password)?;
         let id = LinkId::of(password);
@@ -361,9 +404,18 @@ impl MobileWalletConnector {
                 Knocks::No => config.without_knocks(),
             })
         };
-        match timeout_at(deadline, self.links.get_or_start(&secret, id, config)).await {
+        match timeout_at(
+            deadline,
+            self.links.get_or_start(&secret, id, config, &self.locks, on),
+        )
+        .await
+        {
             Ok(link) => link,
             Err(_) => {
+                // Waiting for another process of this machine, not for the network: say so.
+                if let Some(holder) = self.locks.holder(id) {
+                    return Err(MobileError::LinkBusy { holder });
+                }
                 log::session_start_timed_out(id, &self.relays, limit_ms);
                 Err(MobileError::Session(
                     "timed out starting the iroh endpoint".to_string(),
@@ -497,7 +549,9 @@ impl MobileWalletConnector {
             armed: true,
         };
         // A pairing does not knock: the wallet does not know the link before it scans the QR.
-        let link = self.start_link(password, deadline, Knocks::No).await?;
+        let link = self
+            .start_link(password, deadline, Knocks::No, &mut |_| {})
+            .await?;
         let mut messages = link.subscribe();
         log::pairing_started(
             id,
@@ -563,7 +617,7 @@ impl MobileWalletConnector {
             })?
             .to_owned();
         let text = serde_json::to_string(interaction).map_err(|e| MobileError::Protocol(e.to_string()))?;
-        let link = self.link(password, deadline).await?;
+        let link = self.link_observed(password, deadline, on).await?;
         if link.removed_by_wallet() {
             return Err(MobileError::LinkRemoved);
         }
@@ -656,6 +710,28 @@ impl MobileWalletConnector {
         self.link(password, Instant::now() + SESSION_START_TIMEOUT)
             .await?;
         Ok(())
+    }
+
+    /// [`open_link`](Self::open_link), waiting at most `wait` — for the session to start, and for
+    /// another process of this machine to let go of the link ([`MobileError::LinkBusy`] after it).
+    ///
+    /// # Errors
+    /// As [`open_link`](Self::open_link), and [`MobileError::LinkBusy`].
+    pub async fn open_link_within(&self, password: &[u8], wait: Duration) -> Result<(), MobileError> {
+        self.link(password, Instant::now() + wait).await?;
+        Ok(())
+    }
+
+    /// Who holds the link of `password` on this machine besides this connector — `process <pid>
+    /// since <unix seconds>` — or `None` when nobody else does (this connector holding it
+    /// included).
+    #[must_use]
+    pub fn link_holder(&self, password: &[u8]) -> Option<String> {
+        let id = LinkId::of(password);
+        if self.links.get(id).is_some() {
+            return None;
+        }
+        self.locks.holder(id)
     }
 
     /// The messages the link receives that no request claims — the wallet's `accountList` after
