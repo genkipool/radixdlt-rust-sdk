@@ -38,9 +38,11 @@ mod connector;
 mod error;
 mod race;
 mod requests;
+mod shutdown;
 
 pub use connector::{Event, Paired, Transports, WalletConnector, IROH_GRACE};
 pub use error::Error;
+pub use shutdown::stop_requested;
 
 /// The transports, for settings the defaults do not cover.
 pub use radixdlt_connect_iroh::mobile::{MobileError, MobileWalletConnector, Progress as IrohProgress};

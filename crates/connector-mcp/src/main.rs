@@ -337,8 +337,19 @@ async fn run(options: Options) -> i32 {
         }
     });
 
+    // Asked to stop (SIGTERM, Ctrl-C): the sessions are closed first, as when stdin closes.
+    let stop = radixdlt_connect_auto::stop_requested();
+    tokio::pin!(stop);
+    let mut stopped = false;
     loop {
-        let line = match stdin.next_line().await {
+        let read = tokio::select! {
+            read = stdin.next_line() => read,
+            () = &mut stop => {
+                stopped = true;
+                break;
+            }
+        };
+        let line = match read {
             Ok(Some(line)) => line,
             Ok(None) => break, // stdin closed: the client went away
             Err(err) => {
@@ -353,9 +364,18 @@ async fn run(options: Options) -> i32 {
     }
     // A client may send its calls and close stdin straight away (`echo … | radix-connector-mcp`):
     // the calls already started still finish — each is bounded by its own timeout — and answer.
-    while app.busy() {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
+    // Asked to stop instead (SIGTERM, Ctrl-C), whoever asked waits only a few seconds.
+    let finish = if stopped {
+        STOP_GRACE
+    } else {
+        std::time::Duration::MAX
+    };
+    let _ = tokio::time::timeout(finish, async {
+        while app.busy() {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    })
+    .await;
     // Telling each wallet, and letting go of the links for other connector processes.
     iroh::close_all(&app, "connector exiting").await;
     app.log.event("connector_exiting", serde_json::json!({}));
@@ -363,6 +383,9 @@ async fn run(options: Options) -> i32 {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), writer).await;
     0
 }
+
+/// How long a connector asked to stop gives the calls in flight before it closes the sessions.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[cfg(test)]
 mod tests {

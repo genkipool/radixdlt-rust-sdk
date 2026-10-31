@@ -7,6 +7,25 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.7.1] - 2026-10-31
+
+`radixdlt-connector-mcp` 0.7.1: a connector that is asked to stop never leaves its wallets
+waiting. The self-updater offers it.
+
+### Fixed
+
+- **SIGTERM and Ctrl-C close every session first**, telling each wallet, as closing stdin already
+  did; the calls in flight get 3 s. Killed that way before, the connector left its wallets
+  believing they were connected for QUIC's 30 s idle timeout, and its next run waited that long.
+  Tested with a phone: the wallet knew 0.45 s after the signal.
+
+### Added — `radixdlt-connect-auto`
+
+- **`WalletConnector::run_until_stopped`**: runs a program's main loop until it ends or the process
+  is asked to stop, then closes every session. One line for anyone writing a connector.
+- **`WalletConnector::close`** and **`stop_requested`** (SIGTERM, Ctrl-C), for programs that close
+  in their own order.
+
 ## [connector-v0.7.0] - 2026-10-31
 
 `radixdlt-connector-mcp` 0.7.0: one QR for any Radix Wallet, over iroh or WebRTC with nothing to
