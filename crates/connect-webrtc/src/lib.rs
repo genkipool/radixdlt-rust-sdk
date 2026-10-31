@@ -42,6 +42,7 @@ pub mod chunking;
 mod connector;
 pub mod crypto;
 mod error;
+mod log;
 /// A local signaling relay, for reaching the phone with no internet (over a cable or a local Wi-Fi).
 pub mod relay;
 mod signaling;
@@ -167,6 +168,7 @@ async fn listen(
     channel: &mut Channel,
     want_id: &str,
     deadline: Instant,
+    link: &str,
     on: &mut (dyn FnMut(Progress) + Send),
 ) -> Result<Value, ConnectError> {
     loop {
@@ -178,13 +180,20 @@ async fn listen(
         }
         let got = resp.get("interactionId").and_then(|v| v.as_str()).unwrap_or("");
         if want_id.is_empty() || got == want_id {
+            log::answered(link, got);
             return Ok(resp);
         }
-        on(Progress::OtherMessage(resp));
+        report(on, link, Progress::OtherMessage(resp));
     }
 }
 
 mod shared_turn;
+
+/// Logs a step of a request (see [`log`]) and reports it to the caller.
+fn report(on: &mut (dyn FnMut(Progress) + Send), link: &str, step: Progress) {
+    log::step(link, &step);
+    on(step);
+}
 
 /// A channel that ended under us (the wallet closed it, or its transport failed), as opposed
 /// to a timeout or an answer.
@@ -439,6 +448,15 @@ impl Connector {
     }
 
     async fn establish(&self, password: &[u8], open_timeout: Duration) -> Result<Channel, ConnectError> {
+        let opened = self.establish_any(password, open_timeout).await;
+        if let Err(error) = &opened {
+            log::channel_failed(&log::link_tag(password), error);
+        }
+        opened
+    }
+
+    /// Opens a channel through whichever signaling server answers first.
+    async fn establish_any(&self, password: &[u8], open_timeout: Duration) -> Result<Channel, ConnectError> {
         use futures_util::stream::{FuturesUnordered, StreamExt};
 
         let attempt = |base: &str| {
@@ -670,9 +688,14 @@ impl Connector {
     ) -> Result<Option<Value>, ConnectError> {
         let queued = Instant::now();
         let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
-        on(Progress::TurnTaken {
-            waited: queued.elapsed(),
-        });
+        let link = log::link_tag(password);
+        report(
+            on,
+            &link,
+            Progress::TurnTaken {
+                waited: queued.elapsed(),
+            },
+        );
         let started = Instant::now();
         let deadline = started + budget;
         let _closes = ClosesLink::of(password);
@@ -683,9 +706,13 @@ impl Connector {
             let mut channel = self
                 .establish(password, deadline.saturating_duration_since(Instant::now()))
                 .await?;
-            on(Progress::ChannelOpen {
-                elapsed: started.elapsed(),
-            });
+            report(
+                on,
+                &link,
+                Progress::ChannelOpen {
+                    elapsed: started.elapsed(),
+                },
+            );
             if let (Some(interaction), false) = (interaction, delivered) {
                 // The wallet starts reading a new channel only once it has seen the connection
                 // come up on ITS side, a moment after ours: a message sent into that gap is lost
@@ -702,9 +729,13 @@ impl Connector {
                 match channel.send_message(interaction, CONFIRM_TIMEOUT).await {
                     Ok(()) => {
                         delivered = true;
-                        on(Progress::Delivered {
-                            elapsed: started.elapsed(),
-                        });
+                        report(
+                            on,
+                            &link,
+                            Progress::Delivered {
+                                elapsed: started.elapsed(),
+                            },
+                        );
                     }
                     // The wallet said it removed the link, and closed the channel.
                     Err(_) if channel.link_removed() => return Err(ConnectError::LinkRemoved),
@@ -715,10 +746,14 @@ impl Connector {
                                 > WALLET_SETTLE + Duration::from_secs(10) =>
                     {
                         attempt += 1;
-                        on(Progress::Resending {
-                            attempt,
-                            reason: error.to_string(),
-                        });
+                        report(
+                            on,
+                            &link,
+                            Progress::Resending {
+                                attempt,
+                                reason: error.to_string(),
+                            },
+                        );
                         drop(channel);
                         drop(ClosesLink::of(password));
                         continue;
@@ -726,15 +761,19 @@ impl Connector {
                     Err(error) => return Err(error),
                 }
             }
-            match listen(&mut channel, want_id, deadline, on).await.map(Some) {
+            match listen(&mut channel, want_id, deadline, &link, on).await.map(Some) {
                 Err(error)
                     if channel_lost(&error)
                         && deadline.saturating_duration_since(Instant::now())
                             > WALLET_SETTLE + Duration::from_secs(10) =>
                 {
-                    on(Progress::Reconnecting {
-                        reason: error.to_string(),
-                    });
+                    report(
+                        on,
+                        &link,
+                        Progress::Reconnecting {
+                            reason: error.to_string(),
+                        },
+                    );
                     drop(channel);
                     drop(ClosesLink::of(password));
                 }
@@ -757,7 +796,7 @@ impl Connector {
         if Instant::now() + wait >= deadline {
             return Err(ConnectError::LinkBusy);
         }
-        on(Progress::Settling { wait });
+        report(on, &log::link_tag(password), Progress::Settling { wait });
         tokio::time::sleep(wait).await;
         Ok(())
     }

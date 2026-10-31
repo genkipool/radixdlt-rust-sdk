@@ -7,6 +7,22 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.9.2] - 2026-11-01
+
+### Added
+
+- **The WebRTC connector logs each step of a request, like the iroh one.** `radixdlt-connect-webrtc`
+  0.4.1 emits `tracing` events (target `radixdlt_connect_webrtc`): the link's turn, the wait for the
+  wallet to let go of a previous channel, the channel opening (or why it could not), delivery,
+  resends, reconnections, the answer, and each channel's close — `closing` when it is dropped and
+  `closed` when the wallet has been told, so a close cut short by the process ending shows as a
+  `closing` with no `closed`. A link is a short hash of its password and a message only its
+  `interactionId` and `discriminator`, as in the iroh connector's log.
+- `radixdlt-connect-auto` 0.4.2: `exchange_first` logs how it picked the phone (one phone, the one
+  connected over iroh and open, or the race), each candidate it could not reach, the wait given to
+  a phone left in the background, and the one chosen with its transport.
+- `radixdlt-connector-mcp` 0.9.2: built on them.
+
 ## [connector-v0.9.1] - 2026-10-31
 
 ### Changed

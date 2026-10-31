@@ -7,7 +7,7 @@
 [package]
 name = "radixdlt-connect-webrtc"
 description = "Radix Connect over WebRTC in native Rust: signaling, WebRTC and wallet interactions (a drop-in for @radixdlt/radix-connect-webrtc). For iroh and WebRTC chosen automatically, see radixdlt-connect-auto."
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/genkipool/radixdlt-rust-sdk"
@@ -25,6 +25,7 @@ blake2 = "0.10"
 # The link's turn across processes (an OS file lock), within the crate's MSRV.
 fs4 = { version = "0.13", features = ["sync"] }
 hex = "0.4"
+tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 aes-gcm = { version = "0.11", features = ["alloc"] }

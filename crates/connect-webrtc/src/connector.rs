@@ -141,6 +141,8 @@ pub struct Channel {
     taken: std::collections::VecDeque<Value>,
     confirmations: mpsc::UnboundedReceiver<String>, // messageIds confirmed by the peer
     _pc: Arc<dyn PeerConnection>,
+    /// The link as the log names it (`log::link_tag`).
+    link: String,
 }
 
 /// Gathers ICE candidates through a TCP relay and reports them, talking to no wallet.
@@ -407,6 +409,7 @@ pub async fn establish(
                         taken: std::collections::VecDeque::new(),
                         confirmations: conf_rx,
                         _pc: pc,
+                        link: crate::log::link_tag(password),
                     });
                 }
                 _ = tokio::time::sleep_until(deadline) => {
@@ -550,11 +553,14 @@ async fn add_remote_candidate(pc: &Arc<dyn PeerConnection>, payload: Value) {
 /// open, the wallet may keep routing answers to a channel nobody reads.
 impl Drop for Channel {
     fn drop(&mut self) {
-        let (dc, pc) = (self.dc.clone(), self._pc.clone());
+        let (dc, pc, link) = (self.dc.clone(), self._pc.clone(), self.link.clone());
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            crate::log::channel_closing(&link);
             runtime.spawn(async move {
+                let started = std::time::Instant::now();
                 let _ = dc.close().await;
                 let _ = pc.close().await;
+                crate::log::channel_closed(&link, started.elapsed());
             });
         }
     }

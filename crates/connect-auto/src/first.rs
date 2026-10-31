@@ -12,6 +12,9 @@ use radixdlt_connect_types::Transport;
 use radixdlt_connect_webrtc::state::Link;
 use radixdlt_connect_webrtc::ConnectError;
 use serde_json::Value;
+
+/// The target of this module's log events: filter with `RUST_LOG=radixdlt_connect_auto=info`.
+const TARGET: &str = "radixdlt_connect_auto";
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
@@ -84,6 +87,7 @@ impl WalletConnector {
             [] => return Err(Error::InvalidLink("no link to send the request over".to_string())),
             [only] => (
                 0,
+                // One phone: nothing to choose.
                 self.exchange_over(only, interaction, timeout, &mut |event| on(0, event))
                     .await,
             ),
@@ -93,6 +97,12 @@ impl WalletConnector {
                 .position(|link| self.connected_over_iroh(link) && !self.iroh_in_background(link))
             {
                 Some(index) => {
+                    tracing::info!(
+                        target: TARGET,
+                        phone = index,
+                        phones = links.len(),
+                        "request: a phone is connected over iroh and open, it goes first"
+                    );
                     let link = links.get(index).unwrap_or(&links[0]);
                     (
                         index,
@@ -100,7 +110,10 @@ impl WalletConnector {
                             .await,
                     )
                 }
-                None => Box::pin(self.first_of(links, interaction, timeout, on)).await?,
+                None => {
+                    tracing::info!(target: TARGET, phones = links.len(), "request: the phone opened first gets it");
+                    Box::pin(self.first_of(links, interaction, timeout, on)).await?
+                }
             },
         };
         if let Some(link) = links.get(chosen) {
@@ -183,10 +196,12 @@ impl WalletConnector {
                         Outcome::Iroh(error) if chosen == Some(candidate) => Error::from_iroh(error),
                         Outcome::Carried(error) => error,
                         Outcome::Webrtc(error) => {
+                            tracing::info!(target: TARGET, phone = candidate.0, %error, "request: not reached over webrtc");
                             reaches.push((Transport::Webrtc, Error::reach_webrtc(error)));
                             continue;
                         }
                         Outcome::Iroh(error) => {
+                            tracing::info!(target: TARGET, phone = candidate.0, %error, "request: not reached over iroh");
                             reaches.push((Transport::Iroh, Error::reach_iroh(error)));
                             continue;
                         }
@@ -274,6 +289,13 @@ impl WalletConnector {
             // Connected with its app in the background (left a moment ago): another the person
             // opens goes first; this one only once it is back, or nobody opened another in time.
             let patience = started + BACKGROUND_PATIENCE;
+            if iroh.in_background(password) {
+                tracing::info!(
+                    target: TARGET,
+                    phone = index,
+                    "request: connected over iroh with its app in the background, giving another phone time to open"
+                );
+            }
             while iroh.in_background(password) && Instant::now() < patience {
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
@@ -318,7 +340,11 @@ fn claim(choice: &watch::Sender<Option<Candidate>>, candidate: Candidate) -> boo
             false
         }
     });
-    *choice.borrow() == Some(candidate)
+    let won = *choice.borrow() == Some(candidate);
+    if won {
+        tracing::info!(target: TARGET, phone = candidate.0, transport = %candidate.1, "request: chosen");
+    }
+    won
 }
 
 #[cfg(test)]
