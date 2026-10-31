@@ -7,7 +7,7 @@
 [package]
 name = "radixdlt-connect"
 description = "Former name of radixdlt-connect-webrtc (Radix Connect over WebRTC), which it re-exports. Use radixdlt-connect-webrtc, or radixdlt-connect-auto for iroh and WebRTC chosen automatically."
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/genkipool/radixdlt-rust-sdk"
@@ -18,4 +18,4 @@ categories = ["cryptography::cryptocurrencies", "network-programming"]
 readme = "README.md"
 
 [dependencies]
-radixdlt-connect-webrtc = { path = "../connect-webrtc", version = "0.3.0" }
+radixdlt-connect-webrtc = { path = "../connect-webrtc", version = "0.4.0" }

@@ -7,6 +7,34 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.9.0] - 2026-10-31
+
+One request to several wallets of one person goes to the one the person opens first, and to no
+other; a request naming a persona goes only to the wallets that have it.
+
+### Added
+
+- **`exchange_first`** in `radixdlt-connect-iroh` (0.3.1), `radixdlt-connect-webrtc` and
+  `radixdlt-connect-auto`: sends a request to whichever of several links' wallets connects first —
+  the phone the person opens — and to that one only. A wallet cannot withdraw a request it was
+  shown, so the others are never sent it, and their connections are dropped once one is chosen
+  (one chosen atomically: two wallets connecting at the same moment cannot both be sent it). A
+  wallet already connected is the first. In `connect-auto` each link races its transports, and the
+  chosen one's answer is awaited over both (a wallet may answer over the other).
+- `radixdlt-connect-webrtc`: `Connector::exchange_if`, which sends only if asked `chosen()` once
+  the channel is open — what to race a link against others with.
+- **Personas per link**: with `with_state`, the persona a wallet answers as (a login, or a request
+  that names one) is kept with its link (`Link::personas`, `LinkState::note_persona`,
+  `LinkState::links_with_persona`, `WalletConnector::links_with_persona`). A request naming a
+  persona can go to the wallets that have it, and not to one that would only answer
+  `invalidPersona` — on its screen, as an error the person did nothing to cause.
+
+### Changed
+
+- `radixdlt-connect-webrtc`, `radixdlt-connect-auto` and `radixdlt-connect` 0.4.0: `Link` has the
+  new field `personas` (empty by default; state files without it read as before).
+- `radixdlt-connector-mcp` 0.9.0: built on them; nothing changes for its tools.
+
 ## [connector-v0.8.1] - 2026-10-31
 
 ### Added — `radixdlt-connector-mcp`

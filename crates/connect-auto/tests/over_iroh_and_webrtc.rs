@@ -67,6 +67,7 @@ fn link_over(transport: Transport, password: &[u8]) -> Link {
         transport: Some(transport),
         iroh_relay: None,
         wallet_relay: None,
+        personas: Vec::new(),
     }
 }
 

@@ -8,7 +8,7 @@
 [package]
 name = "radixdlt-connect-iroh"
 description = "Iroh (QUIC) transport for the RadixDLT Rust SDK: talks to the Radix mobile wallet over Radix Connect over iroh v1, and connects pure-Rust SDK-to-SDK peers."
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/genkipool/radixdlt-rust-sdk"
@@ -49,6 +49,8 @@ iroh = "1.4.1"
 # `cargo publish` refuses a git dependency without a version, which is the reminder.
 radix-connect-iroh = { git = "https://github.com/genkipool/radix-connect-iroh", tag = "v0.1.2" }
 tokio = { version = "1", features = ["full"] }
+# Racing several links' wallets (`exchange_first`); already in the tree through iroh.
+futures-util = "0.3"
 serde_json = "1"
 ed25519-dalek = "3"
 hex = "0.4"

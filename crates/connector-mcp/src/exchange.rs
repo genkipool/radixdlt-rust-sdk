@@ -594,6 +594,7 @@ async fn run_iroh(
                 // The connector it is given already is the one for this link's relay.
                 iroh_relay: None,
                 wallet_relay,
+                personas: Vec::new(),
             };
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AutoEvent>();
             let mut on = move |event: AutoEvent| {

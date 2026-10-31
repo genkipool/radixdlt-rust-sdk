@@ -48,6 +48,7 @@ fn state_with_link(password: &[u8]) -> PathBuf {
             transport: Some(Transport::Iroh),
             iroh_relay: None,
             wallet_relay: None,
+            personas: Vec::new(),
         }],
         retired_links: Vec::new(),
     };

@@ -36,6 +36,7 @@ async fn sigterm_closes_every_session_and_tells_the_wallet_at_once() {
         transport: Some(Transport::Iroh),
         iroh_relay: None,
         wallet_relay: None,
+        personas: Vec::new(),
     };
     wallet_connector.keep_listening(&link).await.unwrap();
     let wallet = Arc::new(SimWallet::default());

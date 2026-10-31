@@ -639,6 +639,68 @@ impl MobileWalletConnector {
         request.listen(&mut waiter, &mut others, delivered, on).await
     }
 
+    /// Sends `interaction` to whichever of these links' wallets connects FIRST — the phone the
+    /// person opens — and to that one only: a wallet cannot withdraw a request it was shown, so
+    /// the others are never sent it. A wallet already connected is the first. Returns which link
+    /// (its index in `passwords`) and the answer.
+    ///
+    /// # Errors
+    /// The chosen link's error, as [`exchange`](Self::exchange); when none connected in time, the
+    /// most telling of their errors ([`MobileError::WalletUnreachable`] when they only timed out).
+    pub async fn exchange_first(
+        &self,
+        passwords: &[&[u8]],
+        interaction: &Value,
+        overall_timeout: Duration,
+        on: &mut (dyn FnMut(usize, Progress) + Send),
+    ) -> Result<(usize, Value), MobileError> {
+        use futures_util::stream::{FuturesUnordered, StreamExt};
+        let started = Instant::now();
+        let first = match passwords {
+            [] => {
+                return Err(MobileError::Protocol(
+                    "no link to send the request over".to_string(),
+                ));
+            }
+            [_] => Some(0),
+            _ => passwords.iter().position(|password| self.is_connected(password)),
+        };
+        let chosen = match first {
+            Some(index) => index,
+            None => {
+                // Every wallet is knocked on at once, and nothing is sent until one connects.
+                let mut probes: FuturesUnordered<_> =
+                    passwords
+                        .iter()
+                        .enumerate()
+                        .map(|(index, password)| async move {
+                            (index, self.probe(password, overall_timeout).await)
+                        })
+                        .collect();
+                let mut errors = Vec::new();
+                let mut connected = None;
+                while let Some((index, probed)) = probes.next().await {
+                    match probed {
+                        Ok(_) => {
+                            connected = Some(index);
+                            break;
+                        }
+                        Err(error) => errors.push(error),
+                    }
+                }
+                match connected {
+                    Some(index) => index,
+                    None => return Err(most_telling(errors)),
+                }
+            }
+        };
+        let left = overall_timeout.saturating_sub(started.elapsed());
+        let password = passwords.get(chosen).copied().unwrap_or_default();
+        self.exchange(password, interaction, left, &mut |step| on(chosen, step))
+            .await
+            .map(|answer| (chosen, answer))
+    }
+
     /// Waits for the answer to a request sent EARLIER (by `interaction_id`) without sending
     /// anything: it is already on the phone, and sending it again would ask the person twice.
     /// Returns at once if the answer already arrived (it is kept, bounded, when it arrives with
@@ -870,6 +932,21 @@ struct Abandoned<'a> {
     links: &'a Registry,
     id: LinkId,
     armed: bool,
+}
+
+/// Of several links' errors, the one that says most: a wallet that only did not connect in time
+/// says least, as long as another said something else.
+fn most_telling(errors: Vec<MobileError>) -> MobileError {
+    let mut errors = errors.into_iter();
+    let first = errors
+        .next()
+        .unwrap_or_else(|| MobileError::Protocol("no link to send the request over".to_string()));
+    if !matches!(first, MobileError::WalletUnreachable { .. }) {
+        return first;
+    }
+    errors
+        .find(|error| !matches!(error, MobileError::WalletUnreachable { .. }))
+        .unwrap_or(first)
 }
 
 impl Drop for Abandoned<'_> {

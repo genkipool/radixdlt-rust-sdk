@@ -5,7 +5,7 @@
 [package]
 name = "radixdlt-connect-auto"
 description = "Talk to the Radix Wallet over iroh or WebRTC, whichever it can, with nothing to choose: one QR pairs over both, each request races both and goes over exactly one, the fastest."
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/genkipool/radixdlt-rust-sdk"
@@ -18,13 +18,15 @@ readme = "README.md"
 [dependencies]
 radixdlt-i18n = { path = "../i18n", version = "0.3.0" }
 radixdlt-connect-types = { path = "../connect-types", version = "0.3.0" }
-radixdlt-connect-webrtc = { path = "../connect-webrtc", version = "0.3.0" }
+radixdlt-connect-webrtc = { path = "../connect-webrtc", version = "0.4.0" }
 # Without its `wallet` feature (answering requests, which pulls the Scrypto engine): a connector
 # only asks the wallet.
-radixdlt-connect-iroh = { path = "../connect-iroh", version = "0.3.0", default-features = false }
+radixdlt-connect-iroh = { path = "../connect-iroh", version = "0.3.1", default-features = false }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt", "signal", "sync", "time"] }
 tracing = "0.1"
+# Racing several links' wallets (`exchange_first`); already in the tree through WebRTC.
+futures-util = "0.3"
 # WebRTC's signaling (TLS) and iroh both use rustls, and together they enable two of its backends,
 # so rustls cannot pick one by itself: `WalletConnector::new` installs `ring` when the application
 # installed none.

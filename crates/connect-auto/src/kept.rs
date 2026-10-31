@@ -86,11 +86,15 @@ impl WalletConnector {
     }
 
     /// What an answer over `link` says about it, kept: the wallet removed it (forgotten here, its
-    /// session closed), or the relay its wallet is on now (noted for the next knock).
+    /// session closed), the relay its wallet is on now (noted for the next knock), and the persona
+    /// it answered as (so a request naming that persona goes to it).
     pub(crate) async fn after_exchange(&self, link: &Link, result: &Result<Value, Error>) {
         let Some(path) = self.state_path() else {
             return;
         };
+        if let Some(identity) = result.as_ref().ok().and_then(answered_as) {
+            let _ = update(path, |state| state.note_persona(&link.password, identity));
+        }
         match result {
             Err(Error::LinkRemoved) => {
                 let Ok(password) = link.password_bytes() else {
@@ -109,6 +113,20 @@ impl WalletConnector {
             }
             _ => {}
         }
+    }
+
+    /// The links of the state file whose wallet has answered as persona `identity` (logged in, or
+    /// used it): the ones a request naming it can go to. Empty without a state file, or when no
+    /// wallet here has answered as it yet — ask for a login then, which any of them can answer.
+    #[must_use]
+    pub fn links_with_persona(&self, identity: &str) -> Vec<Link> {
+        let Some(path) = self.state_path() else {
+            return Vec::new();
+        };
+        path.to_str()
+            .and_then(|path| LinkState::load(path).ok())
+            .map(|state| state.links_with_persona(identity).into_iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Removes the link of the wallet `wallet_public_key` from the state file and tells the
@@ -264,4 +282,11 @@ fn pending(path: &Path) -> Vec<RetiredLink> {
         .and_then(|text| LinkState::load(text).ok())
         .map(|state| state.retired_links)
         .unwrap_or_default()
+}
+
+/// The persona a wallet's answer is from, when it is a login or names one.
+fn answered_as(answer: &Value) -> Option<&str> {
+    answer
+        .pointer("/items/auth/persona/identityAddress")
+        .and_then(Value::as_str)
 }

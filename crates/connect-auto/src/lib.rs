@@ -36,6 +36,7 @@
 
 mod connector;
 mod error;
+mod first;
 mod kept;
 mod race;
 mod requests;
@@ -43,6 +44,7 @@ mod shutdown;
 
 pub use connector::{Event, Paired, Transports, WalletConnector, IROH_GRACE};
 pub use error::Error;
+pub use first::FirstAnswer;
 pub use kept::{NoticesDelivered, Removal};
 pub use shutdown::stop_requested;
 

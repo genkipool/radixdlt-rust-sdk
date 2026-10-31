@@ -331,6 +331,20 @@ fn normalize_base(base: &str) -> String {
 /// Of the reasons every signaling server failed, the one that says most. A server that could
 /// not be reached at all (no internet) explains nothing when another one WAS reached and the
 /// wallet simply never came.
+/// Makes link `index` the chosen one, unless another already is: whether it is chosen. Atomic, so
+/// two wallets connecting at the same moment cannot both be sent the request.
+fn claim(choice: &tokio::sync::watch::Sender<Option<usize>>, index: usize) -> bool {
+    choice.send_if_modified(|chosen| {
+        if chosen.is_none() {
+            *chosen = Some(index);
+            true
+        } else {
+            false
+        }
+    });
+    *choice.borrow() == Some(index)
+}
+
 fn most_telling(errors: Vec<ConnectError>) -> ConnectError {
     let unreachable =
         |e: &ConnectError| matches!(e, ConnectError::Signaling(_) | ConnectError::SignalingClosed);
@@ -516,8 +530,103 @@ impl Connector {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        self.converse(password, Some(interaction), &want_id, overall_timeout, on)
+        self.converse(password, Some(interaction), &want_id, overall_timeout, on, None)
             .await
+            .map(|answer| answer.unwrap_or_default())
+    }
+
+    /// [`exchange`](Self::exchange), sending only if `chosen()` says so once the channel to the
+    /// wallet is open: `None` when it said no, and nothing was sent. What [`exchange_first`]
+    /// (Self::exchange_first) is built on, for a caller racing this link against others of its own.
+    ///
+    /// # Errors
+    /// As [`exchange`](Self::exchange).
+    pub async fn exchange_if(
+        &self,
+        password: &[u8],
+        interaction: &Value,
+        overall_timeout: Duration,
+        on: &mut (dyn FnMut(Progress) + Send),
+        chosen: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Option<Value>, ConnectError> {
+        let want_id = interaction
+            .get("interactionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        self.converse(
+            password,
+            Some(interaction),
+            &want_id,
+            overall_timeout,
+            on,
+            Some(chosen),
+        )
+        .await
+    }
+
+    /// Sends `interaction` to whichever of these links' wallets connects FIRST — the phone the
+    /// person opens — and to that one only: a wallet cannot withdraw a request it was shown, so
+    /// the others are never sent it. Their channels are closed as soon as one is chosen. Returns
+    /// which link (its index in `passwords`) and the answer.
+    ///
+    /// # Errors
+    /// The chosen link's error, once one was chosen; before that, the most telling of all of them
+    /// (none connected in time: [`ConnectError::ChannelTimeout`]).
+    pub async fn exchange_first(
+        &self,
+        passwords: &[&[u8]],
+        interaction: &Value,
+        overall_timeout: Duration,
+        on: &mut (dyn FnMut(usize, Progress) + Send),
+    ) -> Result<(usize, Value), ConnectError> {
+        use futures_util::stream::{FuturesUnordered, StreamExt};
+        if let [only] = passwords {
+            return self
+                .exchange(only, interaction, overall_timeout, &mut |step| on(0, step))
+                .await
+                .map(|answer| (0, answer));
+        }
+        let (choice, _) = tokio::sync::watch::channel(None::<usize>);
+        let (steps, mut stepped) = tokio::sync::mpsc::unbounded_channel();
+        let mut running: FuturesUnordered<_> = passwords
+            .iter()
+            .enumerate()
+            .map(|(index, password)| {
+                let steps = steps.clone();
+                let choice = &choice;
+                let mut lost = choice.subscribe();
+                async move {
+                    let mut forward = |step| {
+                        let _ = steps.send((index, step));
+                    };
+                    let claim = || claim(choice, index);
+                    let conversation =
+                        self.exchange_if(password, interaction, overall_timeout, &mut forward, &claim);
+                    // Another link was chosen: this one stops at once, freeing its link.
+                    let other_chosen = lost.wait_for(|chosen| chosen.is_some_and(|chosen| chosen != index));
+                    tokio::select! {
+                        result = conversation => (index, result),
+                        _ = other_chosen => (index, Ok(None)),
+                    }
+                }
+            })
+            .collect();
+        drop(steps);
+        let mut errors = Vec::new();
+        loop {
+            tokio::select! {
+                next = running.next() => match next {
+                    Some((index, Ok(Some(answer)))) => return Ok((index, answer)),
+                    Some((_, Ok(None))) => {}
+                    Some((index, Err(error))) if *choice.borrow() == Some(index) => return Err(error),
+                    Some((_, Err(error))) => errors.push(error),
+                    None if errors.is_empty() => return Err(ConnectError::ChannelTimeout),
+                    None => return Err(most_telling(errors)),
+                },
+                Some((index, step)) = stepped.recv() => on(index, step),
+            }
+        }
     }
 
     /// Listens for the answer to a request sent EARLIER (by `interaction_id`) without sending
@@ -534,8 +643,9 @@ impl Connector {
         overall_timeout: Duration,
         on: &mut (dyn FnMut(Progress) + Send),
     ) -> Result<Value, ConnectError> {
-        self.converse(password, None, interaction_id, overall_timeout, on)
+        self.converse(password, None, interaction_id, overall_timeout, on, None)
             .await
+            .map(|answer| answer.unwrap_or_default())
     }
 
     /// One conversation on the link: take the turn, let the wallet settle, open a channel, send
@@ -546,6 +656,9 @@ impl Connector {
     /// fresh channel, up to [`SEND_ATTEMPTS`] times; and a channel lost AFTER delivery is reopened
     /// to keep listening, since the request is then on the phone and its answer will go to
     /// whatever channel the link has when the person decides. Nothing confirmed is ever resent.
+    ///
+    /// `chosen`, when given, is asked once the channel is open and before anything is sent: no,
+    /// and the conversation ends with `None`, having sent nothing.
     async fn converse(
         &self,
         password: &[u8],
@@ -553,7 +666,8 @@ impl Connector {
         want_id: &str,
         overall_timeout: Duration,
         on: &mut (dyn FnMut(Progress) + Send),
-    ) -> Result<Value, ConnectError> {
+        chosen: Option<&(dyn Fn() -> bool + Sync)>,
+    ) -> Result<Option<Value>, ConnectError> {
         let queued = Instant::now();
         let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
         on(Progress::TurnTaken {
@@ -579,6 +693,11 @@ impl Connector {
                 tokio::time::sleep(SEND_GRACE).await;
                 if channel.link_removed() {
                     return Err(ConnectError::LinkRemoved);
+                }
+                // Racing other links: only the one chosen sends (asked again on a resend, which
+                // the same link wins again).
+                if chosen.is_some_and(|chosen| !chosen()) {
+                    return Ok(None);
                 }
                 match channel.send_message(interaction, CONFIRM_TIMEOUT).await {
                     Ok(()) => {
@@ -607,7 +726,7 @@ impl Connector {
                     Err(error) => return Err(error),
                 }
             }
-            match listen(&mut channel, want_id, deadline, on).await {
+            match listen(&mut channel, want_id, deadline, on).await.map(Some) {
                 Err(error)
                     if channel_lost(&error)
                         && deadline.saturating_duration_since(Instant::now())
@@ -956,6 +1075,18 @@ impl Connector {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn only_the_first_link_to_claim_a_request_is_sent_it() {
+        let (choice, _) = tokio::sync::watch::channel(None::<usize>);
+        assert!(claim(&choice, 1), "the first to connect is chosen");
+        assert!(!claim(&choice, 0), "one connecting after is not");
+        assert!(
+            claim(&choice, 1),
+            "the chosen one asked again (a resend) still is"
+        );
+        assert_eq!(*choice.borrow(), Some(1));
+    }
 
     /// Two requests sharing a link must take turns: the second one only starts once the
     /// first has finished. Without this they race on the same signaling rendezvous and the

@@ -916,6 +916,7 @@ async fn finish_pairing(app: &Rc<App>, outcome: PairOutcome, label: Option<Strin
         }),
         iroh_relay: outcome.paired_over.iroh_relay.clone(),
         wallet_relay: outcome.wallet_relay.clone(),
+        personas: Vec::new(),
     });
     if let Err(e) = Store::save(app.config_path(), &state) {
         return ToolResult::error(format!("paired, but could not save the link: {e}"));

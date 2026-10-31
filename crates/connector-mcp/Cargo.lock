@@ -3566,8 +3566,9 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connect-auto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
+ "futures-util",
  "radixdlt-connect-iroh",
  "radixdlt-connect-types",
  "radixdlt-connect-webrtc",
@@ -3580,10 +3581,11 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connect-iroh"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ed25519-dalek 3.0.0",
  "fs4",
+ "futures-util",
  "hex",
  "iroh",
  "radix-connect-iroh",
@@ -3615,7 +3617,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connect-webrtc"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes-gcm 0.11.0",
  "async-trait",
@@ -3643,7 +3645,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connector-mcp"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "base64 0.23.0",
  "dirs",

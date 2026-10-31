@@ -50,7 +50,7 @@ impl Transports {
     }
 
     /// The transports a request over a link paired over `paired_over` races.
-    fn for_link(self, paired_over: Transport) -> &'static [Transport] {
+    pub(crate) fn for_link(self, paired_over: Transport) -> &'static [Transport] {
         match (self, paired_over) {
             (Transports::Auto, Transport::Iroh) => &[Transport::Iroh, Transport::Webrtc],
             (Transports::Auto, Transport::Webrtc) | (Transports::WebrtcOnly, _) => &[Transport::Webrtc],
@@ -112,6 +112,7 @@ impl Paired {
             transport: Some(self.transport),
             iroh_relay: self.iroh_relay,
             wallet_relay: self.wallet_relay,
+            personas: Vec::new(),
         }
     }
 }
@@ -133,13 +134,13 @@ impl Paired {
 /// Cheap to clone: clones share the transports, their sessions and their per-link turns.
 #[derive(Clone)]
 pub struct WalletConnector {
-    webrtc: Arc<Connector>,
+    pub(crate) webrtc: Arc<Connector>,
     iroh: Arc<MobileWalletConnector>,
     /// The iroh connector of each custom relay a link was paired on.
     iroh_by_relay: Arc<Mutex<HashMap<String, Arc<MobileWalletConnector>>>>,
     /// The custom iroh relay new pairings use, if not iroh's public ones.
     iroh_relay: Option<String>,
-    transports: Transports,
+    pub(crate) transports: Transports,
     iroh_grace: Duration,
     /// The program's state file, when the connector looks after its links (`with_state`).
     pub(crate) state: Option<Arc<std::path::PathBuf>>,
@@ -243,7 +244,7 @@ impl WalletConnector {
     }
 
     /// The iroh connector of `link`, told where its wallet was last seen (to knock there).
-    fn iroh_for(&self, link: &Link, password: &[u8]) -> Result<Arc<MobileWalletConnector>, Error> {
+    pub(crate) fn iroh_for(&self, link: &Link, password: &[u8]) -> Result<Arc<MobileWalletConnector>, Error> {
         let iroh = self.iroh_on(link.iroh_relay.as_deref())?;
         if let Some(relay) = &link.wallet_relay {
             iroh.set_wallet_relay(password, relay);
@@ -457,7 +458,7 @@ impl WalletConnector {
         result
     }
 
-    async fn exchange_over(
+    pub(crate) async fn exchange_over(
         &self,
         link: &Link,
         interaction: &Value,
@@ -785,7 +786,7 @@ impl WalletConnector {
     }
 }
 
-async fn over_iroh(
+pub(crate) async fn over_iroh(
     iroh: &MobileWalletConnector,
     password: &[u8],
     interaction: &Value,

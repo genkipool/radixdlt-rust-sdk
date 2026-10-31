@@ -37,6 +37,11 @@ pub struct Link {
     /// that is up connects at once. Learned while connected; a wrong one only means no knock.
     #[serde(rename = "walletRelay", default, skip_serializing_if = "Option::is_none")]
     pub wallet_relay: Option<String>,
+    /// The personas (identity addresses) its wallet has logged in with here: a request that names
+    /// a persona goes to the wallets that have it, and not to one that would only answer that it
+    /// does not know it. Learned from the wallet's login answers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub personas: Vec<String>,
 }
 
 impl Link {
@@ -237,6 +242,30 @@ impl LinkState {
         }
     }
 
+    /// Records that the wallet of the link with this password logged in as persona `identity`.
+    /// Returns whether it is new (and the state needs saving).
+    pub fn note_persona(&mut self, password: &str, identity: &str) -> bool {
+        match self
+            .links
+            .iter_mut()
+            .find(|l| l.password.eq_ignore_ascii_case(password))
+        {
+            Some(link) if !link.personas.iter().any(|p| p == identity) => {
+                link.personas.push(identity.to_string());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The links whose wallet has logged in as persona `identity`, in pairing order.
+    pub fn links_with_persona(&self, identity: &str) -> Vec<&Link> {
+        self.links
+            .iter()
+            .filter(|l| l.personas.iter().any(|p| p == identity))
+            .collect()
+    }
+
     /// Removes the link with this password because ITS WALLET removed it: no notice is kept, the
     /// wallet already knows. Returns the link removed, if one was paired with that password.
     pub fn remove_link_removed_by_wallet(&mut self, password: &[u8]) -> Option<Link> {
@@ -284,6 +313,7 @@ mod tests {
             transport: Some(Transport::Iroh),
             iroh_relay: None,
             wallet_relay: Some("https://euc1-1.relay.n0.iroh.link./".into()),
+            personas: Vec::new(),
         }
     }
 
