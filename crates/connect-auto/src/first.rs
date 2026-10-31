@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use radixdlt_connect_iroh::mobile::{MobileError, MobileWalletConnector};
+use radixdlt_connect_iroh::mobile::{MobileError, MobileWalletConnector, BACKGROUND_PATIENCE};
 use radixdlt_connect_types::Transport;
 use radixdlt_connect_webrtc::state::Link;
 use radixdlt_connect_webrtc::ConnectError;
@@ -87,7 +87,11 @@ impl WalletConnector {
                 self.exchange_over(only, interaction, timeout, &mut |event| on(0, event))
                     .await,
             ),
-            _ => match links.iter().position(|link| self.connected_over_iroh(link)) {
+            // Connected over iroh and in the foreground: the phone in the person's hand.
+            _ => match links
+                .iter()
+                .position(|link| self.connected_over_iroh(link) && !self.iroh_in_background(link))
+            {
                 Some(index) => {
                     let link = links.get(index).unwrap_or(&links[0]);
                     (
@@ -258,6 +262,7 @@ impl WalletConnector {
         choice: &watch::Sender<Option<Candidate>>,
         events: mpsc::UnboundedSender<(usize, Event)>,
     ) -> (Candidate, Outcome) {
+        let started = Instant::now();
         let mut lost = choice.subscribe();
         let index = candidate.0;
         let other_link = lost.wait_for(|chosen| chosen.is_some_and(|chosen| chosen.0 != index));
@@ -265,6 +270,12 @@ impl WalletConnector {
             let left = || deadline.saturating_duration_since(Instant::now());
             if let Err(error) = iroh.probe(password, left()).await {
                 return Outcome::Iroh(error);
+            }
+            // Connected with its app in the background (left a moment ago): another the person
+            // opens goes first; this one only once it is back, or nobody opened another in time.
+            let patience = started + BACKGROUND_PATIENCE;
+            while iroh.in_background(password) && Instant::now() < patience {
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
             if claim(choice, candidate) {
                 let _ = events.send((index, Event::Carrier(Transport::Iroh)));

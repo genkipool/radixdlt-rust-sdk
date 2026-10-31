@@ -1,3 +1,6 @@
 target/
 # cargo-mutants' own output, when it is run by hand: logs full of local paths.
 /mutants.out*/
+
+# Core dumps of a crashed test or linker (a full disk): never committed.
+core.[0-9]*

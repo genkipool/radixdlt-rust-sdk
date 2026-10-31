@@ -3271,10 +3271,11 @@ dependencies = [
 
 [[package]]
 name = "radix-connect-iroh"
-version = "0.1.2"
-source = "git+https://github.com/genkipool/radix-connect-iroh?tag=v0.1.2#108e297a431830da62843c199c7115e5407ecf6f"
+version = "0.1.4"
+source = "git+https://github.com/genkipool/radix-connect-iroh?tag=v0.1.4#84a1c84166cbd5a16f88330ebff24974726b4883"
 dependencies = [
  "blake3",
+ "bytes",
  "hex",
  "iroh",
  "n0-future",
@@ -3319,7 +3320,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connect-auto"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ed25519-dalek 3.0.0",
  "futures-util",
@@ -3341,7 +3342,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connect-iroh"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ed25519-dalek 3.0.0",
  "fs4",

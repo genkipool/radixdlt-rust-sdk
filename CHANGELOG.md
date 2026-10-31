@@ -7,6 +7,25 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.9.1] - 2026-10-31
+
+### Changed
+
+- **A wallet left in the background gives way to the one the person opens.** A wallet keeps its
+  iroh connection for a grace period after its app goes to the background, and `exchange_first`
+  took a connected wallet as the first — so a request went to the phone the person had just put
+  down. On `radix-connect-iroh` 0.1.4 a wallet says when its app is in the background; a connected
+  wallet in the background now waits `BACKGROUND_PATIENCE` (10 s) for another to be opened, and is
+  sent the request only if none is (or once it is back in the foreground). A wallet that does not
+  say, or a link with only one wallet, behaves as before.
+
+### Added
+
+- `radixdlt-connect-iroh` 0.3.2: `MobileWalletConnector::in_background`, `BACKGROUND_PATIENCE`;
+  on `radix-connect-iroh` 0.1.4.
+- `radixdlt-connect-auto` 0.4.1: `WalletConnector::iroh_in_background`.
+- `radixdlt-connector-mcp` 0.9.1: built on them.
+
 ## [connector-v0.9.0] - 2026-10-31
 
 One request to several wallets of one person goes to the one the person opens first, and to no

@@ -20,6 +20,7 @@ use std::time::Duration;
 use radixdlt_connect_auto::{
     linking, Identity, Link, LinkState, MobileWalletConnector, Transport, WalletConnector, WebrtcConnector,
 };
+use radixdlt_connect_iroh::mobile::BACKGROUND_PATIENCE;
 use serde_json::{json, Value};
 use support::*;
 
@@ -184,4 +185,89 @@ async fn no_wallet_opened_sends_nothing_and_says_so_in_time() {
         "within its time: {:?}",
         started.elapsed()
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wallet_left_in_the_background_gives_way_to_the_one_opened() {
+    let relay = LocalRelay::start().await;
+    let left = linking::generate_password().unwrap().to_vec();
+    let opened = linking::generate_password().unwrap().to_vec();
+    let state = state_with_links(&[&left, &opened]);
+    let wallet_connector = connector(&relay, &state).await;
+    let links = read(&state).links;
+    for link in &links {
+        wallet_connector.keep_listening(link).await.unwrap();
+    }
+
+    // The person was using the first phone and put it down: still connected, in the background.
+    let put_down = Arc::new(SimWallet::default())
+        .connect(&left, &relay.url, logs_in())
+        .await;
+    put_down.session.set_in_background(true);
+    while !wallet_connector.iroh_in_background(&links[0]) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // ...and opens the other one a moment after the request.
+    let (relay_url, opened_password) = (relay.url.clone(), opened.clone());
+    let picked_up = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        Arc::new(SimWallet::default())
+            .start(&opened_password, &relay_url, logs_in())
+            .await
+    });
+
+    let (chosen, _) = wallet_connector
+        .exchange_first(
+            &links,
+            &login("left-or-opened"),
+            Duration::from_secs(30),
+            &mut |_, _| {},
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(chosen, 1, "the phone opened, not the one put down");
+    assert!(
+        put_down.received().is_empty(),
+        "the one put down is never sent it"
+    );
+    put_down.close().await;
+    picked_up.await.unwrap().close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wallet_in_the_background_still_answers_when_no_other_is_opened() {
+    let relay = LocalRelay::start().await;
+    let left = linking::generate_password().unwrap().to_vec();
+    let never = linking::generate_password().unwrap().to_vec();
+    let state = state_with_links(&[&left, &never]);
+    let wallet_connector = connector(&relay, &state).await;
+    let links = read(&state).links;
+    wallet_connector.keep_listening(&links[0]).await.unwrap();
+    let put_down = Arc::new(SimWallet::default())
+        .connect(&left, &relay.url, logs_in())
+        .await;
+    put_down.session.set_in_background(true);
+    while !wallet_connector.iroh_in_background(&links[0]) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let started = std::time::Instant::now();
+    let (chosen, _) = wallet_connector
+        .exchange_first(
+            &links,
+            &login("only-left"),
+            Duration::from_secs(30),
+            &mut |_, _| {},
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(chosen, 0, "nobody opened another: the one put down, after all");
+    assert!(
+        started.elapsed() >= BACKGROUND_PATIENCE - Duration::from_secs(1),
+        "after the patience: {:?}",
+        started.elapsed()
+    );
+    put_down.close().await;
 }

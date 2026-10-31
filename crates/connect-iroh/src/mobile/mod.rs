@@ -107,6 +107,11 @@ use link::{Incoming, LinkId, Pending, Registry, Status, Waiter};
 
 /// How long a call waits for the wallet before it first reports that it is waiting. Long enough
 /// for a session that just started to reach its relay, so the first snapshot is not alarming.
+/// How long a wallet connected with its app in the background (left a moment ago: a wallet keeps
+/// its connection a grace period) waits, when a request may go to several, for the person to open
+/// another; none opened, it is sent to that one after all.
+pub const BACKGROUND_PATIENCE: Duration = Duration::from_secs(10);
+
 const FIRST_WAITING_REPORT: Duration = Duration::from_secs(2);
 
 /// How often a call still waiting for the wallet reports it, with a fresh diagnostics snapshot.
@@ -641,7 +646,9 @@ impl MobileWalletConnector {
 
     /// Sends `interaction` to whichever of these links' wallets connects FIRST — the phone the
     /// person opens — and to that one only: a wallet cannot withdraw a request it was shown, so
-    /// the others are never sent it. A wallet already connected is the first. Returns which link
+    /// the others are never sent it. A wallet connected in the foreground is the first; one
+    /// connected with its app in the background (left a moment ago) waits [`BACKGROUND_PATIENCE`]
+    /// for another to be opened. Returns which link
     /// (its index in `passwords`) and the answer.
     ///
     /// # Errors
@@ -654,7 +661,6 @@ impl MobileWalletConnector {
         overall_timeout: Duration,
         on: &mut (dyn FnMut(usize, Progress) + Send),
     ) -> Result<(usize, Value), MobileError> {
-        use futures_util::stream::{FuturesUnordered, StreamExt};
         let started = Instant::now();
         let first = match passwords {
             [] => {
@@ -663,42 +669,65 @@ impl MobileWalletConnector {
                 ));
             }
             [_] => Some(0),
-            _ => passwords.iter().position(|password| self.is_connected(password)),
+            // Connected and in the foreground: the phone in the person's hand.
+            _ => passwords
+                .iter()
+                .position(|password| self.is_connected(password) && !self.in_background(password)),
         };
         let chosen = match first {
             Some(index) => index,
-            None => {
-                // Every wallet is knocked on at once, and nothing is sent until one connects.
-                let mut probes: FuturesUnordered<_> =
-                    passwords
-                        .iter()
-                        .enumerate()
-                        .map(|(index, password)| async move {
-                            (index, self.probe(password, overall_timeout).await)
-                        })
-                        .collect();
-                let mut errors = Vec::new();
-                let mut connected = None;
-                while let Some((index, probed)) = probes.next().await {
-                    match probed {
-                        Ok(_) => {
-                            connected = Some(index);
-                            break;
-                        }
-                        Err(error) => errors.push(error),
-                    }
-                }
-                match connected {
-                    Some(index) => index,
-                    None => return Err(most_telling(errors)),
-                }
-            }
+            None => self.first_opened(passwords, overall_timeout, started).await?,
         };
         let left = overall_timeout.saturating_sub(started.elapsed());
         let password = passwords.get(chosen).copied().unwrap_or_default();
         self.exchange(password, interaction, left, &mut |step| on(chosen, step))
             .await
             .map(|answer| (chosen, answer))
+    }
+
+    /// Knocks on every link's wallet at once, sending nothing, until one connects in the
+    /// foreground. One connected with its app in the background is the person's only if no other
+    /// is opened within [`BACKGROUND_PATIENCE`], or it comes back to the foreground first.
+    async fn first_opened(
+        &self,
+        passwords: &[&[u8]],
+        overall_timeout: Duration,
+        started: Instant,
+    ) -> Result<usize, MobileError> {
+        use futures_util::stream::{FuturesUnordered, StreamExt};
+        let mut probes: FuturesUnordered<_> = passwords
+            .iter()
+            .enumerate()
+            .map(|(index, password)| async move { (index, self.probe(password, overall_timeout).await) })
+            .collect();
+        let in_background = |index: usize| {
+            passwords
+                .get(index)
+                .is_some_and(|password| self.in_background(password))
+        };
+        let mut errors = Vec::new();
+        let mut backgrounded: Vec<usize> = Vec::new();
+        let patience = started + BACKGROUND_PATIENCE;
+        let mut look = tokio::time::interval(Duration::from_millis(250));
+        loop {
+            if let Some(index) = backgrounded.iter().copied().find(|index| !in_background(*index)) {
+                return Ok(index);
+            }
+            if let (Some(&index), true) = (backgrounded.first(), Instant::now() >= patience) {
+                return Ok(index);
+            }
+            if probes.is_empty() && backgrounded.is_empty() {
+                return Err(most_telling(errors));
+            }
+            tokio::select! {
+                Some((index, probed)) = probes.next(), if !probes.is_empty() => match probed {
+                    Ok(_) if in_background(index) => backgrounded.push(index),
+                    Ok(_) => return Ok(index),
+                    Err(error) => errors.push(error),
+                },
+                _ = look.tick() => {}
+            }
+        }
     }
 
     /// Waits for the answer to a request sent EARLIER (by `interaction_id`) without sending
@@ -845,6 +874,16 @@ impl MobileWalletConnector {
         self.links
             .get(LinkId::of(password))
             .is_some_and(|link| link.is_connected())
+    }
+
+    /// Whether this link's wallet is connected and said its app is in the background: connected
+    /// still, a while after the person left it (a wallet keeps its connection a grace period). A
+    /// wallet that does not say (one that predates it) reads as in the foreground.
+    #[must_use]
+    pub fn in_background(&self, password: &[u8]) -> bool {
+        self.links
+            .get(LinkId::of(password))
+            .is_some_and(|link| link.wallet_in_background())
     }
 
     /// Whether the wallet of this link said it removed the link (see [`MobileError::LinkRemoved`]).

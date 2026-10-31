@@ -779,6 +779,16 @@ impl WalletConnector {
         }
     }
 
+    /// Whether `link`'s wallet is connected over iroh with its app in the background (connected
+    /// still, a while after the person left it).
+    #[must_use]
+    pub fn iroh_in_background(&self, link: &Link) -> bool {
+        match (link.password_bytes(), self.iroh_on(link.iroh_relay.as_deref())) {
+            (Ok(password), Ok(iroh)) => iroh.in_background(&password),
+            _ => false,
+        }
+    }
+
     /// The WebRTC connector it uses.
     #[must_use]
     pub fn webrtc(&self) -> &Connector {

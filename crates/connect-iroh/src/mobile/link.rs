@@ -226,6 +226,11 @@ impl Link {
         self.session.state() == ConnectionState::Connected
     }
 
+    /// Whether the wallet is connected and said its app is in the background.
+    pub(super) fn wallet_in_background(&self) -> bool {
+        self.is_connected() && self.session.peer_in_background()
+    }
+
     /// Whether the wallet has connected at least once since the session started.
     pub(super) fn seen_wallet(&self) -> bool {
         self.shared.seen_wallet.load(Ordering::Relaxed)
