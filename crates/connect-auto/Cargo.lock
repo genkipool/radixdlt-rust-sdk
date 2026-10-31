@@ -3272,6 +3272,7 @@ dependencies = [
 [[package]]
 name = "radix-connect-iroh"
 version = "0.1.2"
+source = "git+https://github.com/genkipool/radix-connect-iroh?tag=v0.1.2#108e297a431830da62843c199c7115e5407ecf6f"
 dependencies = [
  "blake3",
  "hex",

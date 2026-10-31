@@ -36,7 +36,7 @@ tokio = { version = "1", features = ["full"] }
 # (`../connect-iroh/tests/support`), which need these.
 radixdlt-address = { path = "../address", version = "0.3.0" }
 radixdlt-rola = { path = "../rola", version = "0.3.0" }
-radix-connect-iroh = { git = "https://github.com/genkipool/radix-connect-iroh", tag = "v0.1.1" }
+radix-connect-iroh = { git = "https://github.com/genkipool/radix-connect-iroh", tag = "v0.1.2" }
 iroh-relay = { version = "1.4.1", default-features = false, features = ["server", "tls-ring"] }
 ed25519-dalek = "3"
 getrandom = "0.4"
