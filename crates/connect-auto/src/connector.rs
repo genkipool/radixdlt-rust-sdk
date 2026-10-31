@@ -717,6 +717,25 @@ impl WalletConnector {
         }
     }
 
+    /// Closes every iroh session, telling each wallet, and waits until they are closed. Call it
+    /// before the process ends: a session that is just dropped tells its wallet nothing, so the
+    /// wallet goes on believing it is connected until QUIC's idle timeout (30 s), and the link's
+    /// next session — the next login, say — waits that long for it. Closed, the wallet knows at
+    /// once and connects to the next session the moment it starts.
+    pub async fn close(&self) {
+        self.iroh.close().await;
+        let others: Vec<_> = self
+            .iroh_by_relay
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        for connector in others {
+            connector.close().await;
+        }
+    }
+
     /// Whether `link`'s wallet is connected over iroh right now.
     #[must_use]
     pub fn connected_over_iroh(&self, link: &Link) -> bool {

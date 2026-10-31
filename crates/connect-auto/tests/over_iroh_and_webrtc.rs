@@ -296,3 +296,33 @@ async fn a_removed_link_is_told_over_iroh_while_webrtc_cannot() {
         .contains(&json!({ "discriminator": "linkRemoved" })));
     running.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_tells_the_wallet_at_once_so_the_next_session_is_not_kept_waiting() {
+    let relay = LocalRelay::start().await;
+    let wallet_connector = connector(&relay, &silent_signaling().await);
+    let password = password();
+    let link = link_over(Transport::Iroh, &password);
+    wallet_connector.keep_listening(&link).await.unwrap();
+    let wallet = Arc::new(SimWallet::default());
+    let running = wallet.connect(&password, &relay.url, answers_rola()).await;
+    running.wait_connected().await;
+
+    // A process that ends (a login, a pairing) closes first: dropped instead, its wallet would
+    // believe it is connected for QUIC's 30 s idle timeout and the next session would wait.
+    let started = Instant::now();
+    wallet_connector.close().await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while running.session.state() == radix_connect_iroh::ConnectionState::Connected {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the wallet heard the close at once");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    running.close().await;
+}
