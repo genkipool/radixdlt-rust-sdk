@@ -46,6 +46,7 @@ impl Store {
             identity: new_identity()?,
             link: None,
             links: Vec::new(),
+            retired_links: Vec::new(),
         };
         state.save(&path_str).map_err(|e| e.to_string())?;
         Ok(state)

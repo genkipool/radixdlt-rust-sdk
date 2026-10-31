@@ -68,6 +68,9 @@ pub enum MobileError {
     /// The link was closed ([`close_link`](super::MobileWalletConnector::close_link) or
     /// [`close`](super::MobileWalletConnector::close)) while the call was in progress.
     Closed,
+    /// The wallet removed this link (the person removed the connector in the wallet): it will
+    /// not answer over it again. Forget the link; pairing again makes a new one.
+    LinkRemoved,
 }
 
 impl MobileError {
@@ -168,6 +171,11 @@ impl std::fmt::Display for MobileError {
                 lang,
                 "the link was closed".to_string(),
                 "el enlace se cerró".to_string()
+            ),
+            MobileError::LinkRemoved => tr!(
+                lang,
+                "the wallet removed this connector: pair it again to use it".to_string(),
+                "la wallet eliminó este conector: vuelve a emparejarla para usarla".to_string()
             ),
         };
         f.write_str(&msg)

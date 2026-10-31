@@ -103,6 +103,14 @@ pub(super) fn session_ended(link: LinkId, started: Instant, state_changes: u64) 
     tracing::info!(target: TARGET, %link, lived_ms = since(started), state_changes, "the link's iroh session ended");
 }
 
+pub(super) fn removed_by_wallet(link: LinkId) {
+    tracing::warn!(target: TARGET, %link, "the wallet removed this link: it will not answer over it again");
+}
+
+pub(super) fn removal_notice_sent(link: LinkId, started: Instant) {
+    tracing::info!(target: TARGET, %link, elapsed_ms = since(started), "the wallet confirmed it was told the link was removed");
+}
+
 pub(super) fn closing(link: LinkId, why: &'static str) {
     tracing::info!(target: TARGET, %link, why, "closing the link's iroh session");
 }

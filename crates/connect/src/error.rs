@@ -30,6 +30,9 @@ pub enum ConnectError {
     /// finish within the timeout. A link carries ONE conversation at a time: requests
     /// that share it are queued, and this reports the queue never cleared in time.
     LinkBusy,
+    /// The wallet removed this link (the person removed the connector in the wallet): it will
+    /// not answer over it again. Forget the link; pairing again makes a new one.
+    LinkRemoved,
 }
 
 impl ConnectError {
@@ -94,6 +97,11 @@ impl std::fmt::Display for ConnectError {
                 lang,
                 "another request is still in flight on this link (one conversation at a time)".to_string(),
                 "ya hay otra petición en curso en este enlace (una conversación a la vez)".to_string()
+            ),
+            ConnectError::LinkRemoved => tr!(
+                lang,
+                "the wallet removed this connector: pair it again to use it".to_string(),
+                "la wallet eliminó este conector: vuelve a emparejarla para usarla".to_string()
             ),
         };
         f.write_str(&msg)

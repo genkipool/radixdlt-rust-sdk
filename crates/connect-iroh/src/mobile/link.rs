@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use radix_connect_iroh::{
     ConnectionPassword, ConnectionState, Diagnostics, Role, SendError, Session, SessionConfig, SessionEvent,
 };
+use radixdlt_connect_types::link_removal::is_link_removed;
 use radixdlt_connect_types::linking;
 use serde_json::Value;
 use tokio::sync::{broadcast, oneshot, watch};
@@ -79,6 +80,8 @@ struct Shared {
     state_changes: AtomicU64,
     unclaimed: broadcast::Sender<Incoming>,
     seen_wallet: AtomicBool,
+    /// The wallet said it removed the link (`linkRemoved`): nothing asked over it is answered.
+    removed_by_wallet: AtomicBool,
 }
 
 impl Shared {
@@ -112,6 +115,9 @@ impl Shared {
             inbox::interaction_id(&message),
             message.get("discriminator").and_then(Value::as_str),
         );
+        if is_link_removed(&message) && !self.removed_by_wallet.swap(true, Ordering::SeqCst) {
+            log::removed_by_wallet(self.id);
+        }
         let (unclaimed, kept) = self.inbox().deliver(message, text.len(), Instant::now());
         if let Some(message) = unclaimed {
             if let (Some(id), Some(kept)) = (inbox::interaction_id(&message), kept) {
@@ -186,6 +192,7 @@ impl Link {
             state_changes: AtomicU64::new(0),
             unclaimed,
             seen_wallet: AtomicBool::new(false),
+            removed_by_wallet: AtomicBool::new(false),
         });
         log::session_started(id, &relays, &session.diagnostics(), log::ms(started.elapsed()));
         let reader = tokio::spawn(read_events(session.clone(), shared.clone()));
@@ -212,6 +219,11 @@ impl Link {
     /// Whether the wallet has connected at least once since the session started.
     pub(super) fn seen_wallet(&self) -> bool {
         self.shared.seen_wallet.load(Ordering::Relaxed)
+    }
+
+    /// Whether the wallet said it removed the link.
+    pub(super) fn removed_by_wallet(&self) -> bool {
+        self.shared.removed_by_wallet.load(Ordering::SeqCst)
     }
 
     pub(super) fn diagnostics(&self) -> Diagnostics {

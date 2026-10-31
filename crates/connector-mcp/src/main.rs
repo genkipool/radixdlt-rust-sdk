@@ -36,6 +36,7 @@ mod e2e_iroh;
 mod exchange;
 mod gateway;
 mod iroh;
+mod link_removal;
 mod outbox;
 mod qr;
 mod requests;
@@ -316,6 +317,9 @@ async fn run(options: Options) -> i32 {
             "iroh_relays": iroh::relay_label(&app.iroh.relay),
         }),
     );
+
+    // Tells the wallets removed here, while this connector runs.
+    tokio::task::spawn_local(link_removal::deliver_notices(app.clone()));
 
     let mut stdin = BufReader::new(tokio::io::stdin()).lines();
 

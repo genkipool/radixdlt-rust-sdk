@@ -77,6 +77,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use radix_connect_iroh::{ConnectionPassword, SendError, SessionConfig};
+use radixdlt_connect_types::link_removal::{is_link_removed, link_removed_message, LINK_REMOVED};
 use radixdlt_connect_types::linking::LinkClient;
 use serde_json::Value;
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -529,6 +530,9 @@ impl MobileWalletConnector {
             .to_owned();
         let text = serde_json::to_string(interaction).map_err(|e| MobileError::Protocol(e.to_string()))?;
         let link = self.link(password, deadline).await?;
+        if link.removed_by_wallet() {
+            return Err(MobileError::LinkRemoved);
+        }
         let mut waiter = match link.register(&interaction_id)? {
             Pending::Answered(answer) => {
                 log::already_answered(link.id(), &interaction_id);
@@ -566,6 +570,9 @@ impl MobileWalletConnector {
         let started = Instant::now();
         let deadline = started + overall_timeout;
         let link = self.link(password, deadline).await?;
+        if link.removed_by_wallet() {
+            return Err(MobileError::LinkRemoved);
+        }
         let mut waiter = match link.register(interaction_id)? {
             Pending::Answered(answer) => return Ok(answer),
             Pending::Waiting(waiter) => waiter,
@@ -648,6 +655,67 @@ impl MobileWalletConnector {
         self.links
             .get(LinkId::of(password))
             .is_some_and(|link| link.is_connected())
+    }
+
+    /// Whether the wallet of this link said it removed the link (see [`MobileError::LinkRemoved`]).
+    /// Only known while the link's session runs.
+    #[must_use]
+    pub fn removed_by_wallet(&self, password: &[u8]) -> bool {
+        self.links
+            .get(LinkId::of(password))
+            .is_some_and(|link| link.removed_by_wallet())
+    }
+
+    /// Tells the wallet that this connector removed the link, so that it removes it too: waits
+    /// for the wallet to connect, sends `linkRemoved` and returns once the wallet CONFIRMED
+    /// receiving it (the wallet answers nothing). If the wallet removed the link too and said so,
+    /// that is the same outcome. Close the link afterwards ([`close_link`](Self::close_link)).
+    ///
+    /// Keep the link's password until this succeeds: the wallet is only reachable while its app
+    /// is open, which may be days later.
+    ///
+    /// # Errors
+    /// [`MobileError::WalletUnreachable`] when the wallet did not connect in time,
+    /// [`MobileError::ConfirmationTimeout`] when it may not have received it, plus
+    /// [`MobileError::InvalidPassword`], [`MobileError::Session`] and [`MobileError::Closed`].
+    pub async fn notify_link_removed(
+        &self,
+        password: &[u8],
+        overall_timeout: Duration,
+    ) -> Result<(), MobileError> {
+        let started = Instant::now();
+        let deadline = started + overall_timeout;
+        let link = self.link(password, deadline).await?;
+        if link.removed_by_wallet() {
+            return Ok(());
+        }
+        let text = link_removed_message().to_string();
+        let request = Request {
+            link: &link,
+            interaction_id: LINK_REMOVED,
+            started,
+            deadline,
+        };
+        // Unlike a request, the notice may arrive twice (removing a removed link changes nothing):
+        // one the wallet never confirmed — a wallet app just opened, not reading yet — is sent
+        // again while there is time.
+        loop {
+            if link.removed_by_wallet() {
+                return Ok(());
+            }
+            match request.deliver(&text, &mut |_| {}).await? {
+                Delivery::Confirmed => {
+                    log::removal_notice_sent(link.id(), started);
+                    return Ok(());
+                }
+                Delivery::Uncertain if Instant::now() + RESEND_PAUSE < deadline => sleep(RESEND_PAUSE).await,
+                Delivery::Uncertain => {
+                    return Err(MobileError::ConfirmationTimeout {
+                        diagnostics: Box::new(link.diagnostics()),
+                    })
+                }
+            }
+        }
     }
 
     /// Closes the link's session, telling the wallet. Calls waiting on it fail with
@@ -983,6 +1051,8 @@ impl Request<'_> {
                     return answer.ok_or(MobileError::Closed);
                 }
                 message = others.recv(), if others_open => match message {
+                    // The wallet removed the link: what was asked will not be answered.
+                    Ok(incoming) if is_link_removed(&incoming.message) => return Err(MobileError::LinkRemoved),
                     Ok(incoming) => on(Progress::OtherMessage(incoming.message)),
                     Err(RecvError::Lagged(skipped)) => log::skipped(self.link.id(), skipped),
                     Err(RecvError::Closed) => others_open = false,

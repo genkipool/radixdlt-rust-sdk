@@ -137,6 +137,8 @@ impl PeerConnectionEventHandler for IceCandidateForwarder {
 pub struct Channel {
     pub dc: Arc<dyn DataChannel>,
     incoming: mpsc::UnboundedReceiver<Value>,
+    /// Messages taken from `incoming` by [`Channel::link_removed`] and not read yet: served first.
+    taken: std::collections::VecDeque<Value>,
     confirmations: mpsc::UnboundedReceiver<String>, // messageIds confirmed by the peer
     _pc: Arc<dyn PeerConnection>,
 }
@@ -399,7 +401,13 @@ pub async fn establish(
                 _ = open_rx.recv() => {
                     // Channel open: stop forwarding candidates and return.
                     drop(local_cand_rx);
-                    return Ok(Channel { dc, incoming: incoming_rx, confirmations: conf_rx, _pc: pc });
+                    return Ok(Channel {
+                        dc,
+                        incoming: incoming_rx,
+                        taken: std::collections::VecDeque::new(),
+                        confirmations: conf_rx,
+                        _pc: pc,
+                    });
                 }
                 _ = tokio::time::sleep_until(deadline) => {
                     return Err(ConnectError::ChannelTimeout);
@@ -585,8 +593,26 @@ impl Channel {
         .map_err(|_| ConnectError::ConfirmationTimeout)?
     }
 
+    /// Whether the wallet already said, on this channel, that it removed the link — without
+    /// waiting, and without losing any other message (they are still read in order).
+    ///
+    /// A wallet that removed the link says so the moment the channel opens and closes it right
+    /// away, possibly before anything was sent over it: what arrived must be looked at before a
+    /// closed channel is given up.
+    pub fn link_removed(&mut self) -> bool {
+        while let Ok(message) = self.incoming.try_recv() {
+            self.taken.push_back(message);
+        }
+        self.taken
+            .iter()
+            .any(radixdlt_connect_types::link_removal::is_link_removed)
+    }
+
     /// Waits for the next incoming application message (reassembled).
     pub async fn recv_message(&mut self, wait: Duration) -> Result<Value, ConnectError> {
+        if let Some(message) = self.taken.pop_front() {
+            return Ok(message);
+        }
         timeout(wait, self.incoming.recv())
             .await
             .map_err(|_| ConnectError::ResponseTimeout)?

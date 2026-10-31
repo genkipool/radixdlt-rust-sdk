@@ -31,6 +31,7 @@ use crate::diag::Failure;
 use crate::exchange::{self, failed, interact, manifest_summary, short, target, Ask, Target};
 use crate::gateway;
 use crate::iroh::{self, LinkRecord, Route, Setting, Transport};
+use crate::link_removal;
 use crate::requests::{
     check_challenge, parse_accounts, parse_persona_data, random_challenge, render_answer, Verifier,
 };
@@ -234,7 +235,7 @@ pub fn list_json() -> Vec<Value> {
         tool(
             "remove_wallet",
             "Remove a paired wallet",
-            "Removes a paired wallet by its public key (from list_wallets). The user can re-pair later with pair_wallet.",
+            "Removes a paired wallet by its public key (from list_wallets), and this connector from that wallet too: the wallet is told the next time it connects while this connector runs (its app open), for up to 30 days. The user can re-pair later with pair_wallet.",
             false,
             json!({
                 "type": "object",
@@ -1038,10 +1039,11 @@ fn list_wallets(app: &Rc<App>) -> ToolResult {
         Err(e) => return ToolResult::error(format!("could not open the connector state: {e}")),
     };
     let links = state.all_links();
+    let telling = pending_notices(&state);
     if links.is_empty() {
-        return ToolResult::text(
-            "No wallets paired yet. Call pair_wallet to link one (needed once per device).",
-        );
+        return ToolResult::text(format!(
+            "No wallets paired yet. Call pair_wallet to link one (needed once per device).{telling}"
+        ));
     }
     let mut out = format!(
         "PAIRED WALLETS (transport setting: {})\n",
@@ -1070,7 +1072,27 @@ fn list_wallets(app: &Rc<App>) -> ToolResult {
             out.push_str(&format!("   {line}\n"));
         }
     }
+    out.push_str(&telling);
     ToolResult::text(out)
+}
+
+/// The wallets removed here that still have to be told, as a paragraph (empty when none).
+fn pending_notices(state: &radixdlt_connect::LinkState) -> String {
+    if state.retired_links.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "\n\nREMOVED, NOT TOLD YET (each wallet removes this connector when it next connects while this connector runs)\n",
+    );
+    for notice in &state.retired_links {
+        out.push_str(&format!(
+            "- {label} ({pk}), removed at {at} (unix seconds)\n",
+            label = notice.label.as_deref().unwrap_or("(no label)"),
+            pk = notice.wallet_public_key,
+            at = notice.retired_at,
+        ));
+    }
+    out
 }
 
 async fn remove_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
@@ -1078,21 +1100,21 @@ async fn remove_wallet(app: &Rc<App>, args: &Value) -> ToolResult {
         Ok(pk) => pk,
         Err(e) => return ToolResult::error(e),
     };
-    let mut state = match Store::load_or_init(app.config_path()) {
-        Ok(state) => state,
-        Err(e) => return ToolResult::error(format!("could not open the connector state: {e}")),
+    let notice = match link_removal::retire(app, &pk) {
+        Ok(notice) => notice,
+        Err(e) => return ToolResult::error(e),
     };
-    let password = state.password_bytes_for(&pk).ok();
-    if !state.remove_link(&pk) {
-        return ToolResult::error(format!("no paired wallet with public key {pk}."));
+    if link_removal::tell_now(app, &notice, link_removal::AT_ONCE).await {
+        ToolResult::text(format!(
+            "Removed the paired wallet {pk}, and the wallet removed this connector too."
+        ))
+    } else {
+        ToolResult::text(format!(
+            "Removed the paired wallet {pk}. The wallet was not reachable now: it removes this \
+             connector too as soon as it connects while this connector runs (the Radix Wallet app \
+             open on the phone), for up to 30 days — list_wallets shows it until then."
+        ))
     }
-    if let Err(e) = Store::save(app.config_path(), &state) {
-        return ToolResult::error(format!("could not save the state: {e}"));
-    }
-    if let Some(password) = password {
-        iroh::forget(app, &password, "wallet removed").await;
-    }
-    ToolResult::text(format!("Removed the paired wallet {pk}."))
 }
 
 async fn request_accounts(app: &Rc<App>, args: &Value) -> ToolResult {

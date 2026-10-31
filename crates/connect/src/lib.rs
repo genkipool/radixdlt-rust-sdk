@@ -57,6 +57,8 @@ use serde_json::Value;
 
 pub use connector::{probe_relay_candidates, radix_default_ice_servers, Channel, IceServer};
 pub use error::ConnectError;
+pub use radixdlt_connect_types::link_removal;
+use radixdlt_connect_types::link_removal::{is_link_removed, link_removed_message};
 pub use radixdlt_connect_types::{
     account_proof_request, account_proof_request_sharing, account_request, check_failure, extract_accounts,
     extract_login, extract_persona_email, extract_persona_name, extract_proofs,
@@ -170,6 +172,10 @@ async fn listen(
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let resp = channel.recv_message(remaining).await?;
+        // The wallet removed the link: whatever was asked will not be answered.
+        if is_link_removed(&resp) {
+            return Err(ConnectError::LinkRemoved);
+        }
         let got = resp.get("interactionId").and_then(|v| v.as_str()).unwrap_or("");
         if want_id.is_empty() || got == want_id {
             return Ok(resp);
@@ -571,6 +577,9 @@ impl Connector {
                 // come up on ITS side, a moment after ours: a message sent into that gap is lost
                 // without a trace. A short grace closes the gap.
                 tokio::time::sleep(SEND_GRACE).await;
+                if channel.link_removed() {
+                    return Err(ConnectError::LinkRemoved);
+                }
                 match channel.send_message(interaction, CONFIRM_TIMEOUT).await {
                     Ok(()) => {
                         delivered = true;
@@ -578,6 +587,8 @@ impl Connector {
                             elapsed: started.elapsed(),
                         });
                     }
+                    // The wallet said it removed the link, and closed the channel.
+                    Err(_) if channel.link_removed() => return Err(ConnectError::LinkRemoved),
                     Err(error)
                         if (matches!(error, ConnectError::ConfirmationTimeout) || channel_lost(&error))
                             && attempt < SEND_ATTEMPTS
@@ -630,6 +641,56 @@ impl Connector {
         on(Progress::Settling { wait });
         tokio::time::sleep(wait).await;
         Ok(())
+    }
+
+    /// Tells the wallet that this connector removed the link, so that it removes it too: opens a
+    /// channel, sends `linkRemoved` and returns once the wallet CONFIRMED receiving it. The wallet
+    /// answers nothing (it only forgets the link), so there is nothing to wait for after that. If
+    /// the wallet removed the link too and says so first, that is the same outcome.
+    ///
+    /// Keep the link's password until this succeeds (see [`state::LinkState::retire_link`]): the
+    /// wallet is only reachable while its app is open.
+    ///
+    /// # Errors
+    /// [`ConnectError::ChannelTimeout`] when the wallet did not connect in time,
+    /// [`ConnectError::ConfirmationTimeout`] when it never confirmed, plus the transport errors
+    /// of [`exchange`](Self::exchange).
+    pub async fn notify_link_removed(
+        &self,
+        password: &[u8],
+        overall_timeout: Duration,
+    ) -> Result<(), ConnectError> {
+        let (_turn, budget) = Self::take_turn(password, overall_timeout).await?;
+        let deadline = Instant::now() + budget;
+        let _closes = ClosesLink::of(password);
+        // Unlike a request, the notice may arrive twice (removing a removed link changes nothing):
+        // one the wallet never confirmed — a wallet app just opened, not reading yet — is sent
+        // again, on a fresh channel, while there is time.
+        loop {
+            self.settle(password, deadline, &mut |_| {}).await?;
+            let mut channel = self
+                .establish(password, deadline.saturating_duration_since(Instant::now()))
+                .await?;
+            // The same gap as for a request: the wallet reads a new channel a moment after ours.
+            tokio::time::sleep(SEND_GRACE).await;
+            // The wallet removed the link too, and said so first: the same outcome.
+            if channel.link_removed() {
+                return Ok(());
+            }
+            let confirm = CONFIRM_TIMEOUT.min(deadline.saturating_duration_since(Instant::now()));
+            match channel.send_message(&link_removed_message(), confirm).await {
+                Err(_) if channel.link_removed() => return Ok(()),
+                Err(error)
+                    if (matches!(error, ConnectError::ConfirmationTimeout) || channel_lost(&error))
+                        && deadline.saturating_duration_since(Instant::now())
+                            > WALLET_SETTLE + CONFIRM_TIMEOUT =>
+                {
+                    drop(channel);
+                    drop(ClosesLink::of(password));
+                }
+                other => return other,
+            }
+        }
     }
 
     /// Opens a channel to the wallet and closes it again, sending nothing: whether the wallet app

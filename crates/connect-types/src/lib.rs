@@ -14,7 +14,7 @@
 //!
 //! Linking a connector with the wallet is transport-independent too: [`linking`] holds the
 //! linking message, the QR payload and the check of the wallet's `linkClient` signature, and
-//! (with the `qr` feature) [`qr`] draws the QR.
+//! (with the `qr` feature) [`qr`] draws the QR. Removing a link is too: [`link_removal`].
 //!
 //! User-facing error text is localized to the system language.
 
@@ -30,6 +30,7 @@
 // allowed HERE rather than switched off for the crate.
 #![allow(clippy::indexing_slicing)]
 
+pub mod link_removal;
 pub mod linking;
 #[cfg(feature = "qr")]
 pub mod qr;

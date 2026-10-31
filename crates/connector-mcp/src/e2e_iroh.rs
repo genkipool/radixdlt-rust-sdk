@@ -469,7 +469,8 @@ fn by_default_a_wallet_with_iroh_links_over_iroh_and_webrtc_lets_go() {
         assert!(proof_text.contains("ACCOUNT PROOF VERIFIED"), "{proof_text}");
         assert_eq!(running.received().len(), 1, "sent exactly once");
 
-        // Removing the wallet closes its session and lets go of its link.
+        // Removing the wallet tells it (it is connected), then closes its session and lets go of
+        // its link.
         let state: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("connector.json")).unwrap()).unwrap();
         let password = hex::decode(state["links"][0]["password"].as_str().unwrap()).unwrap();
@@ -482,7 +483,17 @@ fn by_default_a_wallet_with_iroh_links_over_iroh_and_webrtc_lets_go() {
             )
             .await,
         );
-        assert!(removed.contains("Removed"), "{removed}");
+        assert!(
+            removed.contains("the wallet removed this connector too"),
+            "{removed}"
+        );
+        assert_eq!(
+            running.received().last().unwrap(),
+            &json!({ "discriminator": "linkRemoved" })
+        );
+        let state: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("connector.json")).unwrap()).unwrap();
+        assert!(state.get("retiredLinks").is_none(), "no notice left: {state}");
         assert!(link_lock_is_free(&dir, &password));
         assert!(app.iroh.diagnostics(&password).is_none());
 
@@ -937,6 +948,136 @@ fn library_events_reach_the_log_and_a_collision_carries_the_links_diagnostics() 
 
         drop(turn);
         assert_log_clean(&dir, &password);
+        std::fs::remove_dir_all(&dir).ok();
+    });
+}
+
+/// An app on `dir`'s `connector.json`, every link over iroh at the local `relay`.
+fn iroh_app(dir: &std::path::Path, relay: &LocalRelay) -> Rc<App> {
+    Rc::new(App::at(
+        dir.join("connector.json"),
+        Options {
+            transport: Setting::Iroh,
+            iroh_relay: Some(relay.url.clone()),
+        },
+    ))
+}
+
+fn connector_state(dir: &std::path::Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(dir.join("connector.json")).unwrap()).unwrap()
+}
+
+/// The person removed this connector in the wallet: the wallet says so when it next connects, the
+/// request fails with LINK_REMOVED (not a timeout to retry), and the wallet is unpaired here.
+#[test]
+fn a_wallet_that_removed_this_connector_fails_the_request_and_is_unpaired_here() {
+    in_local_set(async {
+        let relay = LocalRelay::start().await;
+        let dir = std::env::temp_dir().join(format!(
+            "connector_mcp_e2e_removed_by_wallet_{}",
+            std::process::id()
+        ));
+        let password = [0x51u8; 32];
+        seed_link(&dir, &password);
+        let app = iroh_app(&dir, &relay);
+        let wallet = Arc::new(SimWallet::default());
+        // As the Radix Wallet with this link retired: it takes the request, answers nothing to it,
+        // and says the link was removed.
+        let removed: support::Handler = Arc::new(|_: &SimWallet, _: &Value| {
+            support::Reply::Now(json!({ "discriminator": "linkRemoved" }))
+        });
+        // The request opens the link; the wallet connects once it listens.
+        let (result, running) = tokio::join!(
+            tools::call(
+                &app,
+                "request_account_proof",
+                json!({
+                    "network": "stokenet", "dapp_definition": DAPP, "origin": ORIGIN,
+                    "challenge": support::challenge(), "skip_dapp_check": true, "timeout_seconds": 20,
+                }),
+            ),
+            wallet.connect(&password, &relay.url, removed),
+        );
+
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["structuredContent"]["code"], "LINK_REMOVED", "{result}");
+        assert_eq!(
+            result["structuredContent"]["retry_safe"], true,
+            "nothing waits in the wallet"
+        );
+        let state = connector_state(&dir);
+        assert_eq!(state["links"], json!([]), "{state}");
+        assert!(
+            state.get("retiredLinks").is_none(),
+            "the wallet knows: no notice: {state}"
+        );
+        assert!(link_lock_is_free(&dir, &password));
+        let listed = text(&tools::call(&app, "list_wallets", json!({})).await);
+        assert!(listed.contains("No wallets paired"), "{listed}");
+        running.close().await;
+        std::fs::remove_dir_all(&dir).ok();
+    });
+}
+
+/// Removing a wallet whose app is closed keeps a notice; once the wallet connects while this
+/// connector runs, it is told, confirmed, and the notice is gone.
+#[test]
+fn a_wallet_removed_while_its_app_is_closed_is_told_when_it_connects() {
+    in_local_set(async {
+        let relay = LocalRelay::start().await;
+        let dir = std::env::temp_dir().join(format!("connector_mcp_e2e_notice_later_{}", std::process::id()));
+        let password = [0x52u8; 32];
+        seed_link(&dir, &password);
+        let app = iroh_app(&dir, &relay);
+
+        let removed = text(
+            &tools::call(
+                &app,
+                "remove_wallet",
+                json!({ "wallet_public_key": "ab".repeat(32) }),
+            )
+            .await,
+        );
+        assert!(removed.contains("was not reachable now"), "{removed}");
+        let state = connector_state(&dir);
+        assert_eq!(state["links"], json!([]));
+        assert_eq!(
+            state["retiredLinks"][0]["password"],
+            hex::encode(password),
+            "{state}"
+        );
+        let listed = text(&tools::call(&app, "list_wallets", json!({})).await);
+        assert!(listed.contains("REMOVED, NOT TOLD YET"), "{listed}");
+        assert!(
+            !listed.contains(&hex::encode(password)),
+            "never the password: {listed}"
+        );
+
+        // The connector runs on; the person opens the wallet.
+        tokio::task::spawn_local(crate::link_removal::deliver_notices(app.clone()));
+        let wallet = Arc::new(SimWallet::default());
+        let running = wallet.connect(&password, &relay.url, answers_rola()).await;
+        let told = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if running
+                    .received()
+                    .contains(&json!({ "discriminator": "linkRemoved" }))
+                    && connector_state(&dir).get("retiredLinks").is_none()
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await;
+        assert!(
+            told.is_ok(),
+            "told, and the notice gone: {}",
+            connector_state(&dir)
+        );
+        assert!(!events(&dir, "removal_notice_delivered").is_empty());
+        assert_log_clean(&dir, &password);
+        running.close().await;
         std::fs::remove_dir_all(&dir).ok();
     });
 }

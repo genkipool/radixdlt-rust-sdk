@@ -23,6 +23,9 @@ use serde_json::{json, Value};
 /// The log file rolls over to `connector.log.1` beyond this size.
 const LOG_MAX_BYTES: u64 = 1_000_000;
 
+/// The code of a request the wallet will never answer: it removed this connector.
+pub const LINK_REMOVED: &str = "LINK_REMOVED";
+
 /// A failure, in the shape an agent can act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure {
@@ -93,6 +96,7 @@ impl Failure {
         let detail = error.to_string();
         match error {
             ConnectError::WalletRejected(wallet) => Failure::from_wallet(wallet),
+            ConnectError::LinkRemoved => Failure::link_removed(detail),
             ConnectError::LinkBusy => Failure::new(
                 "LINK_BUSY",
                 "queue",
@@ -171,10 +175,18 @@ impl Failure {
     /// The codes are the WebRTC ones where the meaning is the same, so an agent handles both
     /// transports alike. The timeouts' detail ends with the link's diagnostics line (relay
     /// reachable?, connection state, path, last error) — never a secret.
+    /// The wallet removed this connector: the code [`exchange`](crate::exchange) unpairs it on.
+    pub fn link_removed(detail: String) -> Self {
+        // Nothing waits in the wallet (it took nothing over a removed link), so sending again
+        // duplicates nothing — it just fails the same way: the hint says to pair again.
+        Failure::new(LINK_REMOVED, "wallet", true, detail, "The person removed this connector in the Radix Wallet (Settings › Linked Connectors), so the request was not answered and the wallet was forgotten here too. Do NOT retry: to use that wallet again, pair it again with pair_wallet.")
+    }
+
     pub fn from_mobile(error: &MobileError, delivered: bool) -> Self {
         let detail = error.to_string();
         match error {
             MobileError::WalletRejected(wallet) => Failure::from_wallet(wallet),
+            MobileError::LinkRemoved => Failure::link_removed(detail),
             MobileError::WalletUnreachable { .. } => Failure::new(
                 "WALLET_UNREACHABLE",
                 "connect",

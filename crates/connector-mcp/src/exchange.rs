@@ -22,9 +22,10 @@ use radixdlt_connect_iroh::mobile::{MobileError, Progress as IrohProgress};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
-use crate::diag::{iso_secs, now_secs, Failure};
+use crate::diag::{iso_secs, now_secs, Failure, LINK_REMOVED};
 use crate::gateway;
 use crate::iroh::{self, Route};
+use crate::link_removal;
 use crate::outbox::{Outbox, Record, State};
 use crate::requests::describe_answer;
 use crate::rpc::{App, InFlight};
@@ -325,10 +326,14 @@ async fn run(
     interaction: Option<&Value>,
     notes: &mut Vec<String>,
 ) -> Result<Value, Failure> {
-    match &target.route {
+    let result = match &target.route {
         Route::Webrtc => run_webrtc(app, target, id, interaction, notes).await,
         Route::Iroh { relay } => run_iroh(app, target, relay, id, interaction, notes).await,
+    };
+    if matches!(&result, Err(failure) if failure.code == LINK_REMOVED) {
+        link_removal::forget_removed_by_wallet(app, &target.password).await;
     }
+    result
 }
 
 /// A call in flight: registered for `cancel_request`, and its fate recorded if it is dropped.
