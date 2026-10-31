@@ -287,7 +287,11 @@ mod tests {
 
         assert_eq!(retired.password, "a1a1");
         assert_eq!(retired.label.as_deref(), Some("aa's phone"));
-        assert_eq!(retired.transport, Some(Transport::Iroh), "told over the transport it was paired over");
+        assert_eq!(
+            retired.transport,
+            Some(Transport::Iroh),
+            "told over the transport it was paired over"
+        );
         assert_eq!(state.all_links().len(), 1);
         assert_eq!(state.retired_links, vec![retired.clone()]);
         assert_eq!(retired.password_bytes().unwrap(), vec![0xa1, 0xa1]);

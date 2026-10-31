@@ -43,7 +43,10 @@ mod tests {
     #[test]
     fn it_is_written_by_its_name() {
         assert_eq!(serde_json::to_string(&Transport::Iroh).unwrap(), r#""iroh""#);
-        assert_eq!(serde_json::from_str::<Transport>(r#""webrtc""#).unwrap(), Transport::Webrtc);
+        assert_eq!(
+            serde_json::from_str::<Transport>(r#""webrtc""#).unwrap(),
+            Transport::Webrtc
+        );
         assert_eq!(Transport::Iroh.to_string(), "iroh");
     }
 }
