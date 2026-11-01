@@ -373,7 +373,7 @@ async fn a_request_waits_for_the_wallet_to_open_its_app() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_wallet_that_reconnects_mid_flight_still_answers_and_nothing_is_sent_twice() {
+async fn a_wallet_restarted_mid_flight_gets_the_request_again_once_and_still_answers() {
     let relay = LocalRelay::start().await;
     let connector = connector(&relay);
     let password = password();
@@ -393,6 +393,9 @@ async fn a_wallet_that_reconnects_mid_flight_still_answers_and_nothing_is_sent_t
         first.close().await;
         tokio::time::sleep(Duration::from_secs(1)).await;
         let second = wallet.connect(&password, &relay.url, never_answers()).await;
+        // Its new session holds nothing, so the connector delivers the request again
+        // (radix-connect-iroh 0.1.5: a request lost with the app comes back).
+        second.wait_for_requests(1).await;
         // The person approves: the answer goes out on the new connection.
         second.send(&wallet.rola_answer(&request)).await;
         second
@@ -403,7 +406,11 @@ async fn a_wallet_that_reconnects_mid_flight_still_answers_and_nothing_is_sent_t
         wallet.account_address()
     );
 
-    assert_eq!(second.count(&id), 0, "a delivered request is never sent again");
+    assert_eq!(
+        second.count(&id),
+        1,
+        "the request the restarted wallet lost is delivered again, once"
+    );
     let steps = steps.all();
     assert_eq!(
         steps

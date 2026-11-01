@@ -3162,14 +3162,15 @@ dependencies = [
 
 [[package]]
 name = "radix-connect-iroh"
-version = "0.1.4"
-source = "git+https://github.com/genkipool/radix-connect-iroh?tag=v0.1.4#84a1c84166cbd5a16f88330ebff24974726b4883"
+version = "0.1.5"
+source = "git+https://github.com/genkipool/radix-connect-iroh?tag=v0.1.5#b500ad1db21bce175c102b9862c61a44ac237d44"
 dependencies = [
  "blake3",
  "bytes",
  "hex",
  "iroh",
  "n0-future",
+ "serde_json",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -3265,7 +3266,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connect-iroh"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "ed25519-dalek 3.0.0",
  "fs4",

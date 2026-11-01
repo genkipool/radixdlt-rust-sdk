@@ -245,6 +245,14 @@ pub(super) fn resending(link: LinkId, interaction: &str, attempt: u32, reason: &
     tracing::warn!(target: TARGET, %link, interaction, attempt, reason, "nothing was sent; sending again once the wallet is back");
 }
 
+pub(super) fn redelivered(link: LinkId, interaction: &str) {
+    tracing::info!(target: TARGET, %link, interaction, "the wallet had lost the request with its app: it has it again");
+}
+
+pub(super) fn presence(link: LinkId, in_background: bool) {
+    tracing::info!(target: TARGET, %link, in_background, "the wallet's app changed between foreground and background");
+}
+
 pub(super) fn unconfirmed(link: LinkId, interaction: &str, reason: &str, diagnostics: &Diagnostics) {
     tracing::warn!(target: TARGET, %link, interaction, reason, %diagnostics, "the wallet did not confirm the request; it is not sent again");
 }

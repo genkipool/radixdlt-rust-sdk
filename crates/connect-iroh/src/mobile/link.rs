@@ -152,6 +152,10 @@ async fn read_events(session: Arc<Session>, shared: Arc<Shared>) {
         match event {
             SessionEvent::StateChanged(state) => shared.on_state(state, &session),
             SessionEvent::Message(text) => shared.on_message(&text),
+            // The library sent it again by itself: the wallet had lost it with its app.
+            // Its answer comes as any other, to whoever still waits for it, or is kept.
+            SessionEvent::RequestRedelivered(interaction) => log::redelivered(shared.id, &interaction),
+            SessionEvent::PeerPresence { in_background } => log::presence(shared.id, in_background),
         }
     }
     shared.end();

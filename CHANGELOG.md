@@ -7,6 +7,27 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.9.4] - 2026-11-01
+
+### Fixed
+
+- **A request the wallet lost with its app comes back when the wallet is opened.** The wallet
+  keeps the requests it received in memory: closed (or ended by the system) while a request
+  waited, it lost it, and the connector, which had seen it confirmed, waited until its timeout
+  and answered `NO_ANSWER`. With `radix-connect-iroh` 0.1.5 a wallet tells, on every connection,
+  which requests it still has, and the connector delivers again, by itself, one it lost — never
+  one it kept, so nothing shows twice. The answer reaches whoever still waits for it, or is kept
+  for `await_response`. Wallets on an older library, and the WebRTC transport, work as before.
+  The log says `the wallet had lost the request with its app: it has it again`, and when the
+  wallet's app goes to the background or comes back.
+
+### Changed
+
+- `radixdlt-connect-iroh` 0.3.3 and `radixdlt-connect-auto` 0.4.4 on `radix-connect-iroh` 0.1.5;
+  `radixdlt-connector-mcp` 0.9.4 built on them.
+- The git dependency on `radix-connect-iroh` states its version too, so `cargo deny` no longer
+  reads it as a wildcard.
+
 ## [connector-v0.9.3] - 2026-11-01
 
 ### Fixed
