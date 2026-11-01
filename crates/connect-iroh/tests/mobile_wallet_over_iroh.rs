@@ -433,6 +433,42 @@ async fn a_wallet_restarted_mid_flight_gets_the_request_again_once_and_still_ans
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_request_is_not_sent_again_to_a_wallet_restarted_without_it() {
+    let relay = LocalRelay::start().await;
+    let connector = connector(&relay);
+    let password = password();
+    let wallet = Arc::new(SimWallet::default());
+    connector.open_link(&password).await.unwrap();
+    let first = wallet.connect(&password, &relay.url, never_answers()).await;
+    let steps = Steps::default();
+    let mut observer = steps.observer();
+    let interaction = account_proof_request(&challenge(), &ctx(), false);
+    let id = interaction["interactionId"].as_str().unwrap().to_string();
+
+    // Delivered, then given up on (the caller cancels): the exchange is dropped.
+    tokio::select! {
+        answer = connector.exchange(&password, &interaction, WAIT, &mut observer) => {
+            panic!("the wallet never answers: {answer:?}")
+        }
+        _ = first.wait_for_requests(1) => {}
+    }
+    connector.forget_request(&password, &id);
+    // The app is killed with the request on screen, and opened again a moment later.
+    first.close().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let second = wallet.connect(&password, &relay.url, never_answers()).await;
+    // Time for its inventory, and for a request it lost to come back.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    assert_eq!(
+        second.count(&id),
+        0,
+        "a cancelled request does not come back to a wallet opened later"
+    );
+    second.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_request_the_wallet_never_confirms_is_not_sent_again() {
     let relay = LocalRelay::start().await;
     let connector = connector(&relay).with_ack_timeout(Duration::from_secs(1));

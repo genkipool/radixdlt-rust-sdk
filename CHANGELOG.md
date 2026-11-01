@@ -7,6 +7,26 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.9.6] - 2026-11-01
+
+### Fixed
+
+- **A cancelled request does not come back to a wallet opened later.** Over iroh, a request
+  delivered to a wallet whose app was then closed came back by itself when the wallet was
+  opened again, even after `cancel_request`: the phone showed a request nobody waited for.
+  `cancel_request` now tells the link's session to forget it (`radix-connect-iroh` 0.1.8
+  `forget_request`). One the wallet still holds stays there: only the wallet can end it.
+
+### Added
+
+- `MobileWalletConnector::forget_request` and `radixdlt_connect_auto::Connector::forget_request`,
+  for a host that cancels a request it sent.
+
+### Changed
+
+- `radixdlt-connect-iroh` 0.3.5 and `radixdlt-connect-auto` 0.4.6 on `radix-connect-iroh`
+  0.1.8; `radixdlt-connector-mcp` 0.9.6 built on them.
+
 ## [connector-v0.9.5] - 2026-11-01
 
 ### Fixed

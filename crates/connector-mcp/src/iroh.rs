@@ -411,6 +411,14 @@ impl Iroh {
         Ok(connector)
     }
 
+    /// A request to `password`'s wallet was cancelled: the link's session, if this process holds
+    /// it, does not deliver it again to a wallet that comes back without it.
+    pub fn forget_request(&self, password: &[u8], interaction_id: &str) {
+        if let Some(held) = self.held().get(&connection_id(password)) {
+            held.connector.forget_request(password, interaction_id);
+        }
+    }
+
     /// The live connectivity of a link this process holds.
     pub fn diagnostics(&self, password: &[u8]) -> Option<Diagnostics> {
         let held = self.held();

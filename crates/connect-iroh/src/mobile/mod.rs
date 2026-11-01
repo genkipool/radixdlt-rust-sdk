@@ -876,6 +876,16 @@ impl MobileWalletConnector {
             .is_some_and(|link| link.is_connected())
     }
 
+    /// The request `interaction_id` was cancelled: it is not delivered again to this link's
+    /// wallet when that comes back without it (its app was closed meanwhile), so a wallet opened
+    /// later does not show a request nobody waits for. One the wallet still holds stays there:
+    /// only the wallet can end it. Nothing when the link's session is not running.
+    pub fn forget_request(&self, password: &[u8], interaction_id: &str) {
+        if let Some(link) = self.links.get(LinkId::of(password)) {
+            link.forget_request(interaction_id);
+        }
+    }
+
     /// Whether this link's wallet is connected and said its app is in the background: connected
     /// still, a while after the person left it (a wallet keeps its connection a grace period). A
     /// wallet that does not say (one that predates it) reads as in the foreground.

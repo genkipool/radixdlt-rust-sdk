@@ -302,6 +302,10 @@ impl Link {
         self.session.send(message).await
     }
 
+    pub(super) fn forget_request(&self, interaction_id: &str) {
+        self.session.forget_request(interaction_id);
+    }
+
     /// Closes the session, telling the wallet. The reader then ends and wakes every waiter.
     pub(super) async fn close(&self) {
         self.session.close().await;

@@ -1072,9 +1072,12 @@ pub fn cancel_request(app: &App, args: &Value) -> ToolResult {
 
     let mut out = String::from("CANCEL\n");
     let mut stopped_ids = Vec::new();
+    // Each cancelled request and its wallet: over iroh, its link must not deliver it again.
+    let mut forget: Vec<(String, String)> = Vec::new();
     if let Some(id) = opt_str(args, "interaction_id") {
         if let Some(inflight) = app.inflight.borrow_mut().remove(&id) {
             let _ = inflight.stop.send(());
+            forget.push((id.clone(), inflight.wallet));
             stopped_ids.push(id);
         }
     } else {
@@ -1087,6 +1090,7 @@ pub fn cancel_request(app: &App, args: &Value) -> ToolResult {
         for id in ids {
             if let Some(f) = inflight.remove(&id) {
                 let _ = f.stop.send(());
+                forget.push((id.clone(), f.wallet));
                 stopped_ids.push(id);
             }
         }
@@ -1095,6 +1099,17 @@ pub fn cancel_request(app: &App, args: &Value) -> ToolResult {
     if targets.is_empty() && stopped_ids.is_empty() {
         out.push_str("Nothing to cancel: no pending requests.\n");
         return ToolResult::text(out);
+    }
+    forget.extend(
+        targets
+            .iter()
+            .filter(|r| r.state != State::Answered)
+            .map(|r| (r.interaction_id.clone(), r.wallet.clone())),
+    );
+    for (interaction_id, wallet) in &forget {
+        if let Ok((_, password)) = wallet_link(app, Some(wallet)) {
+            app.iroh.forget_request(&password, interaction_id);
+        }
     }
     for r in &targets {
         let was = r.state;

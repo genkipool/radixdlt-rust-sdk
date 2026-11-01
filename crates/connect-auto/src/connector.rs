@@ -779,6 +779,16 @@ impl WalletConnector {
         }
     }
 
+    /// The request `interaction_id` was cancelled: over iroh it is not delivered again to
+    /// `link`'s wallet when that comes back without it (see
+    /// [`MobileWalletConnector::forget_request`]). Nothing to do over WebRTC, which never
+    /// delivers a request again by itself.
+    pub fn forget_request(&self, link: &Link, interaction_id: &str) {
+        if let (Ok(password), Ok(iroh)) = (link.password_bytes(), self.iroh_on(link.iroh_relay.as_deref())) {
+            iroh.forget_request(&password, interaction_id);
+        }
+    }
+
     /// Whether `link`'s wallet is connected over iroh with its app in the background (connected
     /// still, a while after the person left it).
     #[must_use]
