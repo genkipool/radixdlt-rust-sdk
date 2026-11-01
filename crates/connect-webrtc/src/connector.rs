@@ -143,6 +143,8 @@ pub struct Channel {
     _pc: Arc<dyn PeerConnection>,
     /// The link as the log names it (`log::link_tag`).
     link: String,
+    /// Closed by [`Channel::close`]: nothing left for `Drop` to do.
+    closed: bool,
 }
 
 /// Gathers ICE candidates through a TCP relay and reports them, talking to no wallet.
@@ -410,6 +412,7 @@ pub async fn establish(
                         confirmations: conf_rx,
                         _pc: pc,
                         link: crate::log::link_tag(password),
+                        closed: false,
                     });
                 }
                 _ = tokio::time::sleep_until(deadline) => {
@@ -548,11 +551,18 @@ async fn add_remote_candidate(pc: &Arc<dyn PeerConnection>, payload: Value) {
     let _ = pc.add_ice_candidate(init).await;
 }
 
+/// How long [`Channel::close`] waits for the wallet to be told before leaving the rest to `Drop`:
+/// on a working network it takes a few milliseconds; a dead one must not hold the caller.
+const CLOSE_LIMIT: Duration = Duration::from_secs(2);
+
 /// Closing on drop is what lets a caller CANCEL: dropping the request future drops the channel,
 /// and the wallet sees the connection go instead of keeping a half-dead one for this link. Left
 /// open, the wallet may keep routing answers to a channel nobody reads.
 impl Drop for Channel {
     fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
         let (dc, pc, link) = (self.dc.clone(), self._pc.clone(), self.link.clone());
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             crate::log::channel_closing(&link);
@@ -567,6 +577,33 @@ impl Drop for Channel {
 }
 
 impl Channel {
+    /// Closes the channel and waits until the wallet has been told (at most [`CLOSE_LIMIT`]).
+    ///
+    /// Every channel that ends normally is closed this way. The close `Drop` starts runs in the
+    /// background, and a process that exits right after a request (a command-line connector)
+    /// ends before it does: the wallet is never told, believes the connection alive until it
+    /// stops hearing from it — about 30 s — and then tears down whatever channel the link has,
+    /// which by then may be the next request's. [`crate::WALLET_SETTLE`] only covers a wallet
+    /// that WAS told.
+    pub(crate) async fn close(mut self) {
+        let started = std::time::Instant::now();
+        crate::log::channel_closing(&self.link);
+        let (dc, pc) = (self.dc.clone(), self._pc.clone());
+        let told = tokio::time::timeout(CLOSE_LIMIT, async move {
+            let _ = dc.close().await;
+            let _ = pc.close().await;
+        })
+        .await
+        .is_ok();
+        if told {
+            crate::log::channel_closed(&self.link, started.elapsed());
+        } else {
+            crate::log::channel_close_slow(&self.link, CLOSE_LIMIT);
+        }
+        // A close cut short is finished by `Drop`, in the background.
+        self.closed = told;
+    }
+
     /// Sends an application message (JSON Value), chunked, and waits for the peer's
     /// confirmation.
     pub async fn send_message(

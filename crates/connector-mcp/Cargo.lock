@@ -3567,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connect-auto"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "futures-util",
  "radixdlt-connect-iroh",
@@ -3618,7 +3618,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connect-webrtc"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "aes-gcm 0.11.0",
  "async-trait",
@@ -3647,7 +3647,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connector-mcp"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "base64 0.23.0",
  "dirs",

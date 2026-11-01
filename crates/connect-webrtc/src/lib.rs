@@ -719,11 +719,13 @@ impl Connector {
                 // without a trace. A short grace closes the gap.
                 tokio::time::sleep(SEND_GRACE).await;
                 if channel.link_removed() {
+                    channel.close().await;
                     return Err(ConnectError::LinkRemoved);
                 }
                 // Racing other links: only the one chosen sends (asked again on a resend, which
                 // the same link wins again).
                 if chosen.is_some_and(|chosen| !chosen()) {
+                    channel.close().await;
                     return Ok(None);
                 }
                 match channel.send_message(interaction, CONFIRM_TIMEOUT).await {
@@ -738,7 +740,10 @@ impl Connector {
                         );
                     }
                     // The wallet said it removed the link, and closed the channel.
-                    Err(_) if channel.link_removed() => return Err(ConnectError::LinkRemoved),
+                    Err(_) if channel.link_removed() => {
+                        channel.close().await;
+                        return Err(ConnectError::LinkRemoved);
+                    }
                     Err(error)
                         if (matches!(error, ConnectError::ConfirmationTimeout) || channel_lost(&error))
                             && attempt < SEND_ATTEMPTS
@@ -754,11 +759,14 @@ impl Connector {
                                 reason: error.to_string(),
                             },
                         );
-                        drop(channel);
+                        channel.close().await;
                         drop(ClosesLink::of(password));
                         continue;
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        channel.close().await;
+                        return Err(error);
+                    }
                 }
             }
             match listen(&mut channel, want_id, deadline, &link, on).await.map(Some) {
@@ -774,10 +782,13 @@ impl Connector {
                             reason: error.to_string(),
                         },
                     );
-                    drop(channel);
+                    channel.close().await;
                     drop(ClosesLink::of(password));
                 }
-                other => return other,
+                other => {
+                    channel.close().await;
+                    return other;
+                }
             }
         }
     }
@@ -833,20 +844,27 @@ impl Connector {
             tokio::time::sleep(SEND_GRACE).await;
             // The wallet removed the link too, and said so first: the same outcome.
             if channel.link_removed() {
+                channel.close().await;
                 return Ok(());
             }
             let confirm = CONFIRM_TIMEOUT.min(deadline.saturating_duration_since(Instant::now()));
             match channel.send_message(&link_removed_message(), confirm).await {
-                Err(_) if channel.link_removed() => return Ok(()),
+                Err(_) if channel.link_removed() => {
+                    channel.close().await;
+                    return Ok(());
+                }
                 Err(error)
                     if (matches!(error, ConnectError::ConfirmationTimeout) || channel_lost(&error))
                         && deadline.saturating_duration_since(Instant::now())
                             > WALLET_SETTLE + CONFIRM_TIMEOUT =>
                 {
-                    drop(channel);
+                    channel.close().await;
                     drop(ClosesLink::of(password));
                 }
-                other => return other,
+                other => {
+                    channel.close().await;
+                    return other;
+                }
             }
         }
     }
@@ -868,7 +886,7 @@ impl Connector {
             .establish(password, deadline.saturating_duration_since(Instant::now()))
             .await?;
         let took = started.elapsed();
-        drop(channel);
+        channel.close().await;
         Ok(took)
     }
 
@@ -1106,6 +1124,7 @@ impl Connector {
         if let Some(sig_hex) = sig {
             radixdlt_connect_types::linking::verify_link_signature(password, &wallet_pk, &sig_hex)?;
         }
+        channel.close().await;
         Ok(wallet_pk)
     }
 }

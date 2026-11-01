@@ -7,6 +7,25 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.9.3] - 2026-11-01
+
+### Fixed
+
+- **A WebRTC channel is closed before its request returns, and the wallet is told.** The close
+  ran in the background when the channel was dropped, and a program that ends right after a
+  request (a command-line connector) ended first: the wallet was never told, believed the
+  connection alive for about 30 s and then tore down whatever channel the link had — by then
+  maybe the next request's. Every channel that ends normally is now closed and waited for (at
+  most 2 s); `radixdlt-connect-webrtc` 0.4.2. The log's `closing` is now followed by `closed`.
+- **A link the wallet removes while its session only listens is forgotten here at once.** It was
+  forgotten only when the next request on it found out. `radixdlt-connect-auto` 0.4.3:
+  `WalletConnector::forget_links_removed_by_wallet()`, for a program that keeps links open with
+  no request (a resident connector) to call as it goes.
+
+### Changed
+
+- `radixdlt-connector-mcp` 0.9.3: built on them.
+
 ## [connector-v0.9.2] - 2026-11-01
 
 ### Added

@@ -186,6 +186,44 @@ async fn a_link_the_wallet_removed_is_forgotten_here_and_a_wallets_relay_is_note
     running.close().await;
 }
 
+/// A link the wallet removes while its session only listens (no request on it) is forgotten
+/// here as soon as somebody keeps the links (`serve`), not at the next request.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_link_the_wallet_removed_while_listening_is_forgotten_here() {
+    let relay = LocalRelay::start().await;
+    let password = linking::generate_password().unwrap().to_vec();
+    let state = state_with_link(&password);
+    let wallet_connector = connector(&relay, &state).await;
+    let link = read(&state).links[0].clone();
+    wallet_connector.keep_listening(&link).await.unwrap();
+    let wallet = Arc::new(SimWallet::default());
+    let running = wallet.connect(&password, &relay.url, answers_rola()).await;
+    running.wait_connected().await;
+
+    assert_eq!(
+        wallet_connector.forget_links_removed_by_wallet().await,
+        0,
+        "nothing removed yet"
+    );
+    running.send(&json!({ "discriminator": "linkRemoved" })).await;
+    let mut forgotten = 0;
+    for _ in 0..50 {
+        forgotten = wallet_connector.forget_links_removed_by_wallet().await;
+        if forgotten > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(forgotten, 1);
+    assert!(read(&state).links.is_empty(), "forgotten here");
+    assert!(
+        read(&state).retired_links.is_empty(),
+        "and nothing to tell: the wallet knows"
+    );
+    assert_eq!(wallet_connector.forget_links_removed_by_wallet().await, 0, "once");
+    running.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn one_round_of_notices_tells_the_wallets_that_are_there_and_keeps_the_rest() {
     let relay = LocalRelay::start().await;

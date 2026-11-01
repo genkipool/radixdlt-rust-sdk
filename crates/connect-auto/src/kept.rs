@@ -85,6 +85,51 @@ impl WalletConnector {
         self.state.as_deref().map(PathBuf::as_path)
     }
 
+    /// Forgets the links of the state file whose wallet said it removed them while their session
+    /// was only listening (no request on it), and closes those sessions. A request finds out by
+    /// itself (`after_exchange`); a program that keeps links open with no request calls this as
+    /// it goes, so a link removed in the wallet is gone here too. How many were forgotten.
+    pub async fn forget_links_removed_by_wallet(&self) -> usize {
+        let Some(path) = self.state_path() else {
+            return 0;
+        };
+        let Ok(state) = LinkState::load(&path.to_string_lossy()) else {
+            return 0;
+        };
+        let removed: Vec<Link> = state
+            .all_links()
+            .iter()
+            .filter(|link| link.paired_over() == Transport::Iroh)
+            .filter(|link| {
+                match (
+                    link.password_bytes(),
+                    self.iroh_on_relay(link.iroh_relay.as_deref()),
+                ) {
+                    (Ok(password), Ok(iroh)) => iroh.removed_by_wallet(&password),
+                    _ => false,
+                }
+            })
+            .cloned()
+            .collect();
+        let mut forgotten = 0;
+        for link in &removed {
+            let Ok(password) = link.password_bytes() else {
+                continue;
+            };
+            if matches!(
+                update(path, |state| state
+                    .remove_link_removed_by_wallet(&password)
+                    .is_some()),
+                Ok(true)
+            ) {
+                forgotten += 1;
+                tracing::info!(target: TARGET, "the wallet removed a link while it was listening: forgotten here");
+            }
+            self.close_link(link).await;
+        }
+        forgotten
+    }
+
     /// What an answer over `link` says about it, kept: the wallet removed it (forgotten here, its
     /// session closed), the relay its wallet is on now (noted for the next knock), and the persona
     /// it answered as (so a request naming that persona goes to it).

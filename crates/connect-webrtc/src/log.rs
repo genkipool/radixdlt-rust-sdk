@@ -8,9 +8,10 @@
 //! Levels: `warn` for what fails, `info` for the steps of a request and for a channel opening and
 //! closing. Durations are whole milliseconds (`*_ms`).
 //!
-//! A channel closes in the background when it is dropped (see `Channel`'s `Drop`): a `closing`
-//! line with no `closed` after it is a close that never finished — the process ended first — and
-//! the wallet then only notices the connection went when it stops hearing from it.
+//! A channel that ends normally is closed and waited for (`Channel::close`); one that is dropped
+//! closes in the background. A `closing` line with no `closed` after it is a close that never
+//! finished — the process ended first — and the wallet then only notices the connection went when
+//! it stops hearing from it.
 
 use std::time::Duration;
 
@@ -91,12 +92,18 @@ pub(crate) fn channel_failed(link: &str, error: &ConnectError) {
     tracing::warn!(target: TARGET, link, %error, "channel: could not open");
 }
 
-/// A dropped channel starts closing (in the background).
+/// A channel starts closing: waited for at the end of a conversation, or in the background when
+/// it is dropped.
 pub(crate) fn channel_closing(link: &str) {
     tracing::info!(target: TARGET, link, "channel: closing");
 }
 
-/// The background close finished: the wallet has been told.
+/// A close that did not finish within its limit: the rest is left to the background.
+pub(crate) fn channel_close_slow(link: &str, limit: Duration) {
+    tracing::warn!(target: TARGET, link, limit_ms = ms(limit), "channel: close not finished in time, left to finish in the background");
+}
+
+/// The close finished: the wallet has been told.
 pub(crate) fn channel_closed(link: &str, took: Duration) {
     tracing::info!(target: TARGET, link, took_ms = ms(took), "channel: closed");
 }
