@@ -3162,8 +3162,8 @@ dependencies = [
 
 [[package]]
 name = "radix-connect-iroh"
-version = "0.1.5"
-source = "git+https://github.com/genkipool/radix-connect-iroh?tag=v0.1.5#b500ad1db21bce175c102b9862c61a44ac237d44"
+version = "0.1.7"
+source = "git+https://github.com/genkipool/radix-connect-iroh?tag=v0.1.7#60eb499b4ab68a0f37250af6a998c2fced5dc017"
 dependencies = [
  "blake3",
  "bytes",
@@ -3266,7 +3266,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connect-iroh"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "ed25519-dalek 3.0.0",
  "fs4",

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelInit};
 use webrtc::peer_connection::{
@@ -17,7 +17,7 @@ use webrtc::peer_connection::{
 };
 use webrtc::runtime::{Runtime, TokioRuntime};
 
-use crate::chunking::{message_to_chunks, Package, Reassembler};
+use crate::chunking::{message_to_chunks, Package, Reassembled, Reassembly};
 use crate::error::ConnectError;
 use crate::signaling::{SignalEvent, Signaling};
 use crate::turn_tcp::{TurnTcpRuntime, TurnTcpServer};
@@ -326,8 +326,8 @@ pub async fn establish(
         let dc_for_msg = dc.clone();
         let open_tx = open_tx.clone();
         tokio::spawn(async move {
-            // Reassembler for incoming application messages.
-            let reassembler: Arc<Mutex<Option<Reassembler>>> = Arc::new(Mutex::new(None));
+            // The incoming application messages, each reassembled by its id.
+            let mut reassembly = Reassembly::default();
             while let Some(event) = dc_for_msg.poll().await {
                 match event {
                     DataChannelEvent::OnOpen => {
@@ -341,33 +341,42 @@ pub async fn establish(
                             Err(_) => continue,
                         };
                         match &pkg {
-                            Package::MetaData { .. } => {
-                                *reassembler.lock().await = Reassembler::from_meta(&pkg);
-                            }
-                            Package::Chunk { .. } => {
-                                let mut guard = reassembler.lock().await;
-                                if let Some(re) = guard.as_mut() {
-                                    if re.add(&pkg) {
-                                        match re.finish() {
-                                            Ok(value) => {
-                                                // Confirm receipt to the peer.
-                                                let conf = json!({
-                                                    "packageType": "receiveMessageConfirmation",
-                                                    "messageId": re.message_id,
-                                                });
-                                                let _ = dc_for_msg.send_text(&conf.to_string()).await;
-                                                let _ = incoming_tx.send(value);
-                                            }
-                                            Err(_) => {
-                                                let err = json!({
-                                                    "packageType": "receiveMessageError",
-                                                    "messageId": re.message_id,
-                                                    "error": "messageHashesMismatch",
-                                                });
-                                                let _ = dc_for_msg.send_text(&err.to_string()).await;
-                                            }
+                            Package::MetaData { .. } | Package::Chunk { .. } => {
+                                for outcome in reassembly.accept(&pkg) {
+                                    match outcome {
+                                        Reassembled::Message {
+                                            message_id,
+                                            result: Ok(value),
+                                        } => {
+                                            // Confirm receipt to the peer.
+                                            let conf = json!({
+                                                "packageType": "receiveMessageConfirmation",
+                                                "messageId": message_id,
+                                            });
+                                            let _ = dc_for_msg.send_text(&conf.to_string()).await;
+                                            let _ = incoming_tx.send(value);
                                         }
-                                        *guard = None;
+                                        Reassembled::Message {
+                                            message_id,
+                                            result: Err(_),
+                                        } => {
+                                            let err = json!({
+                                                "packageType": "receiveMessageError",
+                                                "messageId": message_id,
+                                                "error": "messageHashesMismatch",
+                                            });
+                                            let _ = dc_for_msg.send_text(&err.to_string()).await;
+                                        }
+                                        Reassembled::Dropped { message_id } => {
+                                            // Incomplete, and dropped for a newer one: the peer
+                                            // hears it was not received.
+                                            let err = json!({
+                                                "packageType": "receiveMessageError",
+                                                "messageId": message_id,
+                                                "error": "messageIncomplete",
+                                            });
+                                            let _ = dc_for_msg.send_text(&err.to_string()).await;
+                                        }
                                     }
                                 }
                             }

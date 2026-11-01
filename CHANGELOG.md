@@ -7,6 +7,24 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.9.5] - 2026-11-01
+
+### Fixed
+
+- **Two WebRTC messages arriving at once both arrive.** The connector reassembled one incoming
+  message at a time: a second message whose packages came before the first was complete
+  replaced it, and the first was lost without a word. Each message is now reassembled by its
+  id (up to 8 at once); an incomplete one dropped to make room is answered with a
+  `receiveMessageError`, so the wallet knows. `radixdlt-connect-webrtc` 0.4.3.
+- **A wallet closed is known gone within seconds over iroh, however its app was closed.**
+  `radix-connect-iroh` 0.1.7 checks every few seconds that the wallet answers: a closed one is
+  known gone in about 7 s instead of QUIC's 30.
+
+### Changed
+
+- `radixdlt-connect-iroh` 0.3.4 and `radixdlt-connect-auto` 0.4.5 on them;
+  `radixdlt-connector-mcp` 0.9.5 built on them.
+
 ## [connector-v0.9.4] - 2026-11-01
 
 ### Fixed

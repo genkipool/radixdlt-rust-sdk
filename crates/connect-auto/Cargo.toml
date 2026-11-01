@@ -5,7 +5,7 @@
 [package]
 name = "radixdlt-connect-auto"
 description = "Talk to the Radix Wallet over iroh or WebRTC, whichever it can, with nothing to choose: one QR pairs over both, each request races both and goes over exactly one, the fastest."
-version = "0.4.4"
+version = "0.4.5"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/genkipool/radixdlt-rust-sdk"
@@ -18,10 +18,10 @@ readme = "README.md"
 [dependencies]
 radixdlt-i18n = { path = "../i18n", version = "0.3.0" }
 radixdlt-connect-types = { path = "../connect-types", version = "0.3.0" }
-radixdlt-connect-webrtc = { path = "../connect-webrtc", version = "0.4.2" }
+radixdlt-connect-webrtc = { path = "../connect-webrtc", version = "0.4.3" }
 # Without its `wallet` feature (answering requests, which pulls the Scrypto engine): a connector
 # only asks the wallet.
-radixdlt-connect-iroh = { path = "../connect-iroh", version = "0.3.3", default-features = false }
+radixdlt-connect-iroh = { path = "../connect-iroh", version = "0.3.4", default-features = false }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt", "signal", "sync", "time"] }
 tracing = "0.1"
@@ -38,7 +38,7 @@ tokio = { version = "1", features = ["full"] }
 # (`../connect-iroh/tests/support`), which need these.
 radixdlt-address = { path = "../address", version = "0.3.0" }
 radixdlt-rola = { path = "../rola", version = "0.3.0" }
-radix-connect-iroh = { git = "https://github.com/genkipool/radix-connect-iroh", tag = "v0.1.5", version = "0.1.5" }
+radix-connect-iroh = { git = "https://github.com/genkipool/radix-connect-iroh", tag = "v0.1.7", version = "0.1.7" }
 iroh-relay = { version = "1.4.1", default-features = false, features = ["server", "tls-ring"] }
 ed25519-dalek = "3"
 getrandom = "0.4"
