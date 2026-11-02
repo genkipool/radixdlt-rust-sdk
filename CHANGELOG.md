@@ -7,6 +7,18 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.9.8] - 2026-11-02
+
+### Changed
+
+- **A wallet is back at once after the computer wakes** (`radix-connect-iroh` 0.1.11): a connector that
+  gets its relay back after losing it, while its wallet is not connected, knocks for it instead of
+  waiting for the wallet's next retry (up to 30 s). Measured waking a real computer with the Radix
+  Wallet over n0's public relays: iroh back 1.85 s (median) after the network instead of 7.4–22 s.
+  No wire change and no API change.
+- `radixdlt-connect-iroh` 0.3.7 and `radixdlt-connect-auto` 0.4.8 on `radix-connect-iroh` 0.1.11;
+  `radixdlt-connector-mcp` 0.9.8 built on them.
+
 ## [connector-v0.9.7] - 2026-11-02
 
 ### Changed
