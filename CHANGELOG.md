@@ -7,6 +7,17 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.9.7] - 2026-11-02
+
+### Changed
+
+- **Faster links over iroh** (`radix-connect-iroh` 0.1.10), measured with the real Radix Wallet over n0's
+  public relays: a wallet closed from the background is known gone in under a second instead of about
+  6 s, and a burst of messages arrives without one round trip per message (5 × 200 B in 94 ms instead
+  of 475 ms). No wire change and no API change.
+- `radixdlt-connect-iroh` 0.3.6 and `radixdlt-connect-auto` 0.4.7 on `radix-connect-iroh` 0.1.10;
+  `radixdlt-connector-mcp` 0.9.7 built on them.
+
 ## [connector-v0.9.6] - 2026-11-01
 
 ### Fixed

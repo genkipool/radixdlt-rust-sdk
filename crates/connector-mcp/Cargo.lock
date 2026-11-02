@@ -3518,8 +3518,8 @@ dependencies = [
 
 [[package]]
 name = "radix-connect-iroh"
-version = "0.1.8"
-source = "git+https://github.com/genkipool/radix-connect-iroh?tag=v0.1.8#d277e5f77511c3ea4338cc6d6f7e3f26fb6f0022"
+version = "0.1.10"
+source = "git+https://github.com/genkipool/radix-connect-iroh?tag=v0.1.10#2cfd67ddaacf7486d2da634a68af503d5b07e221"
 dependencies = [
  "blake3",
  "bytes",
@@ -3568,7 +3568,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connect-auto"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "futures-util",
  "radixdlt-connect-iroh",
@@ -3583,7 +3583,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connect-iroh"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "ed25519-dalek 3.0.0",
  "fs4",
@@ -3648,7 +3648,7 @@ dependencies = [
 
 [[package]]
 name = "radixdlt-connector-mcp"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "base64 0.23.0",
  "dirs",
@@ -5701,7 +5701,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
