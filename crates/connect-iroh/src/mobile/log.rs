@@ -253,6 +253,10 @@ pub(super) fn presence(link: LinkId, in_background: bool) {
     tracing::info!(target: TARGET, %link, in_background, "the wallet's app changed between foreground and background");
 }
 
+pub(super) fn peer_relay(link: LinkId, relay: &iroh::RelayUrl) {
+    tracing::debug!(target: TARGET, %link, %relay, "the wallet said which relay it is on");
+}
+
 pub(super) fn unconfirmed(link: LinkId, interaction: &str, reason: &str, diagnostics: &Diagnostics) {
     tracing::warn!(target: TARGET, %link, interaction, reason, %diagnostics, "the wallet did not confirm the request; it is not sent again");
 }

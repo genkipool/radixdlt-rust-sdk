@@ -322,10 +322,6 @@ async fn serve(
                 });
                 send_later(session.clone(), Duration::ZERO, accounts);
             }
-            // Only a connector hears these; this is the wallet's end.
-            SessionEvent::StateChanged(_)
-            | SessionEvent::RequestRedelivered(_)
-            | SessionEvent::PeerPresence { .. } => {}
             SessionEvent::Message(text) => {
                 let request: Value = serde_json::from_str(&text).unwrap();
                 received.lock().unwrap().push(request.clone());
@@ -335,6 +331,8 @@ async fn serve(
                     Reply::Nothing => {}
                 }
             }
+            // Other states, and what only a connector hears: this is the wallet's end.
+            _ => {}
         }
     }
 }
