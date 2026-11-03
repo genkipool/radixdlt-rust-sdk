@@ -7,6 +7,23 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [connector-v0.9.9] - 2026-11-03
+
+### Changed
+
+- **Built on `radix-connect-iroh` 0.2.0**, which makes the connection to the Radix Wallet more
+  reliable and needs nothing from the program using the SDK:
+  - the wallet tells its connector which relay it is on, so the knock of a connector that starts
+    or gets its network back reaches it: before, a connector could keep, and knock at, the relay
+    that had carried the connection rather than the wallet's own, and never correct it;
+  - the wallet's "app in the background" notice is sent again 250 ms, 1 s and 3 s later: measured
+    on a phone, 80 of 80 copies arrived, where 1–2 notices in 15 were lost and the connector then
+    noticed a closed wallet after ~6 s instead of ~0.7 s.
+- `radix-connect-iroh` 0.2.0 marks its session events non-exhaustive; `radixdlt-connect-iroh`
+  handles the new one (the wallet's relay) internally. No API change in the SDK
+  (`cargo semver-checks`: none required), hence patch versions: `radixdlt-connect-iroh` 0.3.8,
+  `radixdlt-connect-auto` 0.4.9, `radixdlt-connector-mcp` 0.9.9. No wire change.
+
 ## [connector-v0.9.8] - 2026-11-02
 
 ### Changed
